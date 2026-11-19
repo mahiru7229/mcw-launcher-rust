@@ -1,5 +1,5 @@
 use crate::i18n::{LanguageManager, LauncherPrefs};
-use crate::state::{ActiveTask, AppEvent, ChannelLogSink, ChannelProgressSink};
+use crate::state::{ActiveTask, AppEvent, ChannelLogSink, ChannelProgressSink, ModVersionChoice};
 use crate::theme::{apply_theme, configure_fonts, ThemeMode, ThemePalette};
 use eframe::egui::{
     self, Align, Button, Color32, CornerRadius, Frame, Layout, RichText, ScrollArea, Stroke,
@@ -201,10 +201,25 @@ pub struct McwApp {
 
     // Mods browser inside Mods tab (Modrinth | CurseForge)
     mod_provider_tab: ModProviderTab,
+    mod_loader_filter: String,
     mod_search_query: String,
     modrinth_results: Vec<ModrinthSearchHit>,
     curseforge_results: Vec<CurseForgeMod>,
     mod_searching: bool,
+
+    // Async icon thumbnail texture cache for Mods, Packs, and Modpacks
+    thumb_textures: HashMap<String, egui::TextureHandle>,
+    loading_thumbs: HashSet<String>,
+
+    // Version Picker modal when clicking Install on a Mod or Modrinth Modpack
+    version_picker_open: bool,
+    version_picker_title: String,
+    version_picker_icon: Option<String>,
+    version_picker_key: String,
+    version_picker_is_pack: bool,
+    version_picker_loading: bool,
+    version_picker_items: Vec<ModVersionChoice>,
+    version_picker_error: Option<String>,
 
     // OptiFine JAR path input inside Instance Settings tab
     optifine_jar_input: String,
@@ -331,10 +346,21 @@ impl McwApp {
             ms_login_task: None,
             ms_device_code: None,
             mod_provider_tab: ModProviderTab::Modrinth,
+            mod_loader_filter: "fabric".to_string(),
             mod_search_query: String::new(),
             modrinth_results: Vec::new(),
             curseforge_results: Vec::new(),
             mod_searching: false,
+            thumb_textures: HashMap::new(),
+            loading_thumbs: HashSet::new(),
+            version_picker_open: false,
+            version_picker_title: String::new(),
+            version_picker_icon: None,
+            version_picker_key: String::new(),
+            version_picker_is_pack: false,
+            version_picker_loading: false,
+            version_picker_items: Vec::new(),
+            version_picker_error: None,
             optifine_jar_input: String::new(),
         };
 
@@ -1185,14 +1211,15 @@ impl McwApp {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
+        let loader_filter = self.mod_loader_filter.clone();
         self.runtime.spawn(async move {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
                 let client = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
-                let loader = if inst.mod_loader.is_vanilla() {
+                let loader = if loader_filter.is_empty() || loader_filter == "all" {
                     None
                 } else {
-                    Some(inst.mod_loader.name.clone())
+                    Some(loader_filter)
                 };
                 let search = client
                     .search(&ModrinthSearchParams {
@@ -1200,7 +1227,7 @@ impl McwApp {
                         project_type: "mod".to_string(),
                         loader,
                         game_version: Some(inst.version_id.clone()),
-                        limit: 12,
+                        limit: 15,
                         ..Default::default()
                     })
                     .await
@@ -1209,6 +1236,288 @@ impl McwApp {
             }
             .await;
             let _ = tx.send(AppEvent::ModrinthSearchFinished(res));
+            ctx.request_repaint();
+        });
+    }
+
+    fn ensure_thumbnail(&mut self, url: &str, ctx: &egui::Context) {
+        let u = url.trim();
+        if u.is_empty()
+            || self.thumb_textures.contains_key(u)
+            || !self.loading_thumbs.insert(u.to_string())
+        {
+            return;
+        }
+        let url_owned = u.to_string();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let ok_bytes = reqwest::Client::builder()
+                .user_agent(mcw_models::user_agent())
+                .timeout(Duration::from_secs(10))
+                .build()
+                .ok();
+            if let Some(http) = ok_bytes {
+                if let Ok(resp) = http.get(&url_owned).send().await {
+                    if resp.status().is_success() {
+                        if let Ok(bytes) = resp.bytes().await {
+                            let decoded = tokio::task::spawn_blocking(move || {
+                                let img = image::load_from_memory(&bytes).ok()?;
+                                let thumb = img.resize_to_fill(
+                                    48,
+                                    48,
+                                    image::imageops::FilterType::Triangle,
+                                );
+                                let rgba = thumb.to_rgba8();
+                                let (w, h) = rgba.dimensions();
+                                Some(([w as usize, h as usize], rgba.into_raw()))
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            if let Some((size, rgba)) = decoded {
+                                let _ = tx.send(AppEvent::ThumbnailLoaded {
+                                    url: url_owned,
+                                    size,
+                                    rgba,
+                                });
+                                ctx.request_repaint();
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn render_thumbnail(&self, ui: &mut egui::Ui, url: Option<&str>, size: f32) {
+        let p = self.palette;
+        if let Some(u) = url {
+            if let Some(tex) = self.thumb_textures.get(u) {
+                ui.add(
+                    egui::Image::new((tex.id(), Vec2::splat(size)))
+                        .corner_radius(CornerRadius::same(4)),
+                );
+                return;
+            }
+        }
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(4),
+            p.elevated,
+            Stroke::new(1.0_f32, p.border),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    fn open_modrinth_version_picker(
+        &mut self,
+        slug: String,
+        title: String,
+        icon_url: Option<String>,
+        is_pack: bool,
+        ctx: &egui::Context,
+    ) {
+        let target_key = format!("mr:{slug}");
+        self.version_picker_open = true;
+        self.version_picker_title = title;
+        self.version_picker_icon = icon_url;
+        self.version_picker_key = target_key.clone();
+        self.version_picker_is_pack = is_pack;
+        self.version_picker_loading = true;
+        self.version_picker_items.clear();
+        self.version_picker_error = None;
+
+        let (loader_opt, gv_opt) = if is_pack {
+            let l = if self.pack_loader_filter.is_empty() || self.pack_loader_filter == "all" {
+                None
+            } else {
+                Some(self.pack_loader_filter.clone())
+            };
+            (l, None)
+        } else {
+            let inst = self.selected_instance();
+            let l = if self.mod_loader_filter.is_empty() || self.mod_loader_filter == "all" {
+                None
+            } else {
+                Some(self.mod_loader_filter.clone())
+            };
+            (l, inst.map(|i| i.version_id.clone()))
+        };
+
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
+                let versions = mr
+                    .list_versions(&slug, loader_opt.as_deref(), gv_opt.as_deref())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let choices: Vec<ModVersionChoice> = versions
+                    .into_iter()
+                    .take(25)
+                    .filter_map(|v| {
+                        let primary = v
+                            .files
+                            .iter()
+                            .find(|f| f.primary)
+                            .or_else(|| v.files.first())?;
+                        Some(ModVersionChoice {
+                            id: v.id,
+                            title: v.name,
+                            version_number: v.version_number,
+                            game_versions: v.game_versions,
+                            loaders: v.loaders,
+                            file_name: primary.filename.clone(),
+                            download_url: Some(primary.url.clone()),
+                            file_size: primary.size,
+                            sha1: primary.hashes.get("sha1").cloned(),
+                        })
+                    })
+                    .collect();
+                Ok::<Vec<ModVersionChoice>, String>(choices)
+            }
+            .await;
+            let _ = tx.send(AppEvent::ModVersionsLoaded {
+                target_key,
+                versions: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn open_curseforge_version_picker(
+        &mut self,
+        mod_id: u64,
+        title: String,
+        icon_url: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        let target_key = format!("cf:{mod_id}");
+        self.version_picker_open = true;
+        self.version_picker_title = title;
+        self.version_picker_icon = icon_url;
+        self.version_picker_key = target_key.clone();
+        self.version_picker_is_pack = false;
+        self.version_picker_loading = true;
+        self.version_picker_items.clear();
+        self.version_picker_error = None;
+
+        let inst = self.selected_instance();
+        let gv_opt = inst.map(|i| i.version_id.clone());
+        let loader_opt = if self.mod_loader_filter.is_empty() || self.mod_loader_filter == "all" {
+            None
+        } else {
+            Some(self.mod_loader_filter.clone())
+        };
+        let api_key = self.resolved_cf_api_key();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let cf = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
+                let files = cf
+                    .get_mod_files(mod_id, gv_opt.as_deref(), loader_opt.as_deref())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let choices: Vec<ModVersionChoice> = files
+                    .into_iter()
+                    .take(25)
+                    .map(|f| {
+                        let sha1 = f
+                            .hashes
+                            .iter()
+                            .find(|h| h.algo == 1)
+                            .map(|h| h.value.clone());
+                        ModVersionChoice {
+                            id: f.id.to_string(),
+                            title: if f.display_name.is_empty() {
+                                f.file_name.clone()
+                            } else {
+                                f.display_name
+                            },
+                            version_number: format!("File #{}", f.id),
+                            game_versions: f.game_versions,
+                            loaders: Vec::new(),
+                            file_name: f.file_name,
+                            download_url: f.download_url.filter(|u| !u.trim().is_empty()),
+                            file_size: f.file_length,
+                            sha1,
+                        }
+                    })
+                    .collect();
+                Ok::<Vec<ModVersionChoice>, String>(choices)
+            }
+            .await;
+            let _ = tx.send(AppEvent::ModVersionsLoaded {
+                target_key,
+                versions: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_direct_mod_file_install(&mut self, choice: ModVersionChoice, ctx: &egui::Context) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        let Some(url) = choice.download_url else {
+            self.notice_banner = Some((
+                format!(
+                    "'{}' has third-party distribution disabled by its author on CurseForge.",
+                    choice.file_name
+                ),
+                true,
+            ));
+            return;
+        };
+        let task_id = self.begin_task(
+            format!("Mod: {}", choice.file_name),
+            format!("Downloading into {}...", inst.name),
+        );
+        let dest = self
+            .paths
+            .minecraft_dir(&inst.instance_id)
+            .join("mods")
+            .join(&choice.file_name);
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
+                let req = mcw_net::DownloadRequest::new(url, dest)
+                    .with_sha1(choice.sha1)
+                    .with_size(choice.file_size);
+                downloader
+                    .download_file(&req)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok::<String, String>(choice.file_name)
+            }
+            .await;
+            let _ = tx.send(AppEvent::DirectModFileInstalled {
+                task_id,
+                instance_id: inst.instance_id,
+                result: res,
+            });
             ctx.request_repaint();
         });
     }
@@ -1232,14 +1541,15 @@ impl McwApp {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
+        let loader_filter = self.mod_loader_filter.clone();
         self.runtime.spawn(async move {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
                 let client = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
-                let loader = if inst.mod_loader.is_vanilla() {
+                let loader = if loader_filter.is_empty() || loader_filter == "all" {
                     None
                 } else {
-                    Some(inst.mod_loader.name.clone())
+                    Some(loader_filter)
                 };
                 let search = client
                     .search(&CurseForgeSearchParams {
@@ -1247,7 +1557,7 @@ impl McwApp {
                         kind: "mod".to_string(),
                         loader,
                         game_version: Some(inst.version_id.clone()),
-                        page_size: 12,
+                        page_size: 15,
                         ..Default::default()
                     })
                     .await
@@ -1260,6 +1570,7 @@ impl McwApp {
         });
     }
 
+    #[allow(dead_code)]
     fn start_curseforge_mod_install(&mut self, mod_id: u64, slug: String, ctx: &egui::Context) {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
@@ -1327,6 +1638,11 @@ impl McwApp {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
+        let loader_opt = if self.pack_loader_filter.is_empty() || self.pack_loader_filter == "all" {
+            None
+        } else {
+            Some(self.pack_loader_filter.clone())
+        };
         self.runtime.spawn(async move {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
@@ -1335,7 +1651,8 @@ impl McwApp {
                     .search(&CurseForgeSearchParams {
                         query,
                         kind: "modpack".to_string(),
-                        page_size: 12,
+                        loader: loader_opt,
+                        page_size: 15,
                         ..Default::default()
                     })
                     .await
@@ -1408,6 +1725,7 @@ impl McwApp {
         });
     }
 
+    #[allow(dead_code)]
     fn start_modrinth_install(&mut self, slug: String, ctx: &egui::Context) {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
@@ -2004,6 +2322,50 @@ impl McwApp {
                         Err(err) => {
                             self.notice_banner =
                                 Some((format!("Modrinth modpack search failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::ThumbnailLoaded { url, size, rgba } => {
+                    self.loading_thumbs.remove(&url);
+                    let img = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                    let handle = ctx.load_texture(url.clone(), img, egui::TextureOptions::LINEAR);
+                    self.thumb_textures.insert(url, handle);
+                }
+                AppEvent::ModVersionsLoaded {
+                    target_key,
+                    versions,
+                } => {
+                    if self.version_picker_key == target_key {
+                        self.version_picker_loading = false;
+                        match versions {
+                            Ok(list) => {
+                                self.version_picker_items = list;
+                                self.version_picker_error = None;
+                            }
+                            Err(err) => {
+                                self.version_picker_error = Some(err);
+                            }
+                        }
+                    }
+                }
+                AppEvent::DirectModFileInstalled {
+                    task_id,
+                    instance_id,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    match result {
+                        Ok(file_name) => {
+                            self.mods_cache.remove(&instance_id);
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
+                                && self.active_tab == DetailTab::Mods
+                            {
+                                self.load_mods_async(&instance_id, ctx, true);
+                            }
+                            self.notice_banner = Some((format!("Installed '{file_name}'."), false));
+                        }
+                        Err(err) => {
+                            self.notice_banner = Some((format!("Mod install failed: {err}"), true));
                         }
                     }
                 }
@@ -3259,28 +3621,44 @@ impl McwApp {
         let p = self.palette;
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
 
-        // Mod Provider Search Bar (Modrinth | CurseForge)
-        ui.horizontal(|ui| {
-            ui.selectable_value(
-                &mut self.mod_provider_tab,
-                ModProviderTab::Modrinth,
-                "Modrinth",
-            );
-            ui.selectable_value(
-                &mut self.mod_provider_tab,
-                ModProviderTab::CurseForge,
-                "CurseForge",
-            );
+        // Mod Provider Search Bar (Modrinth | CurseForge) + Loader Filter
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .selectable_value(
+                    &mut self.mod_provider_tab,
+                    ModProviderTab::Modrinth,
+                    "Modrinth",
+                )
+                .clicked()
+            {
+                self.mod_loader_filter = "fabric".to_string();
+            }
+            if ui
+                .selectable_value(
+                    &mut self.mod_provider_tab,
+                    ModProviderTab::CurseForge,
+                    "CurseForge",
+                )
+                .clicked()
+            {
+                self.mod_loader_filter = "forge".to_string();
+            }
+            egui::ComboBox::from_id_salt("mod_browser_loader_filter")
+                .selected_text(&self.mod_loader_filter)
+                .width(88.0)
+                .show_ui(ui, |ui| {
+                    for l in ["fabric", "forge", "neoforge", "quilt", "all"] {
+                        ui.selectable_value(&mut self.mod_loader_filter, l.to_string(), l);
+                    }
+                });
             let hint = match self.mod_provider_tab {
                 ModProviderTab::Modrinth => "Search Modrinth mods (e.g. sodium, fabric-api)...",
-                ModProviderTab::CurseForge => {
-                    "Search CurseForge mods (requires CURSEFORGE_API_KEY)..."
-                }
+                ModProviderTab::CurseForge => "Search CurseForge mods (e.g. jei, create)...",
             };
             let te = ui.add(
                 TextEdit::singleline(&mut self.mod_search_query)
                     .hint_text(hint)
-                    .desired_width(270.0),
+                    .desired_width(240.0),
             );
             let search_clicked = ui
                 .add_enabled(!self.mod_searching, Button::new("Search"))
@@ -3300,7 +3678,16 @@ impl McwApp {
         if self.mod_provider_tab == ModProviderTab::CurseForge
             && !self.curseforge_results.is_empty()
         {
+            let urls: Vec<String> = self
+                .curseforge_results
+                .iter()
+                .filter_map(|m| m.icon_url().map(str::to_string))
+                .collect();
+            for u in urls {
+                self.ensure_thumbnail(&u, ctx);
+            }
             ui.add_space(6.0);
+            let mut cf_pick: Option<(u64, String, Option<String>)> = None;
             Frame::new()
                 .fill(p.surface)
                 .stroke(Stroke::new(1.0_f32, p.border))
@@ -3320,63 +3707,102 @@ impl McwApp {
                             }
                         });
                     });
+                    ui.add_space(4.0);
                     ScrollArea::vertical()
                         .id_salt("curseforge_results_scroll")
-                        .max_height(180.0)
+                        .max_height(260.0)
                         .show(ui, |ui| {
-                            let mut cf_install: Option<(u64, String)> = None;
                             for cf_mod in &self.curseforge_results {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&cf_mod.name).strong());
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "#{} · {} downloads",
-                                            cf_mod.id, cf_mod.download_count
-                                        ))
-                                        .monospace()
-                                        .size(11.0)
-                                        .color(p.text_muted),
-                                    );
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        let is_this_installing =
-                                            self.installing_cf_mods.contains(&cf_mod.id);
-                                        let can_install =
-                                            !is_this_installing && !inst.mod_loader.is_vanilla();
-                                        let btn_label = if is_this_installing {
-                                            "Installing..."
-                                        } else {
-                                            "Install"
-                                        };
-                                        let resp =
-                                            ui.add_enabled(can_install, Button::new(btn_label));
-                                        if inst.mod_loader.is_vanilla() {
-                                            resp.on_disabled_hover_text(
-                                                "Vanilla instances cannot install mods",
+                                Frame::new()
+                                    .fill(p.elevated)
+                                    .stroke(Stroke::new(1.0_f32, p.border))
+                                    .corner_radius(CornerRadius::same(3))
+                                    .inner_margin(egui::Margin::same(6))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            self.render_thumbnail(ui, cf_mod.icon_url(), 44.0);
+                                            ui.add_space(6.0);
+                                            ui.vertical(|ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        RichText::new(&cf_mod.name)
+                                                            .strong()
+                                                            .size(13.0),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "{} downloads",
+                                                            cf_mod.download_count
+                                                        ))
+                                                        .monospace()
+                                                        .size(10.5)
+                                                        .color(p.text_muted),
+                                                    );
+                                                });
+                                                if !cf_mod.summary.is_empty() {
+                                                    ui.label(
+                                                        RichText::new(&cf_mod.summary)
+                                                            .size(11.5)
+                                                            .color(p.text_muted),
+                                                    );
+                                                }
+                                            });
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    let can_install = !inst.mod_loader.is_vanilla();
+                                                    let btn = Button::new(
+                                                        RichText::new("Install...")
+                                                            .color(p.accent_text)
+                                                            .strong(),
+                                                    )
+                                                    .fill(p.accent);
+                                                    let resp = ui.add_enabled(can_install, btn);
+                                                    if inst.mod_loader.is_vanilla() {
+                                                        resp.on_disabled_hover_text(
+                                                            "Vanilla instances cannot install mods",
+                                                        );
+                                                    } else if resp.clicked() {
+                                                        cf_pick = Some((
+                                                            cf_mod.id,
+                                                            cf_mod.name.clone(),
+                                                            cf_mod.icon_url().map(str::to_string),
+                                                        ));
+                                                    }
+                                                    if let Some(url) = cf_mod
+                                                        .links
+                                                        .as_ref()
+                                                        .and_then(|l| l.website_url.as_ref())
+                                                    {
+                                                        if ui.button("Web").clicked() {
+                                                            open_external(url);
+                                                        }
+                                                    }
+                                                },
                                             );
-                                        } else if resp.clicked() {
-                                            cf_install = Some((cf_mod.id, cf_mod.slug.clone()));
-                                        }
-                                        if let Some(url) = cf_mod
-                                            .links
-                                            .as_ref()
-                                            .and_then(|l| l.website_url.as_ref())
-                                        {
-                                            if ui.button("Web").clicked() {
-                                                open_external(url);
-                                            }
-                                        }
+                                        });
                                     });
-                                });
-                            }
-                            if let Some((mid, slug)) = cf_install {
-                                self.start_curseforge_mod_install(mid, slug, ctx);
+                                ui.add_space(4.0);
                             }
                         });
                 });
+            if let Some((mid, name, icon)) = cf_pick {
+                self.open_curseforge_version_picker(mid, name, icon, ctx);
+            }
         }
 
         if self.mod_provider_tab == ModProviderTab::Modrinth && !self.modrinth_results.is_empty() {
+            let urls: Vec<String> = self
+                .modrinth_results
+                .iter()
+                .filter_map(|h| h.icon_url.clone())
+                .collect();
+            for u in urls {
+                self.ensure_thumbnail(&u, ctx);
+            }
             ui.add_space(6.0);
+            let mut mr_pick: Option<(String, String, Option<String>)> = None;
             Frame::new()
                 .fill(p.surface)
                 .stroke(Stroke::new(1.0_f32, p.border))
@@ -3396,49 +3822,84 @@ impl McwApp {
                             }
                         });
                     });
+                    ui.add_space(4.0);
                     ScrollArea::vertical()
                         .id_salt("modrinth_results_scroll")
-                        .max_height(180.0)
+                        .max_height(260.0)
                         .show(ui, |ui| {
-                            let mut to_install: Option<String> = None;
                             for hit in &self.modrinth_results {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&hit.title).strong());
-                                    ui.label(
-                                        RichText::new(format!("({})", hit.slug))
-                                            .monospace()
-                                            .size(11.0)
-                                            .color(p.text_muted),
-                                    );
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        let is_this_installing =
-                                            self.installing_modrinth_slugs.contains(&hit.slug);
-                                        let can_install =
-                                            !is_this_installing && !inst.mod_loader.is_vanilla();
-                                        let btn_label = if is_this_installing {
-                                            "Installing..."
-                                        } else {
-                                            "Install"
-                                        };
-                                        let resp = ui.add_enabled(
-                                            can_install,
-                                            Button::new(btn_label),
-                                        );
-                                        if inst.mod_loader.is_vanilla() {
-                                            resp.on_disabled_hover_text(
-                                                "Vanilla instances cannot install Fabric/Quilt mods",
+                                Frame::new()
+                                    .fill(p.elevated)
+                                    .stroke(Stroke::new(1.0_f32, p.border))
+                                    .corner_radius(CornerRadius::same(3))
+                                    .inner_margin(egui::Margin::same(6))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            self.render_thumbnail(
+                                                ui,
+                                                hit.icon_url.as_deref(),
+                                                44.0,
                                             );
-                                        } else if resp.clicked() {
-                                            to_install = Some(hit.slug.clone());
-                                        }
+                                            ui.add_space(6.0);
+                                            ui.vertical(|ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        RichText::new(&hit.title)
+                                                            .strong()
+                                                            .size(13.0),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "by {} · {} downloads",
+                                                            hit.author, hit.downloads
+                                                        ))
+                                                        .monospace()
+                                                        .size(10.5)
+                                                        .color(p.text_muted),
+                                                    );
+                                                });
+                                                if !hit.description.is_empty() {
+                                                    ui.label(
+                                                        RichText::new(&hit.description)
+                                                            .size(11.5)
+                                                            .color(p.text_muted),
+                                                    );
+                                                }
+                                            });
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    let can_install = !inst.mod_loader.is_vanilla();
+                                                    let btn = Button::new(
+                                                        RichText::new("Install...")
+                                                            .color(p.accent_text)
+                                                            .strong(),
+                                                    )
+                                                    .fill(p.accent);
+                                                    let resp = ui.add_enabled(can_install, btn);
+                                                    if inst.mod_loader.is_vanilla() {
+                                                        resp.on_disabled_hover_text(
+                                                            "Vanilla instances cannot install mods",
+                                                        );
+                                                    } else if resp.clicked() {
+                                                        mr_pick = Some((
+                                                            hit.slug.clone(),
+                                                            hit.title.clone(),
+                                                            hit.icon_url.clone(),
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        });
                                     });
-                                });
-                            }
-                            if let Some(slug) = to_install {
-                                self.start_modrinth_install(slug, ctx);
+                                ui.add_space(4.0);
                             }
                         });
                 });
+            if let Some((slug, title, icon)) = mr_pick {
+                self.open_modrinth_version_picker(slug, title, icon, false, ctx);
+            }
         }
 
         ui.add_space(8.0);
@@ -4660,7 +5121,15 @@ impl McwApp {
                                 }
                             });
                             ui.add_space(6.0);
-                            let mut mr_install_req: Option<(String, String)> = None;
+                            let mr_urls: Vec<String> = self
+                                .mr_pack_results
+                                .iter()
+                                .filter_map(|h| h.icon_url.clone())
+                                .collect();
+                            for u in mr_urls {
+                                self.ensure_thumbnail(&u, ctx);
+                            }
+                            let mut mr_pick: Option<(String, String, Option<String>)> = None;
                             ScrollArea::vertical()
                                 .id_salt("create_mr_packs_scroll")
                                 .max_height(260.0)
@@ -4682,16 +5151,36 @@ impl McwApp {
                                                 .show(ui, |ui| {
                                                     ui.set_width(ui.available_width());
                                                     ui.horizontal(|ui| {
-                                                        ui.label(RichText::new(&hit.title).strong());
-                                                        ui.label(
-                                                            RichText::new(format!(
-                                                                "{} downloads",
-                                                                hit.downloads
-                                                            ))
-                                                            .monospace()
-                                                            .size(11.0)
-                                                            .color(p.text_muted),
+                                                        self.render_thumbnail(
+                                                            ui,
+                                                            hit.icon_url.as_deref(),
+                                                            40.0,
                                                         );
+                                                        ui.add_space(6.0);
+                                                        ui.vertical(|ui| {
+                                                            ui.horizontal(|ui| {
+                                                                ui.label(
+                                                                    RichText::new(&hit.title)
+                                                                        .strong(),
+                                                                );
+                                                                ui.label(
+                                                                    RichText::new(format!(
+                                                                        "{} downloads",
+                                                                        hit.downloads
+                                                                    ))
+                                                                    .monospace()
+                                                                    .size(11.0)
+                                                                    .color(p.text_muted),
+                                                                );
+                                                            });
+                                                            if !hit.description.is_empty() {
+                                                                ui.label(
+                                                                    RichText::new(&hit.description)
+                                                                        .size(11.5)
+                                                                        .color(p.text_muted),
+                                                                );
+                                                            }
+                                                        });
                                                         ui.with_layout(
                                                             Layout::right_to_left(Align::Center),
                                                             |ui| {
@@ -4699,7 +5188,7 @@ impl McwApp {
                                                                     RichText::new(if busy_this {
                                                                         "Installing..."
                                                                     } else {
-                                                                        "Install Pack"
+                                                                        "Install..."
                                                                     })
                                                                     .color(p.accent_text)
                                                                     .strong(),
@@ -4709,28 +5198,22 @@ impl McwApp {
                                                                     .add_enabled(!busy_this, btn)
                                                                     .clicked()
                                                                 {
-                                                                    mr_install_req = Some((
+                                                                    mr_pick = Some((
                                                                         hit.slug.clone(),
                                                                         hit.title.clone(),
+                                                                        hit.icon_url.clone(),
                                                                     ));
                                                                 }
                                                             },
                                                         );
                                                     });
-                                                    if !hit.description.is_empty() {
-                                                        ui.label(
-                                                            RichText::new(&hit.description)
-                                                                .size(11.5)
-                                                                .color(p.text_muted),
-                                                        );
-                                                    }
                                                 });
                                             ui.add_space(4.0);
                                         }
                                     }
                                 });
-                            if let Some((slug, title)) = mr_install_req {
-                                self.start_modrinth_pack_install(slug, title, None, ctx);
+                            if let Some((slug, title, icon)) = mr_pick {
+                                self.open_modrinth_version_picker(slug, title, icon, true, ctx);
                             }
                             ui.add_space(8.0);
                             if ui.button("Close").clicked() {
@@ -4819,8 +5302,20 @@ impl McwApp {
                                 let te = ui.add(
                                     TextEdit::singleline(&mut self.pack_browser_query)
                                         .hint_text("Search CurseForge modpacks (e.g. RLcraft, ATM10)...")
-                                        .desired_width(330.0),
+                                        .desired_width(260.0),
                                 );
+                                egui::ComboBox::from_id_salt("cf_pack_loader_filter")
+                                    .selected_text(&self.pack_loader_filter)
+                                    .width(90.0)
+                                    .show_ui(ui, |ui| {
+                                        for l in ["forge", "fabric", "neoforge", "quilt", "all"] {
+                                            ui.selectable_value(
+                                                &mut self.pack_loader_filter,
+                                                l.to_string(),
+                                                l,
+                                            );
+                                        }
+                                    });
                                 let go = ui
                                     .add_enabled(!self.pack_browser_searching, Button::new("Search"))
                                     .clicked();
@@ -4832,6 +5327,14 @@ impl McwApp {
                                 }
                             });
                             ui.add_space(6.0);
+                            let cf_urls: Vec<String> = self
+                                .cf_pack_results
+                                .iter()
+                                .filter_map(|m| m.icon_url().map(str::to_string))
+                                .collect();
+                            for u in cf_urls {
+                                self.ensure_thumbnail(&u, ctx);
+                            }
                             let mut install_cf_pack: Option<(u64, String, String)> = None;
                             ScrollArea::vertical()
                                 .id_salt("create_cf_packs_scroll")
@@ -4839,7 +5342,7 @@ impl McwApp {
                                 .show(ui, |ui| {
                                     if self.cf_pack_results.is_empty() {
                                         ui.label(
-                                            RichText::new("Search CurseForge modpacks to browse and install.")
+                                            RichText::new("Search CurseForge modpacks to browse and install (default loader: Forge).")
                                                 .color(p.text_muted),
                                         );
                                     } else {
@@ -4852,6 +5355,12 @@ impl McwApp {
                                                 .show(ui, |ui| {
                                                     ui.set_width(ui.available_width());
                                                     ui.horizontal(|ui| {
+                                                        self.render_thumbnail(
+                                                            ui,
+                                                            pack.icon_url(),
+                                                            40.0,
+                                                        );
+                                                        ui.add_space(6.0);
                                                         ui.label(RichText::new(&pack.name).strong());
                                                         ui.label(
                                                             RichText::new(format!(
@@ -5265,6 +5774,140 @@ impl McwApp {
                 if let Some(opts) = trigger_export {
                     self.show_export_modal = false;
                     self.start_instance_export(inst.instance_id, opts, ctx);
+                }
+            }
+        }
+
+        // 1c. Mod / Modpack Version Picker Modal
+        if self.version_picker_open {
+            let mut open = self.version_picker_open;
+            let mut chosen: Option<ModVersionChoice> = None;
+            let title = format!("Select Version — {}", self.version_picker_title);
+            egui::Window::new(title)
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(540.0)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        self.render_thumbnail(ui, self.version_picker_icon.as_deref(), 40.0);
+                        ui.add_space(6.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(&self.version_picker_title)
+                                    .strong()
+                                    .size(14.5),
+                            );
+                            ui.label(
+                                RichText::new(if self.version_picker_is_pack {
+                                    "Choose a modpack version to download and install."
+                                } else {
+                                    "Choose a compatible version to install into mods/."
+                                })
+                                .size(11.5)
+                                .color(p.text_muted),
+                            );
+                        });
+                    });
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    if self.version_picker_loading {
+                        ui.label(RichText::new("Loading versions...").color(p.accent));
+                    } else if let Some(ref err) = self.version_picker_error {
+                        ui.label(RichText::new(format!("Error: {err}")).color(p.danger));
+                    } else if self.version_picker_items.is_empty() {
+                        ui.label(
+                            RichText::new(
+                                "No compatible versions found for the selected Minecraft version / loader.",
+                            )
+                            .color(p.text_muted),
+                        );
+                    } else {
+                        ScrollArea::vertical()
+                            .id_salt("version_picker_scroll")
+                            .max_height(320.0)
+                            .show(ui, |ui| {
+                                for item in &self.version_picker_items {
+                                    Frame::new()
+                                        .fill(p.elevated)
+                                        .stroke(Stroke::new(1.0_f32, p.border))
+                                        .corner_radius(CornerRadius::same(3))
+                                        .inner_margin(egui::Margin::symmetric(8, 6))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.horizontal(|ui| {
+                                                ui.vertical(|ui| {
+                                                    ui.label(
+                                                        RichText::new(&item.title).strong(),
+                                                    );
+                                                    let gvs = item
+                                                        .game_versions
+                                                        .iter()
+                                                        .take(4)
+                                                        .cloned()
+                                                        .collect::<Vec<_>>()
+                                                        .join(", ");
+                                                    let loaders = item.loaders.join(", ");
+                                                    let meta = if loaders.is_empty() {
+                                                        format!(
+                                                            "{} · MC {} · {}",
+                                                            item.version_number,
+                                                            gvs,
+                                                            format_bytes(item.file_size)
+                                                        )
+                                                    } else {
+                                                        format!(
+                                                            "{} · {} · MC {} · {}",
+                                                            item.version_number,
+                                                            loaders,
+                                                            gvs,
+                                                            format_bytes(item.file_size)
+                                                        )
+                                                    };
+                                                    ui.label(
+                                                        RichText::new(meta)
+                                                            .monospace()
+                                                            .size(10.5)
+                                                            .color(p.text_muted),
+                                                    );
+                                                });
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        let btn = Button::new(
+                                                            RichText::new("Install")
+                                                                .color(p.accent_text)
+                                                                .strong(),
+                                                        )
+                                                        .fill(p.accent);
+                                                        if ui.add(btn).clicked() {
+                                                            chosen = Some(item.clone());
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                        });
+                                    ui.add_space(4.0);
+                                }
+                            });
+                    }
+                });
+            self.version_picker_open = open;
+            if let Some(choice) = chosen {
+                self.version_picker_open = false;
+                if self.version_picker_is_pack {
+                    let slug = self
+                        .version_picker_key
+                        .strip_prefix("mr:")
+                        .unwrap_or(&self.version_picker_key)
+                        .to_string();
+                    let title = self.version_picker_title.clone();
+                    self.start_modrinth_pack_install(slug, title, Some(choice.id), ctx);
+                } else {
+                    self.start_direct_mod_file_install(choice, ctx);
                 }
             }
         }

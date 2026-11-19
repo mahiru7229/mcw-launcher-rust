@@ -21,9 +21,36 @@ pub struct ActiveTask {
     pub total: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ModVersionChoice {
+    pub id: String,
+    pub title: String,
+    pub version_number: String,
+    pub game_versions: Vec<String>,
+    pub loaders: Vec<String>,
+    pub file_name: String,
+    pub download_url: Option<String>,
+    pub file_size: u64,
+    pub sha1: Option<String>,
+}
+
 pub enum AppEvent {
     VersionsLoaded(Result<Vec<(String, String)>, String>),
     ModrinthModpacksSearchFinished(Result<Vec<ModrinthSearchHit>, String>),
+    ThumbnailLoaded {
+        url: String,
+        size: [usize; 2],
+        rgba: Vec<u8>,
+    },
+    ModVersionsLoaded {
+        target_key: String,
+        versions: Result<Vec<ModVersionChoice>, String>,
+    },
+    DirectModFileInstalled {
+        task_id: u64,
+        instance_id: String,
+        result: Result<String, String>,
+    },
     ModsLoaded {
         instance_id: String,
         mods: Vec<ModInfo>,
@@ -112,6 +139,7 @@ pub enum AppEvent {
     ModrinthSearchFinished(Result<Vec<ModrinthSearchHit>, String>),
     CurseForgeSearchFinished(Result<Vec<CurseForgeMod>, String>),
     CurseForgeModpacksSearchFinished(Result<Vec<CurseForgeMod>, String>),
+    #[allow(dead_code)]
     CurseForgeModInstallFinished {
         task_id: u64,
         mod_id: u64,
@@ -120,6 +148,7 @@ pub enum AppEvent {
     },
     FtbSearchFinished(Result<Vec<FtbPackSummary>, String>),
     AtLauncherSearchFinished(Result<Vec<AtLauncherPack>, String>),
+    #[allow(dead_code)]
     ModrinthInstallFinished {
         task_id: u64,
         slug: String,

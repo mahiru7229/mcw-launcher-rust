@@ -83,6 +83,14 @@ pub struct CurseForgeSearchResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurseForgeLogo {
+    #[serde(rename = "thumbnailUrl", default)]
+    pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurseForgeMod {
     pub id: u64,
     pub name: String,
@@ -93,6 +101,17 @@ pub struct CurseForgeMod {
     pub download_count: u64,
     #[serde(default)]
     pub links: Option<CurseForgeLinks>,
+    #[serde(default)]
+    pub logo: Option<CurseForgeLogo>,
+}
+
+impl CurseForgeMod {
+    pub fn icon_url(&self) -> Option<&str> {
+        self.logo
+            .as_ref()
+            .and_then(|l| l.thumbnail_url.as_deref().or(l.url.as_deref()))
+            .filter(|u| !u.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,12 +125,16 @@ pub struct CurseForgeFile {
     pub id: u64,
     #[serde(rename = "modId")]
     pub mod_id: u64,
+    #[serde(rename = "displayName", default)]
+    pub display_name: String,
     #[serde(rename = "fileName")]
     pub file_name: String,
     #[serde(rename = "fileLength", default)]
     pub file_length: u64,
     #[serde(rename = "downloadUrl", default)]
     pub download_url: Option<String>,
+    #[serde(rename = "gameVersions", default)]
+    pub game_versions: Vec<String>,
     #[serde(default)]
     pub hashes: Vec<CurseForgeHash>,
 }
@@ -652,9 +675,11 @@ mod tests {
         let file = CurseForgeFile {
             id: 55555,
             mod_id: 12345,
+            display_name: String::new(),
             file_name: "opt-out-mod.jar".to_string(),
             file_length: 1024,
             download_url: None,
+            game_versions: vec![],
             hashes: vec![],
         };
         let err = file.require_download_url(Some("cool-mod")).unwrap_err();
