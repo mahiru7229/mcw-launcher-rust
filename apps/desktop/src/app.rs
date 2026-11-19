@@ -130,6 +130,10 @@ pub struct McwApp {
     // Concurrent background install tasks (shown live on global bottom progress bar)
     next_task_id: u64,
     active_tasks: Vec<ActiveTask>,
+    show_all_tasks_modal: bool,
+    last_net_sample_bytes: u64,
+    last_net_sample_at: Instant,
+    current_download_bps: f64,
     installing_cf_packs: HashSet<u64>,
     installing_ext_packs: HashSet<String>,
     installing_archive_count: usize,
@@ -272,6 +276,10 @@ impl McwApp {
             logs_errors_only: false,
             next_task_id: 1,
             active_tasks: Vec::new(),
+            show_all_tasks_modal: false,
+            last_net_sample_bytes: mcw_net::total_downloaded_bytes(),
+            last_net_sample_at: Instant::now(),
+            current_download_bps: 0.0,
             installing_cf_packs: HashSet::new(),
             installing_ext_packs: HashSet::new(),
             installing_archive_count: 0,
@@ -2938,6 +2946,22 @@ impl McwApp {
                                             .color(p.accent),
                                     );
                                     ui.label(&ev.message);
+                                    if self.current_download_bps >= 1.0 {
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "↓ {}",
+                                                        format_speed(self.current_download_bps)
+                                                    ))
+                                                    .monospace()
+                                                    .size(11.5)
+                                                    .color(p.accent),
+                                                );
+                                            },
+                                        );
+                                    }
                                 });
                                 if ev.total > 0 {
                                     let frac = (ev.current as f32 / ev.total as f32).clamp(0.0, 1.0);
@@ -6001,11 +6025,94 @@ impl McwApp {
         }
     }
 
-    fn render_tasks_bar(&self, ctx: &egui::Context) {
-        if self.active_tasks.is_empty() {
+    fn sample_network_speed(&mut self) {
+        let elapsed = self.last_net_sample_at.elapsed().as_secs_f64();
+        if elapsed >= 0.5 {
+            let now_bytes = mcw_net::total_downloaded_bytes();
+            let delta = now_bytes.saturating_sub(self.last_net_sample_bytes);
+            let instant_bps = delta as f64 / elapsed;
+            // Smooth exponential moving average so speed readout doesn't jitter wildly
+            self.current_download_bps = if self.current_download_bps <= 1.0 {
+                instant_bps
+            } else {
+                self.current_download_bps * 0.4 + instant_bps * 0.6
+            };
+            self.last_net_sample_bytes = now_bytes;
+            self.last_net_sample_at = Instant::now();
+        }
+    }
+
+    fn render_single_task_card(
+        ui: &mut egui::Ui,
+        p: ThemePalette,
+        task: &ActiveTask,
+        speed_text: &str,
+    ) {
+        Frame::new()
+            .fill(p.elevated)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .corner_radius(CornerRadius::same(3))
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&task.label).strong().size(12.0).color(p.text));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let right_text = if task.total > 0 {
+                            let pct = ((task.current.min(task.total) as f64 / task.total as f64)
+                                * 100.0)
+                                .round() as u64;
+                            if speed_text.is_empty() {
+                                format!("{}/{} ({pct}%)", task.current, task.total)
+                            } else {
+                                format!("{}/{} ({pct}%) · {speed_text}", task.current, task.total)
+                            }
+                        } else if speed_text.is_empty() {
+                            "Working...".to_string()
+                        } else {
+                            speed_text.to_string()
+                        };
+                        ui.label(
+                            RichText::new(right_text)
+                                .monospace()
+                                .size(11.0)
+                                .color(p.accent),
+                        );
+                    });
+                });
+                if !task.message.is_empty() {
+                    ui.label(RichText::new(&task.message).size(11.0).color(p.text_muted));
+                }
+                ui.add_space(3.0);
+                let fraction = if task.total > 0 {
+                    (task.current as f32 / task.total as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let bar = egui::ProgressBar::new(fraction)
+                    .desired_height(6.0)
+                    .fill(p.accent)
+                    .corner_radius(CornerRadius::same(2))
+                    .animate(task.total == 0);
+                ui.add(bar);
+            });
+    }
+
+    fn render_tasks_bar(&mut self, ctx: &egui::Context) {
+        let total_tasks = self.active_tasks.len();
+        if total_tasks <= 2 {
+            self.show_all_tasks_modal = false;
+        }
+        if total_tasks == 0 {
             return;
         }
         let p = self.palette;
+        let speed_text = if self.current_download_bps >= 1.0 {
+            format!("↓ {}", format_speed(self.current_download_bps))
+        } else {
+            String::new()
+        };
+
         egui::TopBottomPanel::bottom("mcw_tasks_bar")
             .frame(
                 Frame::new()
@@ -6016,65 +6123,99 @@ impl McwApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(format!("ACTIVE INSTALLS ({})", self.active_tasks.len()))
+                        RichText::new(format!("ACTIVE TASKS ({total_tasks})"))
                             .strong()
                             .size(11.0)
                             .color(p.accent),
                     );
+                    if !speed_text.is_empty() {
+                        ui.label(
+                            RichText::new(&speed_text)
+                                .monospace()
+                                .size(11.0)
+                                .color(p.text_muted),
+                        );
+                    }
+                    if total_tasks > 2 {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let hidden = total_tasks - 2;
+                            let btn_label = format!("View All ({total_tasks}, +{hidden} more)");
+                            if ui.button(btn_label).clicked() {
+                                self.show_all_tasks_modal = !self.show_all_tasks_modal;
+                            }
+                        });
+                    }
                 });
-                ui.add_space(4.0);
-                ScrollArea::vertical()
-                    .id_salt("mcw_active_tasks_scroll")
-                    .max_height(120.0)
-                    .show(ui, |ui| {
-                        for task in &self.active_tasks {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(&task.label).strong().size(12.0).color(p.text),
-                                );
-                                ui.label(
-                                    RichText::new(&task.message).size(11.5).color(p.text_muted),
-                                );
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let right_text = if task.total > 0 {
-                                        let pct = ((task.current.min(task.total) as f64
-                                            / task.total as f64)
-                                            * 100.0)
-                                            .round()
-                                            as u64;
-                                        format!("{}/{} ({pct}%)", task.current, task.total)
-                                    } else {
-                                        "Working...".to_string()
-                                    };
-                                    ui.label(
-                                        RichText::new(right_text)
-                                            .monospace()
-                                            .size(11.0)
-                                            .color(p.text_muted),
-                                    );
-                                });
-                            });
-                            let fraction = if task.total > 0 {
-                                (task.current as f32 / task.total as f32).clamp(0.0, 1.0)
-                            } else {
-                                0.0
-                            };
-                            let bar = egui::ProgressBar::new(fraction)
-                                .desired_height(6.0)
-                                .fill(p.accent)
-                                .corner_radius(CornerRadius::same(2))
-                                .animate(task.total == 0);
-                            ui.add(bar);
+                ui.add_space(6.0);
+
+                // Show at most 2 representative tasks in the bottom bar; responsive 2-column when wide
+                let visible = &self.active_tasks[..total_tasks.min(2)];
+                if visible.len() == 2 && ui.available_width() >= 760.0 {
+                    ui.columns(2, |cols| {
+                        Self::render_single_task_card(&mut cols[0], p, &visible[0], &speed_text);
+                        Self::render_single_task_card(&mut cols[1], p, &visible[1], &speed_text);
+                    });
+                } else {
+                    for (idx, task) in visible.iter().enumerate() {
+                        Self::render_single_task_card(ui, p, task, &speed_text);
+                        if idx + 1 < visible.len() {
                             ui.add_space(4.0);
                         }
-                    });
+                    }
+                }
             });
+
+        // Overflow modal when > 2 tasks are running and user clicked "View All"
+        if self.show_all_tasks_modal && total_tasks > 2 {
+            let mut open = self.show_all_tasks_modal;
+            egui::Window::new(format!("All Active Tasks ({total_tasks})"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(540.0)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    if !speed_text.is_empty() {
+                        ui.label(
+                            RichText::new(format!("Network Speed: {speed_text}"))
+                                .monospace()
+                                .size(11.5)
+                                .color(p.accent),
+                        );
+                        ui.add_space(6.0);
+                    }
+                    ScrollArea::vertical()
+                        .id_salt("all_active_tasks_modal_scroll")
+                        .max_height(360.0)
+                        .show(ui, |ui| {
+                            for task in &self.active_tasks {
+                                Self::render_single_task_card(ui, p, task, &speed_text);
+                                ui.add_space(4.0);
+                            }
+                        });
+                });
+            self.show_all_tasks_modal = open;
+        }
     }
 }
 
 impl eframe::App for McwApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_events(ctx);
+
+        // Live download speed sampling whenever any task or launch download is active
+        let any_preparing = self
+            .launch_states
+            .values()
+            .any(|s| matches!(s, LaunchState::Preparing(_)));
+        if !self.active_tasks.is_empty() || any_preparing {
+            self.sample_network_speed();
+            ctx.request_repaint_after(Duration::from_millis(500));
+        } else {
+            self.current_download_bps = 0.0;
+            self.last_net_sample_bytes = mcw_net::total_downloaded_bytes();
+            self.last_net_sample_at = Instant::now();
+        }
 
         // Auto-scan Downloads & mods/ every 2s for all open Manual Downloads windows
         if !self.open_manual_modals.is_empty() && self.manual_auto_scan {
@@ -6096,6 +6237,16 @@ impl eframe::App for McwApp {
         self.render_sidebar(ctx);
         self.render_detail_pane(ctx);
         self.render_modals(ctx);
+    }
+}
+
+fn format_speed(bps: f64) -> String {
+    if bps >= 1024.0 * 1024.0 {
+        format!("{:.2} MB/s", bps / (1024.0 * 1024.0))
+    } else if bps >= 1024.0 {
+        format!("{:.1} KB/s", bps / 1024.0)
+    } else {
+        format!("{:.0} B/s", bps)
     }
 }
 

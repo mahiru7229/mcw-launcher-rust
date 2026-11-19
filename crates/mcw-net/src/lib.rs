@@ -9,6 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+static GLOBAL_DOWNLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Returns cumulative bytes downloaded by all `DownloadClient` instances in this process.
+/// Used by the desktop UI to compute real-time network download speed (B/s, KB/s, MB/s).
+pub fn total_downloaded_bytes() -> u64 {
+    GLOBAL_DOWNLOADED_BYTES.load(Ordering::Relaxed)
+}
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
@@ -300,6 +308,7 @@ impl DownloadClient {
                     source,
                 })?;
             written += chunk.len() as u64;
+            GLOBAL_DOWNLOADED_BYTES.fetch_add(chunk.len() as u64, Ordering::Relaxed);
         }
         file.flush().await.map_err(|source| NetError::Io {
             path: part_path.display().to_string(),
