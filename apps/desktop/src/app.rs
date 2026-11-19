@@ -66,8 +66,10 @@ enum CreateInstanceTab {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LauncherSettingsTab {
+    General,
+    Downloads,
+    Runtime,
     Appearance,
-    Language,
 }
 
 enum LaunchState {
@@ -83,6 +85,7 @@ pub struct McwApp {
     rx: Receiver<AppEvent>,
 
     theme_mode: ThemeMode,
+    prefs: LauncherPrefs,
     lang: LanguageManager,
     palette: ThemePalette,
 
@@ -232,6 +235,7 @@ impl McwApp {
         let theme_mode = prefs.theme_mode();
         let lang = LanguageManager::load(&paths, &prefs.normalized_locale());
         let palette = apply_theme(&cc.egui_ctx, theme_mode);
+        let init_show_snapshots = prefs.show_snapshots;
 
         let runtime = Arc::new(
             tokio::runtime::Builder::new_multi_thread()
@@ -251,6 +255,7 @@ impl McwApp {
             tx,
             rx,
             theme_mode,
+            prefs,
             lang,
             palette,
             instances: Vec::new(),
@@ -310,7 +315,7 @@ impl McwApp {
             create_tab: CreateInstanceTab::Custom,
             create_name: String::new(),
             create_version: "1.21.4".to_string(),
-            create_show_snapshots: false,
+            create_show_snapshots: init_show_snapshots,
             create_loader: "vanilla".to_string(),
             create_error: None,
             modpack_path_input: String::new(),
@@ -335,7 +340,7 @@ impl McwApp {
             last_manual_scan_at: None,
             manual_scan_status: HashMap::new(),
             show_launcher_settings: false,
-            launcher_settings_tab: LauncherSettingsTab::Appearance,
+            launcher_settings_tab: LauncherSettingsTab::General,
             show_rename_modal: false,
             rename_input: String::new(),
             show_delete_modal: false,
@@ -375,15 +380,13 @@ impl McwApp {
         self.lang.tr(key)
     }
 
-    fn save_prefs(&self) {
-        let prefs = LauncherPrefs {
-            theme: match self.theme_mode {
-                ThemeMode::Dark => "dark".to_string(),
-                ThemeMode::Light => "light".to_string(),
-            },
-            language: self.lang.current_locale().to_string(),
+    fn save_prefs(&mut self) {
+        self.prefs.theme = match self.theme_mode {
+            ThemeMode::Dark => "dark".to_string(),
+            ThemeMode::Light => "light".to_string(),
         };
-        prefs.save(&self.paths);
+        self.prefs.language = self.lang.current_locale().to_string();
+        self.prefs.save(&self.paths);
     }
 
     fn reload_instances(&mut self) {
@@ -5072,7 +5075,14 @@ impl McwApp {
                                         &self.create_version,
                                         mod_loader,
                                     ) {
-                                        Ok((created, _)) => {
+                                        Ok((created, mut inst_settings)) => {
+                                            inst_settings.min_memory = self.prefs.default_min_memory;
+                                            inst_settings.max_memory = self.prefs.default_max_memory;
+                                            inst_settings.width = self.prefs.default_width;
+                                            inst_settings.height = self.prefs.default_height;
+                                            inst_settings.fullscreen = self.prefs.default_fullscreen;
+                                            let _ = store
+                                                .save_settings(&created.instance_id, &inst_settings);
                                             self.show_create_modal = false;
                                             self.selected_instance_id = Some(created.instance_id);
                                             self.reload_instances();
@@ -6273,189 +6283,702 @@ impl McwApp {
                 });
         }
 
-        // 6. Launcher Settings Separate Window (opened via top-right gear icon)
+        // 6. Launcher Settings Separate Window (rebuilt from Python LauncherSettingsPage,
+        // keeping only active Rust Edition sections & official lang/en-US.json + vi-VN.json keys)
         if self.show_launcher_settings {
             let mut open = self.show_launcher_settings;
-            egui::Window::new("Launcher Settings")
+            let mut prefs_dirty = false;
+            let mut reset_defaults = false;
+            let mut reload_langs = false;
+            let mut scan_java = false;
+            let mut install_java_major: Option<u32> = None;
+            let win_title = self.t("launcher_settings.page.title").to_string();
+
+            egui::Window::new(win_title)
                 .open(&mut open)
                 .collapsible(false)
-                .resizable(false)
-                .default_width(520.0)
+                .resizable(true)
+                .default_width(680.0)
+                .default_height(460.0)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.set_min_width(480.0);
-                    ui.set_min_height(240.0);
+                    ui.set_min_width(600.0);
+                    ui.set_min_height(380.0);
                     ui.horizontal_top(|ui| {
-                        // Left big tab rail
+                        // Left section navigation rail (matching Python's 4 active sections)
                         Frame::new()
                             .fill(p.surface)
                             .stroke(Stroke::new(1.0_f32, p.border))
                             .corner_radius(CornerRadius::same(3))
                             .inner_margin(egui::Margin::same(8))
                             .show(ui, |ui| {
-                                ui.set_min_width(136.0);
-                                ui.set_min_height(210.0);
+                                ui.set_min_width(156.0);
+                                ui.set_min_height(340.0);
+                                let nav_tabs = [
+                                    (
+                                        LauncherSettingsTab::General,
+                                        self.t("settings.section.general").to_string(),
+                                    ),
+                                    (
+                                        LauncherSettingsTab::Downloads,
+                                        self.t("settings.section.downloads").to_string(),
+                                    ),
+                                    (
+                                        LauncherSettingsTab::Runtime,
+                                        self.t("settings.section.runtime").to_string(),
+                                    ),
+                                    (
+                                        LauncherSettingsTab::Appearance,
+                                        self.t("settings.section.appearance").to_string(),
+                                    ),
+                                ];
                                 ui.vertical(|ui| {
-                                    let is_app = self.launcher_settings_tab
-                                        == LauncherSettingsTab::Appearance;
-                                    let tab_btn = Button::new(
-                                        RichText::new(self.t("Appearance"))
-                                            .strong()
-                                            .size(13.5)
-                                            .color(if is_app { p.accent_text } else { p.text }),
-                                    )
-                                    .fill(if is_app { p.accent } else { p.elevated })
-                                    .min_size(Vec2::new(120.0, 34.0))
-                                    .corner_radius(CornerRadius::same(3));
-                                    if ui.add(tab_btn).clicked() {
-                                        self.launcher_settings_tab =
-                                            LauncherSettingsTab::Appearance;
-                                    }
-
-                                    ui.add_space(6.0);
-
-                                    let is_lang =
-                                        self.launcher_settings_tab == LauncherSettingsTab::Language;
-                                    let lang_btn = Button::new(
-                                        RichText::new(self.t("Language"))
-                                            .strong()
-                                            .size(13.5)
-                                            .color(if is_lang { p.accent_text } else { p.text }),
-                                    )
-                                    .fill(if is_lang { p.accent } else { p.elevated })
-                                    .min_size(Vec2::new(120.0, 34.0))
-                                    .corner_radius(CornerRadius::same(3));
-                                    if ui.add(lang_btn).clicked() {
-                                        self.launcher_settings_tab = LauncherSettingsTab::Language;
+                                    for (tab, label) in nav_tabs {
+                                        let active = self.launcher_settings_tab == tab;
+                                        let btn = Button::new(
+                                            RichText::new(label)
+                                                .strong()
+                                                .size(13.0)
+                                                .color(if active { p.accent_text } else { p.text }),
+                                        )
+                                        .fill(if active { p.accent } else { p.elevated })
+                                        .min_size(Vec2::new(140.0, 34.0))
+                                        .corner_radius(CornerRadius::same(3));
+                                        if ui.add(btn).clicked() {
+                                            self.launcher_settings_tab = tab;
+                                        }
+                                        ui.add_space(6.0);
                                     }
                                 });
                             });
 
                         ui.add_space(10.0);
 
-                        // Right content panel
-                        ui.vertical(|ui| match self.launcher_settings_tab {
-                            LauncherSettingsTab::Appearance => {
-                                ui.label(
-                                    RichText::new(self.t("Appearance"))
-                                        .strong()
-                                        .size(15.0)
-                                        .color(p.text),
-                                );
-                                ui.label(
-                                    RichText::new(
-                                        self.t("Select the launcher color theme (Default: Dark)."),
-                                    )
-                                    .size(12.0)
-                                    .color(p.text_muted),
-                                );
-                                ui.add_space(12.0);
+                        // Right scrollable content panel
+                        ScrollArea::vertical()
+                            .id_salt("launcher_settings_content_scroll")
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                match self.launcher_settings_tab {
+                                    LauncherSettingsTab::General => {
+                                        ui.label(
+                                            RichText::new(self.t("settings.section.general"))
+                                                .strong()
+                                                .size(15.0)
+                                                .color(p.text),
+                                        );
+                                        ui.label(
+                                            RichText::new(
+                                                self.t("settings.section.general_detail"),
+                                            )
+                                            .size(11.5)
+                                            .color(p.text_muted),
+                                        );
+                                        ui.add_space(10.0);
 
-                                ui.horizontal(|ui| {
-                                    let dark_selected = self.theme_mode == ThemeMode::Dark;
-                                    let dark_btn = Button::new(
-                                        RichText::new(self.t("Dark (Default)"))
-                                            .strong()
-                                            .size(13.0)
-                                            .color(if dark_selected {
-                                                p.accent_text
-                                            } else {
-                                                p.text
-                                            }),
-                                    )
-                                    .fill(if dark_selected { p.accent } else { p.elevated })
-                                    .stroke(Stroke::new(
-                                        1.0_f32,
-                                        if dark_selected { p.accent } else { p.border },
-                                    ))
-                                    .min_size(Vec2::new(145.0, 42.0))
-                                    .corner_radius(CornerRadius::same(3));
-                                    if ui.add(dark_btn).clicked() && !dark_selected {
-                                        self.theme_mode = ThemeMode::Dark;
-                                        self.palette = apply_theme(ctx, self.theme_mode);
-                                        self.save_prefs();
+                                        // Card 1: Startup and behavior
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(self.t("Startup and behavior"))
+                                                        .strong(),
+                                                );
+                                                ui.add_space(6.0);
+                                                let snap_lbl = self
+                                                    .t("Show non-release versions by default")
+                                                    .to_string();
+                                                if ui
+                                                    .checkbox(
+                                                        &mut self.prefs.show_snapshots,
+                                                        snap_lbl,
+                                                    )
+                                                    .changed()
+                                                {
+                                                    self.create_show_snapshots =
+                                                        self.prefs.show_snapshots;
+                                                    prefs_dirty = true;
+                                                }
+                                                let dbg_lbl = self
+                                                    .t("Enable debug launch information")
+                                                    .to_string();
+                                                if ui
+                                                    .checkbox(&mut self.prefs.debug_mode, dbg_lbl)
+                                                    .changed()
+                                                {
+                                                    prefs_dirty = true;
+                                                }
+                                            });
+
+                                        ui.add_space(8.0);
+
+                                        // Card 2: Language (official Python LanguageManager)
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("launcher_settings.language.title"),
+                                                    )
+                                                    .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("launcher_settings.language.detail"),
+                                                    )
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(8.0);
+                                                let available: Vec<(String, String)> = self
+                                                    .lang
+                                                    .available_languages()
+                                                    .into_iter()
+                                                    .map(|(loc, name)| {
+                                                        (loc.to_string(), name.to_string())
+                                                    })
+                                                    .collect();
+                                                let current_loc =
+                                                    self.lang.current_locale().to_string();
+                                                let mut picked_locale: Option<String> = None;
+                                                ui.horizontal_wrapped(|ui| {
+                                                    for (loc, name) in &available {
+                                                        let selected = loc == &current_loc;
+                                                        let label = format!("{name} ({loc})");
+                                                        let btn = Button::new(
+                                                            RichText::new(label)
+                                                                .strong()
+                                                                .size(12.5)
+                                                                .color(if selected {
+                                                                    p.accent_text
+                                                                } else {
+                                                                    p.text
+                                                                }),
+                                                        )
+                                                        .fill(if selected {
+                                                            p.accent
+                                                        } else {
+                                                            p.elevated
+                                                        })
+                                                        .stroke(Stroke::new(
+                                                            1.0_f32,
+                                                            if selected {
+                                                                p.accent
+                                                            } else {
+                                                                p.border
+                                                            },
+                                                        ))
+                                                        .corner_radius(CornerRadius::same(3));
+                                                        if ui.add(btn).clicked() && !selected {
+                                                            picked_locale = Some(loc.clone());
+                                                        }
+                                                    }
+                                                });
+                                                if let Some(loc) = picked_locale {
+                                                    self.lang.set_language(&loc);
+                                                    prefs_dirty = true;
+                                                }
+                                                ui.add_space(6.0);
+                                                let reload_lbl = self
+                                                    .t("launcher_settings.language.reload")
+                                                    .to_string();
+                                                if ui.button(reload_lbl).clicked() {
+                                                    reload_langs = true;
+                                                }
+                                            });
+
+                                        ui.add_space(8.0);
+
+                                        // Card 3: Reset to defaults
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(self.t(
+                                                        "launcher_settings.reset_defaults.title",
+                                                    ))
+                                                    .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(self.t(
+                                                        "launcher_settings.reset_defaults.detail",
+                                                    ))
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(6.0);
+                                                let reset_lbl =
+                                                    self.t("launcher_settings.reset").to_string();
+                                                let btn = Button::new(
+                                                    RichText::new(reset_lbl).color(p.danger),
+                                                )
+                                                .stroke(Stroke::new(1.0_f32, p.danger));
+                                                if ui.add(btn).clicked() {
+                                                    reset_defaults = true;
+                                                }
+                                            });
                                     }
+                                    LauncherSettingsTab::Downloads => {
+                                        ui.label(
+                                            RichText::new(self.t("settings.section.downloads"))
+                                                .strong()
+                                                .size(15.0)
+                                                .color(p.text),
+                                        );
+                                        ui.label(
+                                            RichText::new(
+                                                self.t("settings.section.downloads_detail"),
+                                            )
+                                            .size(11.5)
+                                            .color(p.text_muted),
+                                        );
+                                        ui.add_space(10.0);
 
-                                    ui.add_space(8.0);
+                                        // Card 1: Download concurrency
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(self.t("Download bandwidth"))
+                                                        .strong(),
+                                                );
+                                                ui.add_space(6.0);
+                                                let conc_label =
+                                                    self.t("network.concurrency.label").to_string();
+                                                let auto_label =
+                                                    self.t("network.concurrency.auto").to_string();
+                                                let cur_text =
+                                                    if self.prefs.download_concurrency == 0 {
+                                                        auto_label.clone()
+                                                    } else {
+                                                        format!(
+                                                            "{} concurrent",
+                                                            self.prefs.download_concurrency
+                                                        )
+                                                    };
+                                                egui::ComboBox::from_label(conc_label)
+                                                    .selected_text(cur_text)
+                                                    .show_ui(ui, |ui| {
+                                                        if ui
+                                                            .selectable_value(
+                                                                &mut self
+                                                                    .prefs
+                                                                    .download_concurrency,
+                                                                0,
+                                                                auto_label,
+                                                            )
+                                                            .changed()
+                                                        {
+                                                            prefs_dirty = true;
+                                                        }
+                                                        for v in [2u32, 4, 6, 8, 12, 16] {
+                                                            if ui
+                                                                .selectable_value(
+                                                                    &mut self
+                                                                        .prefs
+                                                                        .download_concurrency,
+                                                                    v,
+                                                                    format!("{v} concurrent"),
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                prefs_dirty = true;
+                                                            }
+                                                        }
+                                                    });
+                                            });
 
-                                    let light_selected = self.theme_mode == ThemeMode::Light;
-                                    let light_btn = Button::new(
-                                        RichText::new(self.t("Light")).strong().size(13.0).color(
-                                            if light_selected {
-                                                p.accent_text
-                                            } else {
-                                                p.text
-                                            },
-                                        ),
-                                    )
-                                    .fill(if light_selected { p.accent } else { p.elevated })
-                                    .stroke(Stroke::new(
-                                        1.0_f32,
-                                        if light_selected { p.accent } else { p.border },
-                                    ))
-                                    .min_size(Vec2::new(145.0, 42.0))
-                                    .corner_radius(CornerRadius::same(3));
-                                    if ui.add(light_btn).clicked() && !light_selected {
-                                        self.theme_mode = ThemeMode::Light;
-                                        self.palette = apply_theme(ctx, self.theme_mode);
-                                        self.save_prefs();
+                                        ui.add_space(8.0);
+
+                                        // Card 2: Content browser
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(self.t("content.settings.title"))
+                                                        .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("content.settings.detail"),
+                                                    )
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(6.0);
+                                                let desc_lbl = self
+                                                    .t("content.settings.show_descriptions")
+                                                    .to_string();
+                                                if ui
+                                                    .checkbox(
+                                                        &mut self.prefs.show_content_descriptions,
+                                                        desc_lbl,
+                                                    )
+                                                    .changed()
+                                                {
+                                                    prefs_dirty = true;
+                                                }
+                                                let beta_lbl = self
+                                                    .t("Include Beta mod and modpack versions")
+                                                    .to_string();
+                                                if ui
+                                                    .checkbox(
+                                                        &mut self.prefs.modrinth_include_beta,
+                                                        beta_lbl,
+                                                    )
+                                                    .changed()
+                                                {
+                                                    prefs_dirty = true;
+                                                }
+                                                let alpha_lbl = self
+                                                    .t("Include Alpha mod and modpack versions")
+                                                    .to_string();
+                                                if ui
+                                                    .checkbox(
+                                                        &mut self.prefs.modrinth_include_alpha,
+                                                        alpha_lbl,
+                                                    )
+                                                    .changed()
+                                                {
+                                                    prefs_dirty = true;
+                                                }
+                                            });
                                     }
-                                });
-                            }
-                            LauncherSettingsTab::Language => {
-                                ui.label(
-                                    RichText::new(self.t("Language"))
-                                        .strong()
-                                        .size(15.0)
-                                        .color(p.text),
-                                );
-                                ui.label(
-                                    RichText::new(
-                                        self.t("Select the interface language for MCW Launcher."),
-                                    )
-                                    .size(12.0)
-                                    .color(p.text_muted),
-                                );
-                                ui.add_space(12.0);
+                                    LauncherSettingsTab::Runtime => {
+                                        ui.label(
+                                            RichText::new(self.t("settings.section.runtime"))
+                                                .strong()
+                                                .size(15.0)
+                                                .color(p.text),
+                                        );
+                                        ui.label(
+                                            RichText::new(
+                                                self.t("settings.section.runtime_detail"),
+                                            )
+                                            .size(11.5)
+                                            .color(p.text_muted),
+                                        );
+                                        ui.add_space(10.0);
 
-                                let available: Vec<(String, String)> = self
-                                    .lang
-                                    .available_languages()
-                                    .into_iter()
-                                    .map(|(loc, name)| (loc.to_string(), name.to_string()))
-                                    .collect();
-                                let current_loc = self.lang.current_locale().to_string();
-                                let mut picked_locale: Option<String> = None;
-                                ui.horizontal_wrapped(|ui| {
-                                    for (loc, name) in &available {
-                                        let selected = loc == &current_loc;
-                                        let label = format!("{name} ({loc})");
-                                        let btn = Button::new(
-                                            RichText::new(label).strong().size(13.0).color(
-                                                if selected { p.accent_text } else { p.text },
-                                            ),
-                                        )
-                                        .fill(if selected { p.accent } else { p.elevated })
-                                        .stroke(Stroke::new(
-                                            1.0_f32,
-                                            if selected { p.accent } else { p.border },
-                                        ))
-                                        .min_size(Vec2::new(165.0, 42.0))
-                                        .corner_radius(CornerRadius::same(3));
-                                        if ui.add(btn).clicked() && !selected {
-                                            picked_locale = Some(loc.clone());
-                                        }
+                                        // Card 1: Java runtimes
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("launcher_settings.java.title"),
+                                                    )
+                                                    .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t(
+                                                            "launcher_settings.java.description",
+                                                        ),
+                                                    )
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(6.0);
+                                                if self.java_installations.is_empty() {
+                                                    ui.label(
+                                                        RichText::new(
+                                                            "No Java runtimes detected yet.",
+                                                        )
+                                                        .color(p.warning),
+                                                    );
+                                                } else {
+                                                    for j in &self.java_installations {
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "• Java {} ({}) — {}",
+                                                                j.major,
+                                                                j.version_string,
+                                                                j.path.display()
+                                                            ))
+                                                            .monospace()
+                                                            .size(11.0)
+                                                            .color(p.text_muted),
+                                                        );
+                                                    }
+                                                }
+                                                ui.add_space(6.0);
+                                                ui.horizontal_wrapped(|ui| {
+                                                    let scan_lbl = self
+                                                        .t("Scan Java installations")
+                                                        .to_string();
+                                                    if ui.button(scan_lbl).clicked() {
+                                                        scan_java = true;
+                                                    }
+                                                    for major in [8u32, 17, 21] {
+                                                        let busy = self
+                                                            .installing_java_majors
+                                                            .contains(&major);
+                                                        let lbl = if busy {
+                                                            format!("Installing Java {major}...")
+                                                        } else {
+                                                            format!("Install Temurin Java {major}")
+                                                        };
+                                                        if ui
+                                                            .add_enabled(!busy, Button::new(lbl))
+                                                            .clicked()
+                                                        {
+                                                            install_java_major = Some(major);
+                                                        }
+                                                    }
+                                                });
+                                            });
+
+                                        ui.add_space(8.0);
+
+                                        // Card 2: Default settings for new instances
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("instance_defaults.launcher.title"),
+                                                    )
+                                                    .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(self.t(
+                                                        "instance_defaults.launcher.description",
+                                                    ))
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(6.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Min RAM (MB):");
+                                                    if ui
+                                                        .add(
+                                                            egui::DragValue::new(
+                                                                &mut self.prefs.default_min_memory,
+                                                            )
+                                                            .range(256..=32768),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        prefs_dirty = true;
+                                                    }
+                                                    ui.label("Max RAM (MB):");
+                                                    if ui
+                                                        .add(
+                                                            egui::DragValue::new(
+                                                                &mut self.prefs.default_max_memory,
+                                                            )
+                                                            .range(512..=65536),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        prefs_dirty = true;
+                                                    }
+                                                });
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Width:");
+                                                    if ui
+                                                        .add(
+                                                            egui::DragValue::new(
+                                                                &mut self.prefs.default_width,
+                                                            )
+                                                            .range(320..=7680),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        prefs_dirty = true;
+                                                    }
+                                                    ui.label("Height:");
+                                                    if ui
+                                                        .add(
+                                                            egui::DragValue::new(
+                                                                &mut self.prefs.default_height,
+                                                            )
+                                                            .range(240..=4320),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        prefs_dirty = true;
+                                                    }
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self.prefs.default_fullscreen,
+                                                            "Fullscreen",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        prefs_dirty = true;
+                                                    }
+                                                });
+                                            });
                                     }
-                                });
-                                if let Some(loc) = picked_locale {
-                                    self.lang.set_language(&loc);
-                                    self.save_prefs();
+                                    LauncherSettingsTab::Appearance => {
+                                        ui.label(
+                                            RichText::new(self.t("settings.section.appearance"))
+                                                .strong()
+                                                .size(15.0)
+                                                .color(p.text),
+                                        );
+                                        ui.label(
+                                            RichText::new(
+                                                self.t("settings.section.appearance_detail"),
+                                            )
+                                            .size(11.5)
+                                            .color(p.text_muted),
+                                        );
+                                        ui.add_space(10.0);
+
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(self.t("Launcher theme"))
+                                                        .strong(),
+                                                );
+                                                ui.add_space(8.0);
+                                                ui.horizontal(|ui| {
+                                                    let dark_selected =
+                                                        self.theme_mode == ThemeMode::Dark;
+                                                    let dark_btn = Button::new(
+                                                        RichText::new("Dark (Default)")
+                                                            .strong()
+                                                            .size(13.0)
+                                                            .color(if dark_selected {
+                                                                p.accent_text
+                                                            } else {
+                                                                p.text
+                                                            }),
+                                                    )
+                                                    .fill(if dark_selected {
+                                                        p.accent
+                                                    } else {
+                                                        p.elevated
+                                                    })
+                                                    .stroke(Stroke::new(
+                                                        1.0_f32,
+                                                        if dark_selected {
+                                                            p.accent
+                                                        } else {
+                                                            p.border
+                                                        },
+                                                    ))
+                                                    .min_size(Vec2::new(145.0, 40.0))
+                                                    .corner_radius(CornerRadius::same(3));
+                                                    if ui.add(dark_btn).clicked() && !dark_selected
+                                                    {
+                                                        self.theme_mode = ThemeMode::Dark;
+                                                        self.palette =
+                                                            apply_theme(ctx, self.theme_mode);
+                                                        prefs_dirty = true;
+                                                    }
+
+                                                    ui.add_space(8.0);
+
+                                                    let light_selected =
+                                                        self.theme_mode == ThemeMode::Light;
+                                                    let light_btn = Button::new(
+                                                        RichText::new("Light")
+                                                            .strong()
+                                                            .size(13.0)
+                                                            .color(if light_selected {
+                                                                p.accent_text
+                                                            } else {
+                                                                p.text
+                                                            }),
+                                                    )
+                                                    .fill(if light_selected {
+                                                        p.accent
+                                                    } else {
+                                                        p.elevated
+                                                    })
+                                                    .stroke(Stroke::new(
+                                                        1.0_f32,
+                                                        if light_selected {
+                                                            p.accent
+                                                        } else {
+                                                            p.border
+                                                        },
+                                                    ))
+                                                    .min_size(Vec2::new(145.0, 40.0))
+                                                    .corner_radius(CornerRadius::same(3));
+                                                    if ui.add(light_btn).clicked()
+                                                        && !light_selected
+                                                    {
+                                                        self.theme_mode = ThemeMode::Light;
+                                                        self.palette =
+                                                            apply_theme(ctx, self.theme_mode);
+                                                        prefs_dirty = true;
+                                                    }
+                                                });
+                                            });
+                                    }
                                 }
-                            }
-                        });
+                            });
                     });
                 });
+
             self.show_launcher_settings = open;
+            if reload_langs {
+                self.lang.reload(&self.paths);
+                self.notice_banner = Some(("Reloaded language packs.".to_string(), false));
+            }
+            if scan_java {
+                self.reload_java();
+                self.notice_banner = Some((
+                    format!(
+                        "Detected {} Java runtime(s).",
+                        self.java_installations.len()
+                    ),
+                    false,
+                ));
+            }
+            if let Some(major) = install_java_major {
+                self.start_java_install(major, ctx);
+            }
+            if reset_defaults {
+                self.prefs = LauncherPrefs::default();
+                self.theme_mode = self.prefs.theme_mode();
+                self.palette = apply_theme(ctx, self.theme_mode);
+                self.lang.set_language(&self.prefs.normalized_locale());
+                self.create_show_snapshots = self.prefs.show_snapshots;
+                self.save_prefs();
+                self.notice_banner =
+                    Some(("Launcher settings restored to defaults.".to_string(), false));
+            } else if prefs_dirty {
+                self.save_prefs();
+            }
         }
 
         // 7. Dedicated Per-Instance Manual Downloads Windows (CurseForge opt-out mods)

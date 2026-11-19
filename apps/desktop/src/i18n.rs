@@ -154,6 +154,12 @@ impl LanguageManager {
         &self.current_locale
     }
 
+    /// Re-scans embedded + external `lang/*.json` files while keeping the active locale if available.
+    pub fn reload(&mut self, paths: &LauncherPaths) {
+        let current = self.current_locale.clone();
+        *self = Self::load(paths, &current);
+    }
+
     pub fn available_languages(&self) -> Vec<(&str, &str)> {
         let mut list: Vec<(&str, &str)> = self
             .languages
@@ -195,13 +201,36 @@ impl LanguageManager {
     }
 }
 
-/// Persisted global launcher preferences (`config/launcher_settings.json`).
+/// Persisted global launcher preferences (`config/launcher_settings.json`),
+/// mirroring MCW Launcher Python's `LauncherSettingsManager` schema (only active Rust Edition options).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LauncherPrefs {
     #[serde(default = "default_theme")]
     pub theme: String,
     #[serde(default = "default_lang")]
     pub language: String,
+    #[serde(default)]
+    pub show_snapshots: bool,
+    #[serde(default)]
+    pub debug_mode: bool,
+    #[serde(default)]
+    pub download_concurrency: u32,
+    #[serde(default = "default_true")]
+    pub show_content_descriptions: bool,
+    #[serde(default)]
+    pub modrinth_include_beta: bool,
+    #[serde(default)]
+    pub modrinth_include_alpha: bool,
+    #[serde(default = "default_min_mem")]
+    pub default_min_memory: u32,
+    #[serde(default = "default_max_mem")]
+    pub default_max_memory: u32,
+    #[serde(default = "default_width")]
+    pub default_width: u32,
+    #[serde(default = "default_height")]
+    pub default_height: u32,
+    #[serde(default)]
+    pub default_fullscreen: bool,
 }
 
 fn default_theme() -> String {
@@ -212,11 +241,42 @@ fn default_lang() -> String {
     DEFAULT_LOCALE.to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_min_mem() -> u32 {
+    1024
+}
+
+fn default_max_mem() -> u32 {
+    2048
+}
+
+fn default_width() -> u32 {
+    1280
+}
+
+fn default_height() -> u32 {
+    720
+}
+
 impl Default for LauncherPrefs {
     fn default() -> Self {
         Self {
             theme: default_theme(),
             language: default_lang(),
+            show_snapshots: false,
+            debug_mode: false,
+            download_concurrency: 0,
+            show_content_descriptions: true,
+            modrinth_include_beta: false,
+            modrinth_include_alpha: false,
+            default_min_memory: default_min_mem(),
+            default_max_memory: default_max_mem(),
+            default_width: default_width(),
+            default_height: default_height(),
+            default_fullscreen: false,
         }
     }
 }
