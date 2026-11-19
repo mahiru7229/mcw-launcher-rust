@@ -2,6 +2,7 @@ use futures::stream::{self, StreamExt};
 use reqwest::header::{RANGE, USER_AGENT};
 use reqwest::StatusCode;
 use sha1::{Digest, Sha1};
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -313,7 +314,13 @@ impl DownloadClient {
     where
         F: Fn(u64, u64) + Send + Sync + 'static,
     {
-        let total = requests.len() as u64;
+        let mut seen_dests = HashSet::with_capacity(requests.len());
+        let unique_requests: Vec<DownloadRequest> = requests
+            .into_iter()
+            .filter(|req| seen_dests.insert(req.destination.clone()))
+            .collect();
+
+        let total = unique_requests.len() as u64;
         if total == 0 {
             return Ok(Vec::new());
         }
@@ -323,7 +330,7 @@ impl DownloadClient {
         let client = self.clone();
         let limit = concurrency.max(1);
 
-        let results: Vec<Result<DownloadOutcome>> = stream::iter(requests)
+        let results: Vec<Result<DownloadOutcome>> = stream::iter(unique_requests)
             .map(move |req| {
                 let client = client.clone();
                 let completed = Arc::clone(&completed);
@@ -401,9 +408,13 @@ pub fn verify_file(path: &Path, expected_sha1: Option<&str>, expected_size: u64)
     Ok(())
 }
 
+static PART_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 fn part_path_for(dest: &Path) -> PathBuf {
+    let seq = PART_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
     let mut s = dest.as_os_str().to_os_string();
-    s.push(".part");
+    s.push(format!(".{pid}-{seq}.part"));
     PathBuf::from(s)
 }
 

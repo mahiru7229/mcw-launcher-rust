@@ -84,6 +84,7 @@ impl<'a> LibraryManager<'a> {
         let current_os = LibraryRules::current_os();
         let arch_bits = LibraryRules::current_arch_bits();
         let mut planned = Vec::new();
+        let mut seen_dests = std::collections::HashSet::new();
 
         for lib in &version.libraries {
             if !LibraryRules::is_allowed(&lib.rules) || lib.clientreq == Some(false) {
@@ -95,7 +96,9 @@ impl<'a> LibraryManager<'a> {
 
             if let Some(ref artifact) = downloads.artifact {
                 if let Some(item) = Self::plan_artifact(&libs_dir, artifact, false)? {
-                    planned.push(item);
+                    if seen_dests.insert((item.request.destination.clone(), false)) {
+                        planned.push(item);
+                    }
                 }
             }
 
@@ -104,7 +107,9 @@ impl<'a> LibraryManager<'a> {
                     let classifier = template.replace("${arch}", arch_bits);
                     if let Some(native_art) = downloads.classifiers.get(&classifier) {
                         if let Some(item) = Self::plan_artifact(&libs_dir, native_art, true)? {
-                            planned.push(item);
+                            if seen_dests.insert((item.request.destination.clone(), true)) {
+                                planned.push(item);
+                            }
                         }
                     }
                 }
