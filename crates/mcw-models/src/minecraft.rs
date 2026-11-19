@@ -83,6 +83,8 @@ pub struct DownloadArtifact {
 pub struct LibraryEntry {
     pub name: String,
     #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
     pub downloads: Option<LibraryDownloads>,
     #[serde(default)]
     pub rules: Vec<Rule>,

@@ -229,6 +229,7 @@ fn maven_library_to_entry(
 
     Some(LibraryEntry {
         name: lib.name.clone(),
+        url: lib.url.clone(),
         downloads: Some(LibraryDownloads {
             artifact: Some(DownloadArtifact {
                 path: Some(rel_path),

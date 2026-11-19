@@ -128,6 +128,7 @@ mod tests {
             libraries: vec![
                 LibraryEntry {
                     name: "org.ow2.asm:asm:9.6".to_string(),
+                    url: None,
                     downloads: Some(LibraryDownloads {
                         artifact: Some(DownloadArtifact {
                             path: Some("org/ow2/asm/asm/9.6/asm-9.6.jar".to_string()),
@@ -143,6 +144,7 @@ mod tests {
                 },
                 LibraryEntry {
                     name: "org.ow2.asm:asm:9.7.1".to_string(),
+                    url: None,
                     downloads: Some(LibraryDownloads {
                         artifact: Some(DownloadArtifact {
                             path: Some("org/ow2/asm/asm/9.7.1/asm-9.7.1.jar".to_string()),

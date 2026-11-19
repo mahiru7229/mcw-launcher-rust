@@ -1,6 +1,7 @@
 use crate::arguments::{ArgumentBuilder, ArgumentContext};
 use crate::assets::AssetManager;
 use crate::classpath::ClasspathBuilder;
+use crate::forge::{ForgeFamily, ForgeLoaderService};
 use crate::libraries::LibraryManager;
 use crate::manifest::VersionManifestService;
 use crate::modloader::{LoaderKind, ModLoaderService};
@@ -62,28 +63,8 @@ impl<'a> VanillaLaunchPipeline<'a> {
         let base_metadata = manifest_svc.load_version_metadata(&entry).await?;
         let base_version_id = base_metadata.id.clone();
 
-        // 1b. Merge Mod Loader profile if Fabric or Quilt
-        let metadata = if let Some(kind) = LoaderKind::parse(&instance.mod_loader.name) {
-            progress.on_progress(ProgressEvent {
-                stage: ProgressStage::InstallingModLoader,
-                message: format!(
-                    "Resolving {} loader for {}...",
-                    kind.as_str(),
-                    base_version_id
-                ),
-                current: 0,
-                total: 1,
-            });
-            let loader_svc = ModLoaderService::new(self.paths, self.client);
-            loader_svc
-                .install_and_merge(kind, &base_metadata, &instance.mod_loader.version)
-                .await?
-        } else {
-            base_metadata
-        };
-
-        // 2. Download client JAR (always keyed by base Vanilla version id)
-        let client_artifact = metadata
+        // 2. Download base client JAR early (needed by modern Forge/NeoForge installers too)
+        let client_artifact = base_metadata
             .downloads
             .as_ref()
             .and_then(|d| d.client.as_ref())
@@ -96,7 +77,7 @@ impl<'a> VanillaLaunchPipeline<'a> {
         let client_jar = self.paths.client_jar(&base_version_id);
         progress.on_progress(ProgressEvent {
             stage: ProgressStage::DownloadingClient,
-            message: format!("Downloading client JAR ({})...", metadata.id),
+            message: format!("Downloading client JAR ({})...", base_version_id),
             current: 0,
             total: 1,
         });
@@ -105,21 +86,9 @@ impl<'a> VanillaLaunchPipeline<'a> {
             .with_size(client_artifact.size);
         self.client.download_file(&client_req).await?;
 
-        // 3. Download libraries & extract natives
-        let lib_mgr = LibraryManager::new(self.paths, self.client);
-        lib_mgr
-            .ensure_libraries(&metadata, Arc::clone(&progress))
-            .await?;
-
-        // 4. Download assets
-        let asset_mgr = AssetManager::new(self.paths, self.client);
-        let asset_index_id = asset_mgr
-            .ensure_assets(&metadata, Arc::clone(&progress))
-            .await?;
-
-        // 5. Resolve Java runtime (scan mods bytecode for Fabric/Quilt per Lesson #2,
-        //    allow higher Java for Vanilla/Fabric/Quilt, and auto-provision Temurin if missing)
-        let metadata_java_major = metadata.java_version.as_ref().map(|j| j.major_version);
+        // 3. Resolve Java runtime BEFORE Forge/NeoForge installer (so modern installers can run
+        //    with the right Java, and legacy 1.12.2 Forge gets Java 8 automatically!)
+        let metadata_java_major = base_metadata.java_version.as_ref().map(|j| j.major_version);
         let mut required_java =
             JavaMajorPolicy::required_for_minecraft(&base_version_id, metadata_java_major)?;
         let loader_name = instance.mod_loader.name.to_ascii_lowercase();
@@ -157,6 +126,59 @@ impl<'a> VanillaLaunchPipeline<'a> {
             }
             Err(err) => return Err(err.into()),
         };
+
+        // 4. Merge Mod Loader profile (Fabric, Quilt, Forge, or NeoForge)
+        let metadata = if let Some(kind) = LoaderKind::parse(&instance.mod_loader.name) {
+            progress.on_progress(ProgressEvent {
+                stage: ProgressStage::InstallingModLoader,
+                message: format!(
+                    "Resolving {} loader for {}...",
+                    kind.as_str(),
+                    base_version_id
+                ),
+                current: 0,
+                total: 1,
+            });
+            let loader_svc = ModLoaderService::new(self.paths, self.client);
+            loader_svc
+                .install_and_merge(kind, &base_metadata, &instance.mod_loader.version)
+                .await?
+        } else if let Some(family) = ForgeFamily::parse(&instance.mod_loader.name) {
+            progress.on_progress(ProgressEvent {
+                stage: ProgressStage::InstallingModLoader,
+                message: format!(
+                    "Installing {} {} for {}...",
+                    family.as_str(),
+                    instance.mod_loader.version,
+                    base_version_id
+                ),
+                current: 0,
+                total: 1,
+            });
+            let forge_svc = ForgeLoaderService::new(self.paths, self.client);
+            forge_svc
+                .install_and_merge(
+                    family,
+                    &base_metadata,
+                    &instance.mod_loader.version,
+                    Some(&java.path),
+                )
+                .await?
+        } else {
+            base_metadata
+        };
+
+        // 5. Download libraries & extract natives
+        let lib_mgr = LibraryManager::new(self.paths, self.client);
+        lib_mgr
+            .ensure_libraries(&metadata, Arc::clone(&progress))
+            .await?;
+
+        // 6. Download assets
+        let asset_mgr = AssetManager::new(self.paths, self.client);
+        let asset_index_id = asset_mgr
+            .ensure_assets(&metadata, Arc::clone(&progress))
+            .await?;
 
         // 6. Build classpath & launch arguments
         let libraries_dir = self.paths.libraries_dir();
