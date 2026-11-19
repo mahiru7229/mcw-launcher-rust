@@ -1,6 +1,6 @@
 # MCW Launcher: Rust Edition
 
-[![Status](https://img.shields.io/badge/status-v0.6.0-10B981?style=flat-square)](#)
+[![Status](https://img.shields.io/badge/status-v0.6.0--beta.1-10B981?style=flat-square)](#)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -11,7 +11,7 @@
 
 ## Performance & Footprint (vs. MCW Launcher Python)
 
-| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v0.6.0`) |
+| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v0.6.0-beta.1`) |
 | --- | --- | --- |
 | **Idle / Active RAM** | ~150 MB | **~60–70 MB** (~55–60% lower memory footprint) |
 | **Runtime Performance** | Baseline | **~2× faster** UI responsiveness, mod scanning, and concurrent downloads |
