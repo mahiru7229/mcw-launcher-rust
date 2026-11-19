@@ -1,6 +1,8 @@
+pub mod content;
 pub mod manager;
 pub mod scanner;
 
+pub use content::{ContentKind, ContentPackInfo, ContentPackManager};
 pub use manager::ModManager;
 pub use scanner::{is_loader_compatible, ModInfo, ModLoaderTag, ModScanner};
 

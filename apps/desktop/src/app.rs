@@ -12,7 +12,9 @@ use mcw_minecraft::{
 use mcw_models::account::AccountSource;
 use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
 use mcw_models::progress::ProgressEvent;
-use mcw_mods::{is_loader_compatible, ModInfo, ModManager};
+use mcw_mods::{
+    is_loader_compatible, ContentKind, ContentPackInfo, ContentPackManager, ModInfo, ModManager,
+};
 use mcw_net::DownloadClient;
 use mcw_providers::{
     load_curseforge_api_key, ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient,
@@ -37,6 +39,7 @@ const MAX_LOG_LINES_PER_INSTANCE: usize = 1500;
 enum DetailTab {
     Overview,
     Mods,
+    Packs,
     Worlds,
     Screenshots,
     Backups,
@@ -87,18 +90,29 @@ pub struct McwApp {
     selected_backups: Vec<BackupInfo>,
     selected_worlds: Vec<WorldInfo>,
     selected_screenshots: Vec<ScreenshotInfo>,
+    selected_content_packs: Vec<ContentPackInfo>,
     settings_cache: HashMap<String, InstanceSettings>,
     mods_cache: HashMap<String, Vec<ModInfo>>,
     backups_cache: HashMap<String, Vec<BackupInfo>>,
     worlds_cache: HashMap<String, Vec<WorldInfo>>,
     screenshots_cache: HashMap<String, Vec<ScreenshotInfo>>,
+    content_packs_cache: HashMap<(String, ContentKind), Vec<ContentPackInfo>>,
     loading_mods: HashSet<String>,
     loading_backups: HashSet<String>,
     loading_worlds: HashSet<String>,
     loading_screenshots: HashSet<String>,
+    loading_content_packs: HashSet<(String, ContentKind)>,
     pending_delete_world: Option<(String, String)>,
     uploading_mclogs: bool,
     last_mclogs_url: Option<String>,
+    // Resource Packs & Shader Packs browser
+    packs_kind: ContentKind,
+    packs_provider: ModProviderTab,
+    packs_query: String,
+    packs_searching: bool,
+    packs_mr_results: Vec<ModrinthSearchHit>,
+    packs_cf_results: Vec<CurseForgeMod>,
+    installing_content_packs: HashSet<String>,
     accounts: Vec<StoredAccount>,
     java_installations: Vec<JavaInstallation>,
     available_versions: Vec<String>,
@@ -207,18 +221,28 @@ impl McwApp {
             selected_backups: Vec::new(),
             selected_worlds: Vec::new(),
             selected_screenshots: Vec::new(),
+            selected_content_packs: Vec::new(),
             settings_cache: HashMap::new(),
             mods_cache: HashMap::new(),
             backups_cache: HashMap::new(),
             worlds_cache: HashMap::new(),
             screenshots_cache: HashMap::new(),
+            content_packs_cache: HashMap::new(),
             loading_mods: HashSet::new(),
             loading_backups: HashSet::new(),
             loading_worlds: HashSet::new(),
             loading_screenshots: HashSet::new(),
+            loading_content_packs: HashSet::new(),
             pending_delete_world: None,
             uploading_mclogs: false,
             last_mclogs_url: None,
+            packs_kind: ContentKind::ResourcePack,
+            packs_provider: ModProviderTab::Modrinth,
+            packs_query: String::new(),
+            packs_searching: false,
+            packs_mr_results: Vec::new(),
+            packs_cf_results: Vec::new(),
+            installing_content_packs: HashSet::new(),
             accounts: Vec::new(),
             java_installations: Vec::new(),
             available_versions: Vec::new(),
@@ -431,6 +455,11 @@ impl McwApp {
         self.selected_backups = self.backups_cache.get(id).cloned().unwrap_or_default();
         self.selected_worlds = self.worlds_cache.get(id).cloned().unwrap_or_default();
         self.selected_screenshots = self.screenshots_cache.get(id).cloned().unwrap_or_default();
+        self.selected_content_packs = self
+            .content_packs_cache
+            .get(&(id.clone(), self.packs_kind))
+            .cloned()
+            .unwrap_or_default();
     }
 
     fn ensure_active_tab_loaded(&mut self, ctx: &egui::Context) {
@@ -439,11 +468,201 @@ impl McwApp {
         };
         match self.active_tab {
             DetailTab::Mods => self.load_mods_async(&id, ctx, false),
+            DetailTab::Packs => self.load_content_packs_async(&id, self.packs_kind, ctx, false),
             DetailTab::Worlds => self.load_worlds_async(&id, ctx, false),
             DetailTab::Screenshots => self.load_screenshots_async(&id, ctx, false),
             DetailTab::Backups => self.load_backups_async(&id, ctx, false),
             _ => {}
         }
+    }
+
+    fn load_content_packs_async(
+        &mut self,
+        instance_id: &str,
+        kind: ContentKind,
+        ctx: &egui::Context,
+        force: bool,
+    ) {
+        let key = (instance_id.to_string(), kind);
+        if !force {
+            if let Some(cached) = self.content_packs_cache.get(&key) {
+                if self.selected_instance_id.as_deref() == Some(instance_id)
+                    && self.packs_kind == kind
+                {
+                    self.selected_content_packs = cached.clone();
+                }
+                return;
+            }
+        }
+        if !self.loading_content_packs.insert(key) {
+            return;
+        }
+        let mc_dir = self.paths.minecraft_dir(instance_id);
+        let id = instance_id.to_string();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let packs =
+                tokio::task::spawn_blocking(move || ContentPackManager::list(&mc_dir, kind))
+                    .await
+                    .unwrap_or_default();
+            let _ = tx.send(AppEvent::ContentPacksLoaded {
+                instance_id: id,
+                kind,
+                packs,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_content_pack_search(&mut self, ctx: &egui::Context) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        self.packs_searching = true;
+        let query = self.packs_query.clone();
+        let kind = self.packs_kind;
+        let is_cf = self.packs_provider == ModProviderTab::CurseForge;
+        let api_key = self.resolved_cf_api_key();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+            if is_cf {
+                let cf_res = async {
+                    let client =
+                        CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
+                    let search = client
+                        .search(&CurseForgeSearchParams {
+                            query,
+                            kind: kind.curseforge_kind().to_string(),
+                            loader: None,
+                            game_version: Some(inst.version_id.clone()),
+                            page_size: 12,
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok::<Vec<CurseForgeMod>, String>(search.data)
+                }
+                .await;
+                let _ = tx.send(AppEvent::ContentPackSearchFinished {
+                    provider_is_cf: true,
+                    modrinth: Ok(Vec::new()),
+                    curseforge: cf_res,
+                });
+            } else {
+                let mr_res = async {
+                    let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
+                    let search = mr
+                        .search(&ModrinthSearchParams {
+                            query,
+                            project_type: kind.modrinth_project_type().to_string(),
+                            loader: None,
+                            game_version: Some(inst.version_id.clone()),
+                            limit: 12,
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok::<Vec<ModrinthSearchHit>, String>(search.hits)
+                }
+                .await;
+                let _ = tx.send(AppEvent::ContentPackSearchFinished {
+                    provider_is_cf: false,
+                    modrinth: mr_res,
+                    curseforge: Ok(Vec::new()),
+                });
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_content_pack_install(
+        &mut self,
+        provider_is_cf: bool,
+        item_key: String,
+        display_name: String,
+        cf_mod_id: Option<u64>,
+        ctx: &egui::Context,
+    ) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        if !self.installing_content_packs.insert(item_key.clone()) {
+            return;
+        }
+        let kind = self.packs_kind;
+        let kind_label = match kind {
+            ContentKind::ResourcePack => "Resource Pack",
+            ContentKind::ShaderPack => "Shader Pack",
+        };
+        let task_id = self.begin_task(
+            format!("{kind_label}: {display_name}"),
+            format!("Downloading into {}...", inst.name),
+        );
+        let target_dir = self
+            .paths
+            .minecraft_dir(&inst.instance_id)
+            .join(kind.folder_name());
+        let api_key = self.resolved_cf_api_key();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        let slug = item_key.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
+                let path = if provider_is_cf {
+                    let client =
+                        CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
+                    client
+                        .install_content_pack(
+                            cf_mod_id.unwrap_or(0),
+                            Some(&slug),
+                            &inst.version_id,
+                            &target_dir,
+                            &downloader,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?
+                } else {
+                    let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
+                    mr.install_content_pack(&slug, &inst.version_id, &target_dir, &downloader)
+                        .await
+                        .map_err(|e| e.to_string())?
+                };
+                Ok::<String, String>(
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("pack.zip")
+                        .to_string(),
+                )
+            }
+            .await;
+
+            let _ = tx.send(AppEvent::ContentPackInstallFinished {
+                task_id,
+                item_key,
+                instance_id: inst.instance_id,
+                kind,
+                result: res,
+            });
+            ctx.request_repaint();
+        });
     }
 
     fn load_worlds_async(&mut self, instance_id: &str, ctx: &egui::Context, force: bool) {
@@ -1480,6 +1699,71 @@ impl McwApp {
                     }
                     self.screenshots_cache.insert(instance_id, screenshots);
                 }
+                AppEvent::ContentPacksLoaded {
+                    instance_id,
+                    kind,
+                    packs,
+                } => {
+                    self.loading_content_packs
+                        .remove(&(instance_id.clone(), kind));
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
+                        && self.packs_kind == kind
+                    {
+                        self.selected_content_packs = packs.clone();
+                    }
+                    self.content_packs_cache.insert((instance_id, kind), packs);
+                }
+                AppEvent::ContentPackSearchFinished {
+                    provider_is_cf,
+                    modrinth,
+                    curseforge,
+                } => {
+                    self.packs_searching = false;
+                    if provider_is_cf {
+                        match curseforge {
+                            Ok(mods) => self.packs_cf_results = mods,
+                            Err(err) => {
+                                self.notice_banner =
+                                    Some((format!("CurseForge pack search failed: {err}"), true));
+                            }
+                        }
+                    } else {
+                        match modrinth {
+                            Ok(hits) => self.packs_mr_results = hits,
+                            Err(err) => {
+                                self.notice_banner =
+                                    Some((format!("Modrinth pack search failed: {err}"), true));
+                            }
+                        }
+                    }
+                }
+                AppEvent::ContentPackInstallFinished {
+                    task_id,
+                    item_key,
+                    instance_id,
+                    kind,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    self.installing_content_packs.remove(&item_key);
+                    match result {
+                        Ok(file_name) => {
+                            self.content_packs_cache
+                                .remove(&(instance_id.clone(), kind));
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
+                                && self.active_tab == DetailTab::Packs
+                                && self.packs_kind == kind
+                            {
+                                self.load_content_packs_async(&instance_id, kind, ctx, true);
+                            }
+                            self.notice_banner = Some((format!("Installed '{file_name}'."), false));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Pack install failed: {err}"), true));
+                        }
+                    }
+                }
                 AppEvent::McLogsUploaded(result) => {
                     self.uploading_mclogs = false;
                     match result {
@@ -2308,6 +2592,7 @@ impl McwApp {
                     for (tab, label) in [
                         (DetailTab::Overview, "Overview"),
                         (DetailTab::Mods, "Mods"),
+                        (DetailTab::Packs, "Packs"),
                         (DetailTab::Worlds, "Worlds"),
                         (DetailTab::Screenshots, "Screenshots"),
                         (DetailTab::Backups, "Backups"),
@@ -2342,6 +2627,7 @@ impl McwApp {
                 match self.active_tab {
                     DetailTab::Overview => self.render_overview_tab(ui, ctx, &inst, busy),
                     DetailTab::Mods => self.render_mods_tab(ui, ctx, &inst),
+                    DetailTab::Packs => self.render_packs_tab(ui, ctx, &inst),
                     DetailTab::Worlds => self.render_worlds_tab(ui, ctx, &inst, busy),
                     DetailTab::Screenshots => self.render_screenshots_tab(ui, ctx, &inst),
                     DetailTab::Backups => self.render_backups_tab(ui, ctx, &inst, busy),
@@ -2822,6 +3108,306 @@ impl McwApp {
             }
             self.mods_cache.remove(&inst.instance_id);
             self.load_mods_async(&inst.instance_id, ctx, true);
+        }
+    }
+
+    fn render_packs_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, inst: &Instance) {
+        let p = self.palette;
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let prev_kind = self.packs_kind;
+
+        // Sub-selector: Resource Packs | Shader Packs
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut self.packs_kind,
+                ContentKind::ResourcePack,
+                "Resource Packs",
+            );
+            ui.selectable_value(
+                &mut self.packs_kind,
+                ContentKind::ShaderPack,
+                "Shader Packs",
+            );
+            ui.separator();
+            ui.selectable_value(
+                &mut self.packs_provider,
+                ModProviderTab::Modrinth,
+                "Modrinth",
+            );
+            ui.selectable_value(
+                &mut self.packs_provider,
+                ModProviderTab::CurseForge,
+                "CurseForge",
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let folder_dir = mc_dir.join(self.packs_kind.folder_name());
+                if ui.button("Open Folder").clicked() {
+                    let _ = std::fs::create_dir_all(&folder_dir);
+                    open_external(&folder_dir.display().to_string());
+                }
+                if ui.button("Refresh").clicked() {
+                    self.load_content_packs_async(&inst.instance_id, self.packs_kind, ctx, true);
+                }
+            });
+        });
+
+        if self.packs_kind != prev_kind {
+            self.packs_mr_results.clear();
+            self.packs_cf_results.clear();
+            self.selected_content_packs = self
+                .content_packs_cache
+                .get(&(inst.instance_id.clone(), self.packs_kind))
+                .cloned()
+                .unwrap_or_default();
+            self.load_content_packs_async(&inst.instance_id, self.packs_kind, ctx, false);
+        }
+
+        ui.add_space(6.0);
+
+        // Online search bar
+        ui.horizontal(|ui| {
+            let hint = match self.packs_kind {
+                ContentKind::ResourcePack => "Search resource packs (e.g. Faithful, Bare Bones)...",
+                ContentKind::ShaderPack => "Search shaders (e.g. Complementary, BSL)...",
+            };
+            let te = ui.add(
+                TextEdit::singleline(&mut self.packs_query)
+                    .hint_text(hint)
+                    .desired_width(340.0),
+            );
+            let go = ui
+                .add_enabled(!self.packs_searching, Button::new("Search"))
+                .clicked();
+            if go || (te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                self.start_content_pack_search(ctx);
+            }
+        });
+
+        // Modrinth search results
+        if self.packs_provider == ModProviderTab::Modrinth && !self.packs_mr_results.is_empty() {
+            ui.add_space(6.0);
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(3))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Modrinth Results")
+                                .strong()
+                                .size(12.0)
+                                .color(p.text_muted),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("Close results").clicked() {
+                                self.packs_mr_results.clear();
+                            }
+                        });
+                    });
+                    let mut to_install: Option<(String, String)> = None;
+                    ScrollArea::vertical()
+                        .id_salt("packs_mr_scroll")
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for hit in &self.packs_mr_results {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&hit.title).strong());
+                                    ui.label(
+                                        RichText::new(format!("({})", hit.slug))
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(p.text_muted),
+                                    );
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let busy_item =
+                                            self.installing_content_packs.contains(&hit.slug);
+                                        let label = if busy_item {
+                                            "Installing..."
+                                        } else {
+                                            "Install"
+                                        };
+                                        if ui.add_enabled(!busy_item, Button::new(label)).clicked()
+                                        {
+                                            to_install =
+                                                Some((hit.slug.clone(), hit.title.clone()));
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                    if let Some((slug, title)) = to_install {
+                        self.start_content_pack_install(false, slug, title, None, ctx);
+                    }
+                });
+        }
+
+        // CurseForge search results
+        if self.packs_provider == ModProviderTab::CurseForge && !self.packs_cf_results.is_empty() {
+            ui.add_space(6.0);
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(3))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("CurseForge Results")
+                                .strong()
+                                .size(12.0)
+                                .color(p.text_muted),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("Close results").clicked() {
+                                self.packs_cf_results.clear();
+                            }
+                        });
+                    });
+                    let mut to_install: Option<(u64, String, String)> = None;
+                    ScrollArea::vertical()
+                        .id_salt("packs_cf_scroll")
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for cf in &self.packs_cf_results {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&cf.name).strong());
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "#{} · {} downloads",
+                                            cf.id, cf.download_count
+                                        ))
+                                        .monospace()
+                                        .size(11.0)
+                                        .color(p.text_muted),
+                                    );
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let key = format!("cf-{}", cf.id);
+                                        let busy_item =
+                                            self.installing_content_packs.contains(&key);
+                                        let label = if busy_item {
+                                            "Installing..."
+                                        } else {
+                                            "Install"
+                                        };
+                                        if ui.add_enabled(!busy_item, Button::new(label)).clicked()
+                                        {
+                                            to_install =
+                                                Some((cf.id, cf.slug.clone(), cf.name.clone()));
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                    if let Some((mid, slug, name)) = to_install {
+                        self.start_content_pack_install(
+                            true,
+                            format!("cf-{mid}"),
+                            name,
+                            Some(mid),
+                            ctx,
+                        );
+                        let _ = slug;
+                    }
+                });
+        }
+
+        ui.add_space(8.0);
+        let section_title = match self.packs_kind {
+            ContentKind::ResourcePack => {
+                format!(
+                    "Installed Resource Packs ({})",
+                    self.selected_content_packs.len()
+                )
+            }
+            ContentKind::ShaderPack => {
+                format!(
+                    "Installed Shader Packs ({})",
+                    self.selected_content_packs.len()
+                )
+            }
+        };
+        ui.label(RichText::new(section_title).strong().color(p.text));
+        ui.add_space(4.0);
+
+        if self.selected_content_packs.is_empty() {
+            let msg = if self
+                .loading_content_packs
+                .contains(&(inst.instance_id.clone(), self.packs_kind))
+            {
+                "Scanning folder in background..."
+            } else {
+                "No packs installed in this folder yet."
+            };
+            ui.label(RichText::new(msg).color(p.text_muted));
+            return;
+        }
+
+        let mut toggle_action: Option<(String, bool)> = None;
+        let mut delete_action: Option<String> = None;
+
+        ScrollArea::vertical()
+            .id_salt("local_content_packs_scroll")
+            .show(ui, |ui| {
+                for pack in &self.selected_content_packs {
+                    Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .corner_radius(CornerRadius::same(3))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let mut en = pack.enabled;
+                                if ui.checkbox(&mut en, "").changed() {
+                                    toggle_action = Some((pack.file_name.clone(), en));
+                                }
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(&pack.display_name).strong());
+                                    let meta = if pack.is_dir {
+                                        format!("{} · Folder", pack.file_name)
+                                    } else {
+                                        format!(
+                                            "{} · {}",
+                                            pack.file_name,
+                                            format_bytes(pack.size_bytes)
+                                        )
+                                    };
+                                    ui.label(
+                                        RichText::new(meta)
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(p.text_muted),
+                                    );
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui.button(RichText::new("Remove").color(p.danger)).clicked()
+                                    {
+                                        delete_action = Some(pack.file_name.clone());
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            });
+
+        let kind = self.packs_kind;
+        if let Some((file_name, enable)) = toggle_action {
+            if let Err(e) = ContentPackManager::set_enabled(&mc_dir, kind, &file_name, enable) {
+                self.notice_banner = Some((format!("Failed to toggle pack: {e}"), true));
+            }
+            self.content_packs_cache
+                .remove(&(inst.instance_id.clone(), kind));
+            self.load_content_packs_async(&inst.instance_id, kind, ctx, true);
+        }
+        if let Some(file_name) = delete_action {
+            if let Err(e) = ContentPackManager::delete(&mc_dir, kind, &file_name) {
+                self.notice_banner = Some((format!("Failed to delete pack: {e}"), true));
+            }
+            self.content_packs_cache
+                .remove(&(inst.instance_id.clone(), kind));
+            self.load_content_packs_async(&inst.instance_id, kind, ctx, true);
         }
     }
 

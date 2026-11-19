@@ -259,6 +259,47 @@ impl ModrinthClient {
         Ok(installed)
     }
 
+    /// Install a Modrinth resource pack or shader pack into `target_dir` (no loader filter required;
+    /// prefers matching `game_version`, falls back to latest available version).
+    pub async fn install_content_pack(
+        &self,
+        slug_or_id: &str,
+        game_version: &str,
+        target_dir: &Path,
+        downloader: &DownloadClient,
+    ) -> Result<PathBuf> {
+        std::fs::create_dir_all(target_dir)?;
+        let mut versions = self
+            .list_versions(slug_or_id, None, Some(game_version))
+            .await?;
+        if versions.is_empty() {
+            versions = self.list_versions(slug_or_id, None, None).await?;
+        }
+        let version =
+            versions
+                .into_iter()
+                .next()
+                .ok_or_else(|| ProviderError::NoCompatibleVersion {
+                    project: slug_or_id.to_string(),
+                    game_version: game_version.to_string(),
+                    loader: "any".to_string(),
+                })?;
+        let file = version
+            .primary_file()
+            .ok_or_else(|| ProviderError::NoCompatibleVersion {
+                project: slug_or_id.to_string(),
+                game_version: game_version.to_string(),
+                loader: "any".to_string(),
+            })?;
+        let dest = target_dir.join(&file.filename);
+        let sha1 = file.hashes.get("sha1").cloned();
+        let req = DownloadRequest::new(&file.url, &dest)
+            .with_sha1(sha1)
+            .with_size(file.size);
+        downloader.download_file(&req).await?;
+        Ok(dest)
+    }
+
     async fn cached_get(&self, url: &str, ttl_secs: u64) -> Result<String> {
         let cache_key = format!("modrinth:{url}");
         if let Some(ref cache) = self.cache {

@@ -243,6 +243,44 @@ impl CurseForgeClient {
         Ok(dest)
     }
 
+    /// Install a CurseForge resource pack or shader pack into `target_dir` (prefers matching
+    /// `game_version`, falls back to latest file if broad compatibility).
+    pub async fn install_content_pack(
+        &self,
+        mod_id: u64,
+        slug: Option<&str>,
+        game_version: &str,
+        target_dir: &Path,
+        downloader: &DownloadClient,
+    ) -> Result<PathBuf> {
+        fs::create_dir_all(target_dir)?;
+        let mut files = self.get_mod_files(mod_id, Some(game_version), None).await?;
+        if files.is_empty() {
+            files = self.get_mod_files(mod_id, None, None).await?;
+        }
+        let file = files
+            .into_iter()
+            .next()
+            .ok_or_else(|| ProviderError::NoCompatibleVersion {
+                project: slug.unwrap_or("curseforge-pack").to_string(),
+                game_version: game_version.to_string(),
+                loader: "any".to_string(),
+            })?;
+
+        let download_url = file.require_download_url(slug)?;
+        let dest = target_dir.join(&file.file_name);
+        let sha1 = file
+            .hashes
+            .iter()
+            .find(|h| h.algo == 1)
+            .map(|h| h.value.clone());
+        let req = DownloadRequest::new(download_url, &dest)
+            .with_sha1(sha1)
+            .with_size(file.file_length);
+        downloader.download_file(&req).await?;
+        Ok(dest)
+    }
+
     /// Download the latest CurseForge modpack `.zip` and install it as a new Instance.
     pub async fn install_modpack(
         &self,

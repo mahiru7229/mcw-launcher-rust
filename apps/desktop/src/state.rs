@@ -2,7 +2,7 @@ use eframe::egui::Context;
 use mcw_auth::{DeviceCodeResponse, StoredAccount};
 use mcw_minecraft::{RepairReport, ScreenshotInfo, WorldInfo};
 use mcw_models::progress::{ProgressEvent, ProgressSink};
-use mcw_mods::ModInfo;
+use mcw_mods::{ContentKind, ContentPackInfo, ModInfo};
 use mcw_providers::{
     AtLauncherPack, CurseForgeMod, FtbPackSummary, ModpackInstallReport, ModrinthSearchHit,
 };
@@ -38,6 +38,23 @@ pub enum AppEvent {
     ScreenshotsLoaded {
         instance_id: String,
         screenshots: Vec<ScreenshotInfo>,
+    },
+    ContentPacksLoaded {
+        instance_id: String,
+        kind: ContentKind,
+        packs: Vec<ContentPackInfo>,
+    },
+    ContentPackSearchFinished {
+        provider_is_cf: bool,
+        modrinth: Result<Vec<ModrinthSearchHit>, String>,
+        curseforge: Result<Vec<CurseForgeMod>, String>,
+    },
+    ContentPackInstallFinished {
+        task_id: u64,
+        item_key: String,
+        instance_id: String,
+        kind: ContentKind,
+        result: Result<String, String>,
     },
     McLogsUploaded(Result<McLogsUploadResult, String>),
     TaskProgress {
