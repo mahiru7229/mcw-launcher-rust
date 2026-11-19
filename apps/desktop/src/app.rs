@@ -4941,14 +4941,21 @@ impl McwApp {
     fn render_modals(&mut self, ctx: &egui::Context) {
         let p = self.palette;
 
-        // 1. Unified Create Instance / Modpack Modal (Custom | Import Archive | FTB | ATLauncher)
+        // 1. Unified Create Instance / Modpack Isolated OS Window
         if self.show_create_modal {
-            egui::Window::new("Create Instance")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(540.0);
+            let mut open = self.show_create_modal;
+            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_create_instance");
+            let builder = egui::ViewportBuilder::default()
+                .with_title("Create Instance / Modpacks — MCW Launcher")
+                .with_inner_size([640.0, 520.0])
+                .with_min_inner_size([460.0, 380.0]);
+            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                    open = false;
+                }
+                egui::CentralPanel::default()
+                    .frame(Frame::new().fill(p.canvas).inner_margin(egui::Margin::same(12)))
+                    .show(vp_ctx, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.selectable_value(
                             &mut self.create_tab,
@@ -5627,159 +5634,184 @@ impl McwApp {
                             }
                             ui.add_space(8.0);
                             if ui.button("Close").clicked() {
-                                self.show_create_modal = false;
+                                open = false;
                             }
                         }
                     }
-                });
+                    });
+            });
+            if !open {
+                self.show_create_modal = false;
+            }
         }
 
-        // 1b. 3-Mode Export Modpack Modal (mirroring Python ModpackExportDialog)
+        // 1b. 3-Mode Export Modpack Isolated OS Window (mirroring Python ModpackExportDialog)
         if self.show_export_modal {
             if let Some(inst) = self.selected_instance().cloned() {
                 let title = self.t("modpack_package.export.title").to_string();
                 let mut trigger_export: Option<ModpackExportOptions> = None;
                 let mut open = self.show_export_modal;
-                egui::Window::new(title)
-                    .open(&mut open)
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                    .show(ctx, |ui| {
-                        ui.set_min_width(480.0);
-                        ui.label(
-                            RichText::new(self.t("modpack_package.export.heading"))
-                                .strong()
-                                .size(14.5),
-                        );
-                        ui.label(
-                            RichText::new(self.t("modpack_package.export.description"))
-                                .size(11.5)
-                                .color(p.text_muted),
-                        );
-                        ui.add_space(10.0);
+                let vp_id = egui::ViewportId::from_hash_of("mcw_vp_export_modpack");
+                let builder = egui::ViewportBuilder::default()
+                    .with_title(format!("{title} — {}", inst.name))
+                    .with_inner_size([540.0, 480.0])
+                    .with_min_inner_size([420.0, 360.0]);
+                ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                    if vp_ctx.input(|i| i.viewport().close_requested()) {
+                        open = false;
+                    }
+                    egui::CentralPanel::default()
+                        .frame(
+                            Frame::new()
+                                .fill(p.canvas)
+                                .inner_margin(egui::Margin::same(14)),
+                        )
+                        .show(vp_ctx, |ui| {
+                            ScrollArea::vertical().show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(self.t("modpack_package.export.heading"))
+                                        .strong()
+                                        .size(14.5),
+                                );
+                                ui.label(
+                                    RichText::new(self.t("modpack_package.export.description"))
+                                        .size(11.5)
+                                        .color(p.text_muted),
+                                );
+                                ui.add_space(10.0);
 
-                        // Mode 1: Modrinth (.mrpack)
-                        let is_mrpack = matches!(self.export_mode, ModpackExportMode::Mrpack);
-                        if ui
-                            .radio(is_mrpack, self.t("modpack_package.export.mrpack"))
-                            .clicked()
-                        {
-                            self.export_mode = ModpackExportMode::Mrpack;
-                        }
-                        ui.label(
-                            RichText::new(self.t("modpack_package.export.mrpack_help"))
-                                .size(11.0)
-                                .color(p.text_muted),
-                        );
-                        ui.add_space(6.0);
-
-                        // Mode 2: Provider Profile (.zip)
-                        let is_provider =
-                            matches!(self.export_mode, ModpackExportMode::ProviderProfile);
-                        if ui
-                            .radio(
-                                is_provider,
-                                self.t("modpack_package.export.provider_profile"),
-                            )
-                            .clicked()
-                        {
-                            self.export_mode = ModpackExportMode::ProviderProfile;
-                        }
-                        ui.label(
-                            RichText::new(self.t("modpack_package.export.provider_profile_help"))
-                                .size(11.0)
-                                .color(p.text_muted),
-                        );
-                        ui.add_space(6.0);
-
-                        // Mode 3: Portable (.mcwpack) with Smart / Full
-                        let is_portable =
-                            matches!(self.export_mode, ModpackExportMode::Portable { .. });
-                        if ui
-                            .radio(is_portable, self.t("modpack_package.export.portable"))
-                            .clicked()
-                        {
-                            self.export_mode = ModpackExportMode::Portable {
-                                full: self.export_portable_full,
-                            };
-                        }
-                        ui.label(
-                            RichText::new(self.t("modpack_package.export.portable_help"))
-                                .size(11.0)
-                                .color(p.text_muted),
-                        );
-
-                        if is_portable {
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                let smart_lbl = self.t("modpack_package.export.smart").to_string();
-                                let full_lbl = self.t("modpack_package.export.full").to_string();
+                                // Mode 1: Modrinth (.mrpack)
+                                let is_mrpack =
+                                    matches!(self.export_mode, ModpackExportMode::Mrpack);
                                 if ui
-                                    .selectable_value(
-                                        &mut self.export_portable_full,
-                                        false,
-                                        smart_lbl,
+                                    .radio(is_mrpack, self.t("modpack_package.export.mrpack"))
+                                    .clicked()
+                                {
+                                    self.export_mode = ModpackExportMode::Mrpack;
+                                }
+                                ui.label(
+                                    RichText::new(self.t("modpack_package.export.mrpack_help"))
+                                        .size(11.0)
+                                        .color(p.text_muted),
+                                );
+                                ui.add_space(6.0);
+
+                                // Mode 2: Provider Profile (.zip)
+                                let is_provider =
+                                    matches!(self.export_mode, ModpackExportMode::ProviderProfile);
+                                if ui
+                                    .radio(
+                                        is_provider,
+                                        self.t("modpack_package.export.provider_profile"),
                                     )
                                     .clicked()
                                 {
-                                    self.export_mode = ModpackExportMode::Portable { full: false };
+                                    self.export_mode = ModpackExportMode::ProviderProfile;
                                 }
-                                if ui
-                                    .selectable_value(
-                                        &mut self.export_portable_full,
-                                        true,
-                                        full_lbl,
+                                ui.label(
+                                    RichText::new(
+                                        self.t("modpack_package.export.provider_profile_help"),
                                     )
+                                    .size(11.0)
+                                    .color(p.text_muted),
+                                );
+                                ui.add_space(6.0);
+
+                                // Mode 3: Portable (.mcwpack) with Smart / Full
+                                let is_portable =
+                                    matches!(self.export_mode, ModpackExportMode::Portable { .. });
+                                if ui
+                                    .radio(is_portable, self.t("modpack_package.export.portable"))
                                     .clicked()
                                 {
-                                    self.export_mode = ModpackExportMode::Portable { full: true };
+                                    self.export_mode = ModpackExportMode::Portable {
+                                        full: self.export_portable_full,
+                                    };
                                 }
-                            });
-                        }
+                                ui.label(
+                                    RichText::new(self.t("modpack_package.export.portable_help"))
+                                        .size(11.0)
+                                        .color(p.text_muted),
+                                );
 
-                        ui.add_space(8.0);
-                        let saves_enabled = is_mrpack || is_portable;
-                        let saves_lbl = self.t("workspace.export.include_saves").to_string();
-                        ui.add_enabled(
-                            saves_enabled,
-                            egui::Checkbox::new(&mut self.export_include_saves, saves_lbl),
-                        );
-
-                        ui.add_space(6.0);
-                        ui.label(
-                            RichText::new(self.t("modpack_package.export.warning"))
-                                .size(11.0)
-                                .color(p.warning),
-                        );
-                        ui.add_space(10.0);
-
-                        ui.horizontal(|ui| {
-                            let act_btn = Button::new(
-                                RichText::new(self.t("modpack_package.export.action"))
-                                    .color(p.accent_text)
-                                    .strong(),
-                            )
-                            .fill(p.accent);
-                            if ui.add(act_btn).clicked() {
-                                let mode = match self.export_mode {
-                                    ModpackExportMode::Portable { .. } => {
-                                        ModpackExportMode::Portable {
-                                            full: self.export_portable_full,
+                                if is_portable {
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        let smart_lbl =
+                                            self.t("modpack_package.export.smart").to_string();
+                                        let full_lbl =
+                                            self.t("modpack_package.export.full").to_string();
+                                        if ui
+                                            .selectable_value(
+                                                &mut self.export_portable_full,
+                                                false,
+                                                smart_lbl,
+                                            )
+                                            .clicked()
+                                        {
+                                            self.export_mode =
+                                                ModpackExportMode::Portable { full: false };
                                         }
+                                        if ui
+                                            .selectable_value(
+                                                &mut self.export_portable_full,
+                                                true,
+                                                full_lbl,
+                                            )
+                                            .clicked()
+                                        {
+                                            self.export_mode =
+                                                ModpackExportMode::Portable { full: true };
+                                        }
+                                    });
+                                }
+
+                                ui.add_space(8.0);
+                                let saves_enabled = is_mrpack || is_portable;
+                                let saves_lbl =
+                                    self.t("workspace.export.include_saves").to_string();
+                                ui.add_enabled(
+                                    saves_enabled,
+                                    egui::Checkbox::new(&mut self.export_include_saves, saves_lbl),
+                                );
+
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(self.t("modpack_package.export.warning"))
+                                        .size(11.0)
+                                        .color(p.warning),
+                                );
+                                ui.add_space(10.0);
+
+                                ui.horizontal(|ui| {
+                                    let act_btn = Button::new(
+                                        RichText::new(self.t("modpack_package.export.action"))
+                                            .color(p.accent_text)
+                                            .strong(),
+                                    )
+                                    .fill(p.accent);
+                                    if ui.add(act_btn).clicked() {
+                                        let mode = match self.export_mode {
+                                            ModpackExportMode::Portable { .. } => {
+                                                ModpackExportMode::Portable {
+                                                    full: self.export_portable_full,
+                                                }
+                                            }
+                                            other => other,
+                                        };
+                                        trigger_export = Some(ModpackExportOptions {
+                                            mode,
+                                            include_saves: saves_enabled
+                                                && self.export_include_saves,
+                                        });
                                     }
-                                    other => other,
-                                };
-                                trigger_export = Some(ModpackExportOptions {
-                                    mode,
-                                    include_saves: saves_enabled && self.export_include_saves,
+                                    if ui.button(self.t("common.cancel")).clicked() {
+                                        open = false;
+                                    }
                                 });
-                            }
-                            if ui.button(self.t("common.cancel")).clicked() {
-                                self.show_export_modal = false;
-                            }
+                            });
                         });
-                    });
+                });
                 self.show_export_modal = open;
                 if let Some(opts) = trigger_export {
                     self.show_export_modal = false;
@@ -5788,18 +5820,23 @@ impl McwApp {
             }
         }
 
-        // 1c. Mod / Modpack Version Picker Modal
+        // 1c. Mod / Modpack Version Picker Isolated OS Window
         if self.version_picker_open {
             let mut open = self.version_picker_open;
             let mut chosen: Option<ModVersionChoice> = None;
             let title = format!("Select Version — {}", self.version_picker_title);
-            egui::Window::new(title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(true)
-                .default_width(540.0)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
+            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_version_picker");
+            let builder = egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_inner_size([580.0, 460.0])
+                .with_min_inner_size([440.0, 320.0]);
+            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                    open = false;
+                }
+                egui::CentralPanel::default()
+                    .frame(Frame::new().fill(p.canvas).inner_margin(egui::Margin::same(12)))
+                    .show(vp_ctx, |ui| {
                     ui.horizontal(|ui| {
                         self.render_thumbnail(ui, self.version_picker_icon.as_deref(), 40.0);
                         ui.add_space(6.0);
@@ -5904,7 +5941,8 @@ impl McwApp {
                                 }
                             });
                     }
-                });
+                    });
+            });
             self.version_picker_open = open;
             if let Some(choice) = chosen {
                 self.version_picker_open = false;
@@ -6009,14 +6047,22 @@ impl McwApp {
             }
         }
 
-        // 4. Account Manager Modal
+        // 4. Account Manager Isolated OS Window
         if self.show_account_modal {
-            egui::Window::new("Accounts")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(400.0);
+            let mut open = self.show_account_modal;
+            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_accounts");
+            let builder = egui::ViewportBuilder::default()
+                .with_title("Accounts — MCW Launcher")
+                .with_inner_size([480.0, 440.0])
+                .with_min_inner_size([380.0, 340.0]);
+            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                    open = false;
+                }
+                egui::CentralPanel::default()
+                    .frame(Frame::new().fill(p.canvas).inner_margin(egui::Margin::same(14)))
+                    .show(vp_ctx, |ui| {
+                    ScrollArea::vertical().show(ui, |ui| {
                     ui.label(RichText::new("Saved Accounts").strong());
                     ui.add_space(4.0);
 
@@ -6198,12 +6244,17 @@ impl McwApp {
 
                     ui.add_space(10.0);
                     if ui.button("Close").clicked() {
-                        if self.ms_login_in_progress {
-                            self.cancel_microsoft_login();
-                        }
-                        self.show_account_modal = false;
+                        open = false;
                     }
-                });
+                    });
+                    });
+            });
+            if !open {
+                if self.ms_login_in_progress {
+                    self.cancel_microsoft_login();
+                }
+                self.show_account_modal = false;
+            }
         }
 
         // 5. Restore Backup Confirmation Modal
@@ -6283,8 +6334,7 @@ impl McwApp {
                 });
         }
 
-        // 6. Launcher Settings Separate Window (rebuilt from Python LauncherSettingsPage,
-        // keeping only active Rust Edition sections & official lang/en-US.json + vi-VN.json keys)
+        // 6. Launcher Settings Isolated OS Window (responsive: SidePanel when wide, TopBar when narrow)
         if self.show_launcher_settings {
             let mut open = self.show_launcher_settings;
             let mut prefs_dirty = false;
@@ -6293,72 +6343,109 @@ impl McwApp {
             let mut scan_java = false;
             let mut install_java_major: Option<u32> = None;
             let win_title = self.t("launcher_settings.page.title").to_string();
+            let nav_tabs = [
+                (
+                    LauncherSettingsTab::General,
+                    self.t("settings.section.general").to_string(),
+                ),
+                (
+                    LauncherSettingsTab::Downloads,
+                    self.t("settings.section.downloads").to_string(),
+                ),
+                (
+                    LauncherSettingsTab::Runtime,
+                    self.t("settings.section.runtime").to_string(),
+                ),
+                (
+                    LauncherSettingsTab::Appearance,
+                    self.t("settings.section.appearance").to_string(),
+                ),
+            ];
+            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_launcher_settings");
+            let builder = egui::ViewportBuilder::default()
+                .with_title(format!("{win_title} — MCW Launcher"))
+                .with_inner_size([740.0, 520.0])
+                .with_min_inner_size([400.0, 340.0]);
 
-            egui::Window::new(win_title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(true)
-                .default_width(680.0)
-                .default_height(460.0)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(600.0);
-                    ui.set_min_height(380.0);
-                    ui.horizontal_top(|ui| {
-                        // Left section navigation rail (matching Python's 4 active sections)
-                        Frame::new()
-                            .fill(p.surface)
-                            .stroke(Stroke::new(1.0_f32, p.border))
-                            .corner_radius(CornerRadius::same(3))
-                            .inner_margin(egui::Margin::same(8))
-                            .show(ui, |ui| {
-                                ui.set_min_width(156.0);
-                                ui.set_min_height(340.0);
-                                let nav_tabs = [
-                                    (
-                                        LauncherSettingsTab::General,
-                                        self.t("settings.section.general").to_string(),
-                                    ),
-                                    (
-                                        LauncherSettingsTab::Downloads,
-                                        self.t("settings.section.downloads").to_string(),
-                                    ),
-                                    (
-                                        LauncherSettingsTab::Runtime,
-                                        self.t("settings.section.runtime").to_string(),
-                                    ),
-                                    (
-                                        LauncherSettingsTab::Appearance,
-                                        self.t("settings.section.appearance").to_string(),
-                                    ),
-                                ];
-                                ui.vertical(|ui| {
-                                    for (tab, label) in nav_tabs {
-                                        let active = self.launcher_settings_tab == tab;
-                                        let btn = Button::new(
-                                            RichText::new(label)
-                                                .strong()
-                                                .size(13.0)
-                                                .color(if active { p.accent_text } else { p.text }),
-                                        )
-                                        .fill(if active { p.accent } else { p.elevated })
-                                        .min_size(Vec2::new(140.0, 34.0))
-                                        .corner_radius(CornerRadius::same(3));
-                                        if ui.add(btn).clicked() {
-                                            self.launcher_settings_tab = tab;
-                                        }
-                                        ui.add_space(6.0);
+            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                    open = false;
+                }
+                let vp_width = vp_ctx.screen_rect().width();
+                let is_wide = vp_width >= 580.0;
+
+                if is_wide {
+                    egui::SidePanel::left("launcher_settings_nav_rail")
+                        .exact_width(172.0)
+                        .resizable(false)
+                        .frame(
+                            Frame::new()
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0_f32, p.border))
+                                .inner_margin(egui::Margin::same(10)),
+                        )
+                        .show(vp_ctx, |ui| {
+                            ui.vertical(|ui| {
+                                for (tab, label) in &nav_tabs {
+                                    let active = self.launcher_settings_tab == *tab;
+                                    let btn = Button::new(
+                                        RichText::new(label).strong().size(13.0).color(if active {
+                                            p.accent_text
+                                        } else {
+                                            p.text
+                                        }),
+                                    )
+                                    .fill(if active { p.accent } else { p.elevated })
+                                    .min_size(Vec2::new(ui.available_width(), 34.0))
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui.add(btn).clicked() {
+                                        self.launcher_settings_tab = *tab;
                                     }
-                                });
+                                    ui.add_space(6.0);
+                                }
                             });
+                        });
+                } else {
+                    egui::TopBottomPanel::top("launcher_settings_nav_top")
+                        .frame(
+                            Frame::new()
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0_f32, p.border))
+                                .inner_margin(egui::Margin::symmetric(10, 8)),
+                        )
+                        .show(vp_ctx, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for (tab, label) in &nav_tabs {
+                                    let active = self.launcher_settings_tab == *tab;
+                                    let btn = Button::new(
+                                        RichText::new(label).strong().size(12.5).color(if active {
+                                            p.accent_text
+                                        } else {
+                                            p.text
+                                        }),
+                                    )
+                                    .fill(if active { p.accent } else { p.elevated })
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui.add(btn).clicked() {
+                                        self.launcher_settings_tab = *tab;
+                                    }
+                                }
+                            });
+                        });
+                }
 
-                        ui.add_space(10.0);
-
-                        // Right scrollable content panel
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::new()
+                            .fill(p.canvas)
+                            .inner_margin(egui::Margin::same(14)),
+                    )
+                    .show(vp_ctx, |ui| {
                         ScrollArea::vertical()
                             .id_salt("launcher_settings_content_scroll")
+                            .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
+                                ui.set_width(ui.available_width());
                                 match self.launcher_settings_tab {
                                     LauncherSettingsTab::General => {
                                         ui.label(
@@ -6777,7 +6864,7 @@ impl McwApp {
                                                     .color(p.text_muted),
                                                 );
                                                 ui.add_space(6.0);
-                                                ui.horizontal(|ui| {
+                                                ui.horizontal_wrapped(|ui| {
                                                     ui.label("Min RAM (MB):");
                                                     if ui
                                                         .add(
@@ -6803,7 +6890,7 @@ impl McwApp {
                                                         prefs_dirty = true;
                                                     }
                                                 });
-                                                ui.horizontal(|ui| {
+                                                ui.horizontal_wrapped(|ui| {
                                                     ui.label("Width:");
                                                     if ui
                                                         .add(
@@ -6868,7 +6955,7 @@ impl McwApp {
                                                         .strong(),
                                                 );
                                                 ui.add_space(8.0);
-                                                ui.horizontal(|ui| {
+                                                ui.horizontal_wrapped(|ui| {
                                                     let dark_selected =
                                                         self.theme_mode == ThemeMode::Dark;
                                                     let dark_btn = Button::new(
@@ -6947,7 +7034,7 @@ impl McwApp {
                                 }
                             });
                     });
-                });
+            });
 
             self.show_launcher_settings = open;
             if reload_langs {
@@ -6981,13 +7068,13 @@ impl McwApp {
             }
         }
 
-        // 7. Dedicated Per-Instance Manual Downloads Windows (CurseForge opt-out mods)
+        // 7. Dedicated Per-Instance Manual Downloads Isolated OS Windows (CurseForge opt-out mods)
         let open_ids = self.open_manual_modals.clone();
         let mut to_close: Vec<String> = Vec::new();
         let mut to_scan: Vec<String> = Vec::new();
         let mut launch_anyway_id: Option<String> = None;
 
-        for (idx, inst_id) in open_ids.into_iter().enumerate() {
+        for inst_id in open_ids {
             let inst_name = self
                 .instances
                 .iter()
@@ -7001,21 +7088,23 @@ impl McwApp {
                 .unwrap_or_default();
             let status_text = self.manual_scan_status.get(&inst_id).cloned();
 
-            let offset = (idx as f32) * 26.0;
             let mut win_open = true;
-            egui::Window::new(format!(
-                "Manual Downloads — {} ({} remaining)",
-                inst_name,
-                items.len()
-            ))
-            .id(egui::Id::new(("manual_downloads_window", &inst_id)))
-            .open(&mut win_open)
-            .collapsible(false)
-            .resizable(true)
-            .default_width(580.0)
-            .default_pos(egui::pos2(160.0 + offset, 110.0 + offset))
-            .show(ctx, |ui| {
-                ui.set_min_width(540.0);
+            let vp_id = egui::ViewportId::from_hash_of(("mcw_vp_manual_downloads", &inst_id));
+            let builder = egui::ViewportBuilder::default()
+                .with_title(format!(
+                    "Manual Downloads — {} ({} remaining)",
+                    inst_name,
+                    items.len()
+                ))
+                .with_inner_size([600.0, 500.0])
+                .with_min_inner_size([440.0, 340.0]);
+            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                    win_open = false;
+                }
+                egui::CentralPanel::default()
+                    .frame(Frame::new().fill(p.canvas).inner_margin(egui::Margin::same(12)))
+                    .show(vp_ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(format!("Instance: {inst_name}"))
@@ -7169,6 +7258,7 @@ impl McwApp {
                             }
                         });
                     }
+                });
                 });
             });
 
@@ -7331,35 +7421,44 @@ impl McwApp {
                 }
             });
 
-        // Overflow modal when > 2 tasks are running and user clicked "View All"
+        // Overflow isolated OS window when > 2 tasks are running and user clicked "View All"
         if self.show_all_tasks_modal && total_tasks > 2 {
             let mut open = self.show_all_tasks_modal;
-            egui::Window::new(format!("All Active Tasks ({total_tasks})"))
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(true)
-                .default_width(540.0)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    if !speed_text.is_empty() {
-                        ui.label(
-                            RichText::new(format!("Network Speed: {speed_text}"))
-                                .monospace()
-                                .size(11.5)
-                                .color(p.accent),
-                        );
-                        ui.add_space(6.0);
-                    }
-                    ScrollArea::vertical()
-                        .id_salt("all_active_tasks_modal_scroll")
-                        .max_height(360.0)
-                        .show(ui, |ui| {
-                            for task in &self.active_tasks {
-                                Self::render_single_task_card(ui, p, task, &speed_text);
-                                ui.add_space(4.0);
-                            }
-                        });
-                });
+            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_all_tasks");
+            let builder = egui::ViewportBuilder::default()
+                .with_title(format!("All Active Tasks ({total_tasks}) — MCW Launcher"))
+                .with_inner_size([560.0, 420.0])
+                .with_min_inner_size([380.0, 260.0]);
+            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                    open = false;
+                }
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::new()
+                            .fill(p.canvas)
+                            .inner_margin(egui::Margin::same(12)),
+                    )
+                    .show(vp_ctx, |ui| {
+                        if !speed_text.is_empty() {
+                            ui.label(
+                                RichText::new(format!("Network Speed: {speed_text}"))
+                                    .monospace()
+                                    .size(11.5)
+                                    .color(p.accent),
+                            );
+                            ui.add_space(6.0);
+                        }
+                        ScrollArea::vertical()
+                            .id_salt("all_active_tasks_modal_scroll")
+                            .show(ui, |ui| {
+                                for task in &self.active_tasks {
+                                    Self::render_single_task_card(ui, p, task, &speed_text);
+                                    ui.add_space(4.0);
+                                }
+                            });
+                    });
+            });
             self.show_all_tasks_modal = open;
         }
     }

@@ -172,19 +172,25 @@ impl SupervisedProcess {
         log_file_path: Option<&Path>,
         sink: Arc<dyn LogSink>,
     ) -> Result<Self> {
+        let resolved_java = crate::java::prefer_javaw_on_windows(&spec.java_executable);
         info!(
-            java = %spec.java_executable.display(),
+            java = %resolved_java.display(),
             cwd = %spec.working_dir.display(),
             main_class = %spec.main_class,
             "Spawning supervised Minecraft process"
         );
 
-        let mut cmd = Command::new(&spec.java_executable);
+        let mut cmd = Command::new(&resolved_java);
         cmd.current_dir(&spec.working_dir)
             .args(spec.full_command_args())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
         let mut child = cmd.spawn()?;
         let pid = child.id().unwrap_or(0);

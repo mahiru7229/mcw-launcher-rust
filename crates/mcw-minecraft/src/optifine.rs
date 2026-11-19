@@ -182,10 +182,16 @@ impl OptiFineManager {
         expected_mc_version: Option<&str>,
     ) -> Result<()> {
         let inspected = Self::inspect(jar_path, expected_mc_version)?;
-        Command::new(java_exe)
-            .arg("-jar")
-            .arg(&inspected.path)
-            .spawn()?;
+        let resolved_java = mcw_runtime::prefer_javaw_on_windows(java_exe);
+        let mut cmd = Command::new(&resolved_java);
+        cmd.arg("-jar").arg(&inspected.path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.spawn()?;
         Ok(())
     }
 }

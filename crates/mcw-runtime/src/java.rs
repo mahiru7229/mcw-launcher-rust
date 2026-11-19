@@ -158,7 +158,15 @@ impl JavaDiscovery {
     }
 
     pub fn probe(java_exe: &Path) -> Option<JavaInstallation> {
-        let output = Command::new(java_exe).arg("-version").output().ok()?;
+        let mut cmd = Command::new(java_exe);
+        cmd.arg("-version");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let output = cmd.output().ok()?;
         let combined = format!(
             "{}\n{}",
             String::from_utf8_lossy(&output.stdout),
@@ -171,6 +179,23 @@ impl JavaDiscovery {
             version_string,
         })
     }
+}
+
+/// On Windows, resolves `java.exe` to sibling `javaw.exe` when present so GUI launches
+/// (Minecraft, OptiFine installer) never open a black console window.
+pub fn prefer_javaw_on_windows(java_exe: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(name) = java_exe.file_name().and_then(|n| n.to_str()) {
+            if name.eq_ignore_ascii_case("java.exe") {
+                let javaw = java_exe.with_file_name("javaw.exe");
+                if javaw.is_file() {
+                    return javaw;
+                }
+            }
+        }
+    }
+    java_exe.to_path_buf()
 }
 
 pub fn parse_java_version_output(output: &str) -> Option<(u32, String)> {
@@ -307,5 +332,27 @@ mod tests {
             JavaMajorPolicy::required_for_minecraft("1.21.4", Some(21)).unwrap(),
             21
         );
+    }
+
+    #[test]
+    fn prefer_javaw_selects_sibling_javaw_when_present() {
+        let dir = std::env::temp_dir().join(format!("mcw_javaw_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let java_exe = dir.join("java.exe");
+        let javaw_exe = dir.join("javaw.exe");
+        std::fs::write(&java_exe, b"").unwrap();
+
+        // Without javaw.exe, falls back to java.exe
+        assert_eq!(prefer_javaw_on_windows(&java_exe), java_exe);
+
+        // With javaw.exe present, Windows switches to javaw.exe
+        std::fs::write(&javaw_exe, b"").unwrap();
+        #[cfg(target_os = "windows")]
+        assert_eq!(prefer_javaw_on_windows(&java_exe), javaw_exe);
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(prefer_javaw_on_windows(&java_exe), java_exe);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -351,12 +351,19 @@ impl<'a> ForgeLoaderService<'a> {
         }
 
         if let Some(java_exe) = installer_java {
-            let output = Command::new(java_exe)
-                .arg("-jar")
+            let resolved_java = mcw_runtime::prefer_javaw_on_windows(java_exe);
+            let mut cmd = Command::new(&resolved_java);
+            cmd.arg("-jar")
                 .arg(installer_jar)
                 .arg("--installClient")
-                .arg(&staging)
-                .output()?;
+                .arg(&staging);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            let output = cmd.output()?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let stdout = String::from_utf8_lossy(&output.stdout);
