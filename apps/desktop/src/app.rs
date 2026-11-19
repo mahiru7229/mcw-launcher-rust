@@ -1,4 +1,4 @@
-use crate::i18n::{tr, Language, LauncherPrefs};
+use crate::i18n::{LanguageManager, LauncherPrefs};
 use crate::state::{ActiveTask, AppEvent, ChannelLogSink, ChannelProgressSink};
 use crate::theme::{apply_theme, configure_fonts, ThemeMode, ThemePalette};
 use eframe::egui::{
@@ -82,7 +82,7 @@ pub struct McwApp {
     rx: Receiver<AppEvent>,
 
     theme_mode: ThemeMode,
-    language: Language,
+    lang: LanguageManager,
     palette: ThemePalette,
 
     // Core data (lightweight metadata + lazy per-instance caches so switching is instant)
@@ -201,7 +201,7 @@ impl McwApp {
         configure_fonts(&cc.egui_ctx);
         let prefs = LauncherPrefs::load(&paths);
         let theme_mode = prefs.theme_mode();
-        let language = prefs.language_enum();
+        let lang = LanguageManager::load(&paths, &prefs.normalized_locale());
         let palette = apply_theme(&cc.egui_ctx, theme_mode);
 
         let runtime = Arc::new(
@@ -222,7 +222,7 @@ impl McwApp {
             tx,
             rx,
             theme_mode,
-            language,
+            lang,
             palette,
             instances: Vec::new(),
             selected_instance_id: None,
@@ -320,8 +320,8 @@ impl McwApp {
         app
     }
 
-    fn t(&self, key: &'static str) -> &'static str {
-        tr(self.language, key)
+    fn t<'a>(&'a self, key: &'a str) -> &'a str {
+        self.lang.tr(key)
     }
 
     fn save_prefs(&self) {
@@ -330,7 +330,7 @@ impl McwApp {
                 ThemeMode::Dark => "dark".to_string(),
                 ThemeMode::Light => "light".to_string(),
             },
-            language: self.language.code().to_string(),
+            language: self.lang.current_locale().to_string(),
         };
         prefs.save(&self.paths);
     }
@@ -2814,6 +2814,7 @@ impl McwApp {
                 }
 
                 // Detail Tabs
+                let mut switched_tab: Option<DetailTab> = None;
                 ui.horizontal(|ui| {
                     for (tab, label) in [
                         (DetailTab::Overview, self.t("Overview")),
@@ -2822,8 +2823,8 @@ impl McwApp {
                         (DetailTab::Worlds, self.t("Worlds")),
                         (DetailTab::Screenshots, self.t("Screenshots")),
                         (DetailTab::Backups, self.t("Backups")),
-                        (DetailTab::Logs, self.t("Logs")),
-                        (DetailTab::Settings, self.t("Settings")),
+                        (DetailTab::Logs, self.t("navigation.logs")),
+                        (DetailTab::Settings, self.t("navigation.instance_settings")),
                     ] {
                         let active = self.active_tab == tab;
                         let btn = Button::new(
@@ -2840,11 +2841,14 @@ impl McwApp {
                         ))
                         .corner_radius(CornerRadius::same(3));
                         if ui.add(btn).clicked() {
-                            self.active_tab = tab;
-                            self.ensure_active_tab_loaded(ctx);
+                            switched_tab = Some(tab);
                         }
                     }
                 });
+                if let Some(tab) = switched_tab {
+                    self.active_tab = tab;
+                    self.ensure_active_tab_loaded(ctx);
+                }
 
                 ui.add_space(8.0);
                 ui.separator();
@@ -5283,50 +5287,39 @@ impl McwApp {
                                 );
                                 ui.add_space(12.0);
 
-                                ui.horizontal(|ui| {
-                                    let en_selected = self.language == Language::En;
-                                    let en_btn = Button::new(
-                                        RichText::new("English (en-US)").strong().size(13.0).color(
-                                            if en_selected { p.accent_text } else { p.text },
-                                        ),
-                                    )
-                                    .fill(if en_selected { p.accent } else { p.elevated })
-                                    .stroke(Stroke::new(
-                                        1.0_f32,
-                                        if en_selected { p.accent } else { p.border },
-                                    ))
-                                    .min_size(Vec2::new(150.0, 42.0))
-                                    .corner_radius(CornerRadius::same(3));
-                                    if ui.add(en_btn).clicked() && !en_selected {
-                                        self.language = Language::En;
-                                        self.save_prefs();
-                                    }
-
-                                    ui.add_space(8.0);
-
-                                    let vi_selected = self.language == Language::Vi;
-                                    let vi_btn = Button::new(
-                                        RichText::new("Tiếng Việt (vi-VN)")
-                                            .strong()
-                                            .size(13.0)
-                                            .color(if vi_selected {
-                                                p.accent_text
-                                            } else {
-                                                p.text
-                                            }),
-                                    )
-                                    .fill(if vi_selected { p.accent } else { p.elevated })
-                                    .stroke(Stroke::new(
-                                        1.0_f32,
-                                        if vi_selected { p.accent } else { p.border },
-                                    ))
-                                    .min_size(Vec2::new(150.0, 42.0))
-                                    .corner_radius(CornerRadius::same(3));
-                                    if ui.add(vi_btn).clicked() && !vi_selected {
-                                        self.language = Language::Vi;
-                                        self.save_prefs();
+                                let available: Vec<(String, String)> = self
+                                    .lang
+                                    .available_languages()
+                                    .into_iter()
+                                    .map(|(loc, name)| (loc.to_string(), name.to_string()))
+                                    .collect();
+                                let current_loc = self.lang.current_locale().to_string();
+                                let mut picked_locale: Option<String> = None;
+                                ui.horizontal_wrapped(|ui| {
+                                    for (loc, name) in &available {
+                                        let selected = loc == &current_loc;
+                                        let label = format!("{name} ({loc})");
+                                        let btn = Button::new(
+                                            RichText::new(label).strong().size(13.0).color(
+                                                if selected { p.accent_text } else { p.text },
+                                            ),
+                                        )
+                                        .fill(if selected { p.accent } else { p.elevated })
+                                        .stroke(Stroke::new(
+                                            1.0_f32,
+                                            if selected { p.accent } else { p.border },
+                                        ))
+                                        .min_size(Vec2::new(165.0, 42.0))
+                                        .corner_radius(CornerRadius::same(3));
+                                        if ui.add(btn).clicked() && !selected {
+                                            picked_locale = Some(loc.clone());
+                                        }
                                     }
                                 });
+                                if let Some(loc) = picked_locale {
+                                    self.lang.set_language(&loc);
+                                    self.save_prefs();
+                                }
                             }
                         });
                     });

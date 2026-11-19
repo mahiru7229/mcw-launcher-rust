@@ -1,36 +1,206 @@
 use crate::theme::ThemeMode;
-use mcw_storage::{atomic_write_text, LauncherPaths};
+use mcw_storage::LauncherPaths;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
+use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Language {
-    En,
-    Vi,
+const EMBEDDED_EN_US: &str = include_str!("../../../lang/en-US.json");
+const EMBEDDED_VI_VN: &str = include_str!("../../../lang/vi-VN.json");
+
+pub const DEFAULT_LOCALE: &str = "en-US";
+
+#[derive(Debug, Clone, Deserialize)]
+struct LanguagePackMeta {
+    #[serde(default)]
+    locale: String,
+    #[serde(default)]
+    name: String,
 }
 
-impl Language {
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::En => "en-US",
-            Self::Vi => "vi-VN",
+#[derive(Debug, Clone, Deserialize)]
+struct LanguagePackFile {
+    meta: LanguagePackMeta,
+    #[serde(default)]
+    translations: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LanguageInfo {
+    pub locale: String,
+    pub name: String,
+    pub translations: HashMap<String, String>,
+}
+
+/// Rust port of MCW Launcher Python's `LanguageManager` (`src/core/language/language_manager.py`).
+///
+/// Loads official `lang/en-US.json` and `lang/vi-VN.json` (embedded in the binary and optionally
+/// overridden/extended by any `lang/*.json` files next to the launcher). Builds the same
+/// reverse-rendered English-value index (`_rendered_value_keys`) so both official dot-keys
+/// (e.g. `"navigation.launcher_settings"`) and exact English strings from `en-US.json`
+/// resolve directly to the official translations without inventing new dictionaries.
+pub struct LanguageManager {
+    current_locale: String,
+    languages: HashMap<String, LanguageInfo>,
+    default_translations: HashMap<String, String>,
+    rendered_value_keys: HashMap<String, String>,
+}
+
+impl LanguageManager {
+    pub fn load(paths: &LauncherPaths, preferred_locale: &str) -> Self {
+        let mut languages = HashMap::new();
+
+        // 1. Load embedded official packs
+        for raw in [EMBEDDED_EN_US, EMBEDDED_VI_VN] {
+            if let Some(info) = Self::parse_pack(raw, None) {
+                languages.insert(info.locale.clone(), info);
+            }
         }
+
+        // 2. Load/override with external `lang/*.json` files (matching Python LanguageManager)
+        let external_dir = paths.project_root.join("lang");
+        if let Ok(entries) = fs::read_dir(&external_dir) {
+            let mut files: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && p.extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.eq_ignore_ascii_case("json"))
+                            .unwrap_or(false)
+                })
+                .collect();
+            files.sort();
+            for path in files {
+                if let Ok(raw) = fs::read_to_string(&path) {
+                    let fallback = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string());
+                    if let Some(info) = Self::parse_pack(&raw, fallback.as_deref()) {
+                        languages.insert(info.locale.clone(), info);
+                    }
+                }
+            }
+        }
+
+        let default_translations = languages
+            .get(DEFAULT_LOCALE)
+            .map(|l| l.translations.clone())
+            .unwrap_or_default();
+
+        // Build reverse English-text -> key index (same strategy as Python `_build_rendered_text_index`)
+        let mut rendered_value_keys = HashMap::new();
+        for (k, v) in &default_translations {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() && !trimmed.contains('{') {
+                rendered_value_keys
+                    .entry(trimmed.to_string())
+                    .or_insert_with(|| k.clone());
+            }
+        }
+
+        let mut mgr = Self {
+            current_locale: DEFAULT_LOCALE.to_string(),
+            languages,
+            default_translations,
+            rendered_value_keys,
+        };
+        mgr.set_language(preferred_locale);
+        mgr
     }
 
-    pub fn from_code(code: &str) -> Self {
-        if code.trim().to_ascii_lowercase().starts_with("vi") {
-            Self::Vi
+    fn parse_pack(raw: &str, fallback_locale: Option<&str>) -> Option<LanguageInfo> {
+        let pack: LanguagePackFile = serde_json::from_str(raw).ok()?;
+        let locale = if !pack.meta.locale.trim().is_empty() {
+            pack.meta.locale.trim().to_string()
         } else {
-            Self::En
+            fallback_locale?.trim().to_string()
+        };
+        if locale.is_empty() {
+            return None;
         }
+        let name = if !pack.meta.name.trim().is_empty() {
+            pack.meta.name.trim().to_string()
+        } else {
+            locale.clone()
+        };
+        Some(LanguageInfo {
+            locale,
+            name,
+            translations: pack.translations,
+        })
+    }
+
+    pub fn normalize_locale(locale: &str) -> String {
+        match locale.trim().to_ascii_lowercase().as_str() {
+            "vi" | "vi-vn" | "vi_vn" => "vi-VN".to_string(),
+            "en" | "en-us" | "en_us" | "" => "en-US".to_string(),
+            _ => locale.trim().to_string(),
+        }
+    }
+
+    pub fn set_language(&mut self, locale: &str) {
+        let normalized = Self::normalize_locale(locale);
+        if self.languages.contains_key(&normalized) {
+            self.current_locale = normalized;
+        } else {
+            self.current_locale = DEFAULT_LOCALE.to_string();
+        }
+    }
+
+    pub fn current_locale(&self) -> &str {
+        &self.current_locale
+    }
+
+    pub fn available_languages(&self) -> Vec<(&str, &str)> {
+        let mut list: Vec<(&str, &str)> = self
+            .languages
+            .values()
+            .map(|l| (l.locale.as_str(), l.name.as_str()))
+            .collect();
+        list.sort_by_key(|a| a.1.to_lowercase());
+        list
+    }
+
+    /// Translates either an official MCW key (e.g. `"navigation.launcher_settings"`)
+    /// or an exact English string from `en-US.json` into the active locale.
+    pub fn tr<'a>(&'a self, key: &'a str) -> &'a str {
+        let resolved_key = self
+            .rendered_value_keys
+            .get(key)
+            .map(String::as_str)
+            .unwrap_or(key);
+
+        if let Some(pack) = self.languages.get(&self.current_locale) {
+            if let Some(val) = pack.translations.get(resolved_key) {
+                return val.as_str();
+            }
+        }
+        if let Some(val) = self.default_translations.get(resolved_key) {
+            return val.as_str();
+        }
+        key
+    }
+
+    /// Translates a key and substitutes `{name}` placeholders (compatible with Python `.format()`).
+    #[allow(dead_code)]
+    pub fn tr_fmt(&self, key: &str, vars: &[(&str, &str)]) -> String {
+        let mut text = self.tr(key).to_string();
+        for (k, v) in vars {
+            text = text.replace(&format!("{{{k}}}"), v);
+        }
+        text
     }
 }
 
+/// Persisted global launcher preferences (`config/launcher_settings.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LauncherPrefs {
     #[serde(default = "default_theme")]
     pub theme: String,
-    #[serde(default = "default_language")]
+    #[serde(default = "default_lang")]
     pub language: String,
 }
 
@@ -38,15 +208,15 @@ fn default_theme() -> String {
     "dark".to_string()
 }
 
-fn default_language() -> String {
-    "en-US".to_string()
+fn default_lang() -> String {
+    DEFAULT_LOCALE.to_string()
 }
 
 impl Default for LauncherPrefs {
     fn default() -> Self {
         Self {
             theme: default_theme(),
-            language: default_language(),
+            language: default_lang(),
         }
     }
 }
@@ -54,16 +224,16 @@ impl Default for LauncherPrefs {
 impl LauncherPrefs {
     pub fn load(paths: &LauncherPaths) -> Self {
         let path = paths.config_root.join("launcher_settings.json");
-        fs::read_to_string(path)
+        fs::read_to_string(&path)
             .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .and_then(|raw| serde_json::from_str::<Self>(&raw).ok())
             .unwrap_or_default()
     }
 
     pub fn save(&self, paths: &LauncherPaths) {
         let path = paths.config_root.join("launcher_settings.json");
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = atomic_write_text(&path, &json);
+            let _ = mcw_storage::atomic_write_text(&path, &json);
         }
     }
 
@@ -75,80 +245,31 @@ impl LauncherPrefs {
         }
     }
 
-    pub fn language_enum(&self) -> Language {
-        Language::from_code(&self.language)
-    }
-}
-
-/// Concise EN/VI dictionary matching MCW Launcher's standard Vietnamese terminology.
-pub fn tr(lang: Language, key: &'static str) -> &'static str {
-    match lang {
-        Language::En => key,
-        Language::Vi => match key {
-            "Launcher Settings" => "Cài đặt Launcher",
-            "Appearance" => "Giao diện",
-            "Language" => "Ngôn ngữ",
-            "Select the launcher color theme (Default: Dark)." => {
-                "Chọn giao diện màu cho Launcher (Mặc định: Tối)."
-            }
-            "Select the interface language for MCW Launcher." => {
-                "Chọn ngôn ngữ hiển thị cho MCW Launcher."
-            }
-            "Dark (Default)" => "Tối (Mặc định)",
-            "Light" => "Sáng",
-            "Sign in / Add Account" => "Đăng nhập / Thêm tài khoản",
-            "+ New Instance / Modpack" => "+ Tạo Instance / Modpack",
-            "No instances yet" => "Chưa có Instance nào",
-            "Create an instance to get started." => "Tạo một Instance mới để bắt đầu.",
-            "Launch" => "Khởi chạy",
-            "Stop Game" => "Dừng Game",
-            "Preparing..." => "Đang chuẩn bị...",
-            "Overview" => "Tổng quan",
-            "Mods" => "Mods",
-            "Packs" => "Gói tài nguyên",
-            "Worlds" => "Thế giới",
-            "Screenshots" => "Ảnh chụp",
-            "Backups" => "Sao lưu",
-            "Logs" => "Nhật ký",
-            "Settings" => "Cài đặt",
-            "Open .minecraft" => "Mở .minecraft",
-            "Rename" => "Đổi tên",
-            "Repair Files" => "Sửa chữa tệp",
-            "Delete" => "Xóa",
-            "Resource Packs" => "Gói tài nguyên",
-            "Shader Packs" => "Gói Shader",
-            "Open Folder" => "Mở thư mục",
-            "Refresh" => "Làm mới",
-            "Search" => "Tìm kiếm",
-            "Install" => "Cài đặt",
-            "Installing..." => "Đang cài...",
-            "Remove" => "Gỡ bỏ",
-            "Close" => "Đóng",
-            "Cancel" => "Hủy",
-            "Save Settings" => "Lưu cài đặt",
-            "Quick Play" => "Chơi nhanh",
-            "Duplicate" => "Nhân bản",
-            "Upload to mclo.gs" => "Tải lên mclo.gs",
-            "Open Manual Downloads" => "Mở tải thủ công",
-            "Scan Downloads Now" => "Quét thư mục Tải xuống",
-            "INCOMPLETE MODPACK" => "MODPACK CHƯA HOÀN TẤT",
-            "ACTIVE INSTALLS" => "ĐANG CÀI ĐẶT",
-            "Export .mrpack" => "Xuất .mrpack",
-            _ => key,
-        },
+    pub fn normalized_locale(&self) -> String {
+        LanguageManager::normalize_locale(&self.language)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
-    fn resolves_en_and_vi_translations() {
-        assert_eq!(tr(Language::En, "Launch"), "Launch");
-        assert_eq!(tr(Language::Vi, "Launch"), "Khởi chạy");
-        assert_eq!(tr(Language::Vi, "Launcher Settings"), "Cài đặt Launcher");
-        assert_eq!(Language::from_code("vi-VN"), Language::Vi);
-        assert_eq!(Language::from_code("en-US"), Language::En);
+    fn loads_official_mcw_en_and_vi_packs_and_resolves_keys_and_rendered_text() {
+        let tmp = tempdir().unwrap();
+        let paths = LauncherPaths::portable(tmp.path());
+
+        let mut mgr = LanguageManager::load(&paths, "en-US");
+        assert_eq!(mgr.tr("navigation.launcher_settings"), "Launcher Settings");
+        assert_eq!(mgr.tr("launch.button"), "Launch");
+
+        mgr.set_language("vi-VN");
+        assert_eq!(mgr.tr("navigation.launcher_settings"), "Cài đặt launcher");
+        assert_eq!(mgr.tr("Launcher Settings"), "Cài đặt launcher");
+        assert_ne!(
+            mgr.tr("modpack_package.export.title"),
+            "modpack_package.export.title"
+        );
     }
 }
