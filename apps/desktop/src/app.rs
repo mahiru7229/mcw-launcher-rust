@@ -295,7 +295,9 @@ impl McwApp {
                         AccountSource::Offline,
                     ),
                     AccountSource::Microsoft => {
-                        let rt = AccountStore::load_refresh_token(&account.uuid)
+                        let acc_store = AccountStore::new(&paths);
+                        let rt = acc_store
+                            .load_refresh_token(&account.uuid)
                             .map_err(|e| e.to_string())?;
                         let ms = MicrosoftAuthClient::new().map_err(|e| e.to_string())?;
                         let refreshed = ms
@@ -307,7 +309,7 @@ impl McwApp {
                             .await
                             .map_err(|e| e.to_string())?;
                         if let Some(ref new_rt) = login.refresh_token {
-                            let _ = AccountStore::store_refresh_token(&account.uuid, new_rt);
+                            let _ = acc_store.store_refresh_token(&account.uuid, new_rt);
                         }
                         (login.authentication, AccountSource::Microsoft)
                     }
@@ -431,8 +433,9 @@ impl McwApp {
                     .await
                     .map_err(|e| e.to_string())?;
                 let uuid = login.authentication.uuid.clone();
+                let store = AccountStore::new(&paths);
                 if let Some(ref rt) = login.refresh_token {
-                    AccountStore::store_refresh_token(&uuid, rt).map_err(|e| e.to_string())?;
+                    store.store_refresh_token(&uuid, rt).map_err(|e| e.to_string())?;
                 }
                 let stored = StoredAccount {
                     uuid,
@@ -441,7 +444,6 @@ impl McwApp {
                     skin_url: login.profile.active_skin_url(),
                     active: true,
                 };
-                let store = AccountStore::new(&paths);
                 store.upsert(stored, true).map_err(|e| e.to_string())
             }
             .await;

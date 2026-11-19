@@ -607,7 +607,7 @@ async fn main() -> Result<()> {
                     let login = client.complete_minecraft_chain(oauth).await?;
                     let uuid = login.authentication.uuid.clone();
                     if let Some(ref rt) = login.refresh_token {
-                        AccountStore::store_refresh_token(&uuid, rt)?;
+                        store.store_refresh_token(&uuid, rt)?;
                     }
                     let stored = StoredAccount {
                         uuid,
@@ -685,12 +685,12 @@ async fn main() -> Result<()> {
                             AccountSource::Offline,
                         ),
                         AccountSource::Microsoft => {
-                            let rt = AccountStore::load_refresh_token(&stored.uuid)?;
+                            let rt = acc_store.load_refresh_token(&stored.uuid)?;
                             let ms_client = MicrosoftAuthClient::new()?;
                             let refreshed = ms_client.refresh_microsoft_token(&rt).await?;
                             let login = ms_client.complete_minecraft_chain(refreshed).await?;
                             if let Some(ref new_rt) = login.refresh_token {
-                                let _ = AccountStore::store_refresh_token(&stored.uuid, new_rt);
+                                let _ = acc_store.store_refresh_token(&stored.uuid, new_rt);
                             }
                             (login.authentication, AccountSource::Microsoft)
                         }

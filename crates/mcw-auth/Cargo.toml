@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 base64.workspace = true
-keyring.workspace = true
 mcw-models.workspace = true
 mcw-storage.workspace = true
 md-5.workspace = true
@@ -19,6 +18,12 @@ thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
 uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory"] }
+
+[target.'cfg(not(windows))'.dependencies]
+keyring = { version = "3.6", features = ["apple-native", "sync-secret-service"] }
 
 [dev-dependencies]
 tempfile.workspace = true
