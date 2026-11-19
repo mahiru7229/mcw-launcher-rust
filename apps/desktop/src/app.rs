@@ -1827,7 +1827,7 @@ impl McwApp {
                                     p.text
                                 }));
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.small_button("Dismiss").clicked() {
+                                    if ui.button("Dismiss").clicked() {
                                         self.notice_banner = None;
                                     }
                                 });
@@ -1951,7 +1951,7 @@ impl McwApp {
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.warning))
                         .corner_radius(CornerRadius::same(3))
-                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .inner_margin(egui::Margin::symmetric(12, 8))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(
@@ -1974,12 +1974,11 @@ impl McwApp {
                                             .color(Color32::BLACK)
                                             .strong(),
                                     )
-                                    .fill(p.warning)
-                                    .small();
+                                    .fill(p.warning);
                                     if ui.add(open_btn).clicked() {
                                         self.open_manual_downloads_for(&inst.instance_id);
                                     }
-                                    if ui.small_button("Scan Downloads Now").clicked() {
+                                    if ui.button("Scan Downloads Now").clicked() {
                                         self.run_manual_downloads_scan(&inst.instance_id, true);
                                     }
                                 });
@@ -2244,15 +2243,14 @@ impl McwApp {
                                     if ui
                                         .add_enabled(
                                             !disabled,
-                                            Button::new(RichText::new("Delete").color(p.danger))
-                                                .small(),
+                                            Button::new(RichText::new("Delete").color(p.danger)),
                                         )
                                         .clicked()
                                     {
                                         delete_id = Some(b.id.clone());
                                     }
                                     if ui
-                                        .add_enabled(!disabled, Button::new("Restore").small())
+                                        .add_enabled(!disabled, Button::new("Restore"))
                                         .clicked()
                                     {
                                         self.pending_restore_backup_id = Some(b.id.clone());
@@ -2334,7 +2332,7 @@ impl McwApp {
                                 .color(p.text_muted),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("Close results").clicked() {
+                            if ui.button("Close results").clicked() {
                                 self.curseforge_results.clear();
                             }
                         });
@@ -2370,7 +2368,7 @@ impl McwApp {
                                             };
                                             let resp = ui.add_enabled(
                                                 can_install,
-                                                Button::new(btn_label).small(),
+                                                Button::new(btn_label),
                                             );
                                             if inst.mod_loader.is_vanilla() {
                                                 resp.on_disabled_hover_text(
@@ -2385,7 +2383,7 @@ impl McwApp {
                                                 .as_ref()
                                                 .and_then(|l| l.website_url.as_ref())
                                             {
-                                                if ui.small_button("Web").clicked() {
+                                                if ui.button("Web").clicked() {
                                                     open_external(url);
                                                 }
                                             }
@@ -2416,7 +2414,7 @@ impl McwApp {
                                 .color(p.text_muted),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("Close results").clicked() {
+                            if ui.button("Close results").clicked() {
                                 self.modrinth_results.clear();
                             }
                         });
@@ -2447,7 +2445,7 @@ impl McwApp {
                                         };
                                         let resp = ui.add_enabled(
                                             can_install,
-                                            Button::new(btn_label).small(),
+                                            Button::new(btn_label),
                                         );
                                         if inst.mod_loader.is_vanilla() {
                                             resp.on_disabled_hover_text(
@@ -2536,7 +2534,7 @@ impl McwApp {
                                 });
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if ui
-                                        .small_button(RichText::new("Remove").color(p.danger))
+                                        .button(RichText::new("Remove").color(p.danger))
                                         .clicked()
                                     {
                                         delete_action = Some(m.file_name.clone());
@@ -2906,7 +2904,7 @@ impl McwApp {
                                                             .monospace()
                                                             .size(11.0),
                                                     );
-                                                    if ui.small_button("Open URL").clicked() {
+                                                    if ui.button("Open URL").clicked() {
                                                         open_external(&item.website_url);
                                                     }
                                                 });
@@ -3009,8 +3007,7 @@ impl McwApp {
                                                                     .color(p.accent_text)
                                                                     .strong(),
                                                                 )
-                                                                .fill(p.accent)
-                                                                .small();
+                                                                .fill(p.accent);
                                                                 if ui
                                                                     .add_enabled(
                                                                         !is_this_installing,
@@ -3292,7 +3289,7 @@ impl McwApp {
                                 }
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if ui
-                                        .small_button(RichText::new("Remove").color(p.danger))
+                                        .button(RichText::new("Remove").color(p.danger))
                                         .clicked()
                                     {
                                         remove_uuid = Some(acc.uuid.clone());
@@ -3389,10 +3386,10 @@ impl McwApp {
                                             .strong()
                                             .color(p.accent),
                                     );
-                                    if ui.small_button("Copy Code").clicked() {
+                                    if ui.button("Copy Code").clicked() {
                                         ui.ctx().copy_text(dc.user_code.clone());
                                     }
-                                    if ui.small_button("Copy URL (for InPrivate)").clicked() {
+                                    if ui.button("Copy URL (for InPrivate)").clicked() {
                                         ui.ctx().copy_text(dc.verification_uri.clone());
                                     }
                                 });
@@ -3762,7 +3759,7 @@ impl McwApp {
                                             ui.with_layout(
                                                 Layout::right_to_left(Align::Center),
                                                 |ui| {
-                                                    if ui.small_button("Open Page").clicked() {
+                                                    if ui.button("Open Page").clicked() {
                                                         open_external(&item.website_url);
                                                     }
                                                 },

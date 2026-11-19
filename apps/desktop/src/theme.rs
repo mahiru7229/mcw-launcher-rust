@@ -101,7 +101,8 @@ pub fn apply_theme(ctx: &Context, mode: ThemeMode) -> ThemePalette {
         ..Style::default()
     };
     style.spacing.item_spacing = eframe::egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = eframe::egui::vec2(10.0, 5.0);
+    style.spacing.button_padding = eframe::egui::vec2(12.0, 6.0);
+    style.spacing.interact_size = eframe::egui::vec2(40.0, 26.0);
     style.spacing.window_margin = eframe::egui::Margin::same(12);
     ctx.set_style(style);
 
