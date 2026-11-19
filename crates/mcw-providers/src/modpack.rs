@@ -277,6 +277,14 @@ impl ModpackInstaller {
         );
         let extracted_overrides = extract_overrides(archive_path, &[&override_prefix], &mc_dir)?;
 
+        // Persist pending manual downloads inside the instance folder so the user can resume later.
+        let pending_path = paths.instance_dir(&inst.instance_id).join("pending_manual_downloads.json");
+        if !manual_downloads.is_empty() {
+            if let Ok(json) = serde_json::to_string_pretty(&manual_downloads) {
+                let _ = mcw_storage::atomic_write_text(&pending_path, &json);
+            }
+        }
+
         Ok(ModpackInstallReport {
             instance_id: inst.instance_id,
             game_version,
@@ -285,6 +293,70 @@ impl ModpackInstaller {
             extracted_overrides,
             manual_downloads,
         })
+    }
+
+    /// Load persisted pending manual downloads for an instance, filtering out any files
+    /// that are already present in `.minecraft/mods/`.
+    pub fn load_pending_manual_downloads(
+        paths: &LauncherPaths,
+        instance_id: &str,
+    ) -> Vec<ManualDownloadItem> {
+        let pending_path = paths
+            .instance_dir(instance_id)
+            .join("pending_manual_downloads.json");
+        let Ok(raw) = fs::read_to_string(&pending_path) else {
+            return Vec::new();
+        };
+        let items: Vec<ManualDownloadItem> = serde_json::from_str(&raw).unwrap_or_default();
+        let mods_dir = paths.minecraft_dir(instance_id).join("mods");
+        let remaining: Vec<ManualDownloadItem> = items
+            .into_iter()
+            .filter(|item| !mods_dir.join(&item.file_name).is_file())
+            .collect();
+        if remaining.is_empty() {
+            let _ = fs::remove_file(&pending_path);
+        }
+        remaining
+    }
+
+    /// Scan `downloads_dir` (e.g. user's Downloads folder) for any matching `ManualDownloadItem`
+    /// filenames and copy them into `instances/<id>/.minecraft/mods/`. Returns `(imported_count, remaining)`.
+    pub fn scan_and_import_manual_downloads(
+        paths: &LauncherPaths,
+        instance_id: &str,
+        items: &[ManualDownloadItem],
+        downloads_dir: &Path,
+    ) -> Result<(usize, Vec<ManualDownloadItem>)> {
+        let mods_dir = paths.minecraft_dir(instance_id).join("mods");
+        fs::create_dir_all(&mods_dir)?;
+
+        let mut imported = 0usize;
+        let mut remaining = Vec::new();
+
+        for item in items {
+            let target = mods_dir.join(&item.file_name);
+            if target.is_file() {
+                continue;
+            }
+            let candidate = downloads_dir.join(&item.file_name);
+            if candidate.is_file() {
+                fs::copy(&candidate, &target)?;
+                imported += 1;
+            } else {
+                remaining.push(item.clone());
+            }
+        }
+
+        let pending_path = paths
+            .instance_dir(instance_id)
+            .join("pending_manual_downloads.json");
+        if remaining.is_empty() {
+            let _ = fs::remove_file(&pending_path);
+        } else if let Ok(json) = serde_json::to_string_pretty(&remaining) {
+            let _ = mcw_storage::atomic_write_text(&pending_path, &json);
+        }
+
+        Ok((imported, remaining))
     }
 }
 

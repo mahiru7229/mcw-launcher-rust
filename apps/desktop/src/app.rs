@@ -118,6 +118,12 @@ pub struct McwApp {
     ftb_results: Vec<FtbPackSummary>,
     atl_results: Vec<AtLauncherPack>,
 
+    // Manual Downloads dedicated screen (CurseForge opt-out mods)
+    show_manual_downloads_modal: bool,
+    manual_downloads_instance_id: Option<String>,
+    manual_downloads_items: Vec<ManualDownloadItem>,
+    manual_downloads_dir_input: String,
+
     // CurseForge API / Launcher Settings modal
     show_api_modal: bool,
     cf_api_key_input: String,
@@ -167,6 +173,9 @@ impl McwApp {
 
         let initial_cf_key =
             load_curseforge_api_key(Some(&paths.project_root)).unwrap_or_default();
+        let default_downloads_dir = default_user_downloads_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
 
         let mut app = Self {
             paths,
@@ -210,6 +219,10 @@ impl McwApp {
             cf_pack_results: Vec::new(),
             ftb_results: Vec::new(),
             atl_results: Vec::new(),
+            show_manual_downloads_modal: false,
+            manual_downloads_instance_id: None,
+            manual_downloads_items: Vec::new(),
+            manual_downloads_dir_input: default_downloads_dir,
             show_api_modal: false,
             cf_api_key_input: initial_cf_key,
             cf_api_key_visible: false,
@@ -269,6 +282,11 @@ impl McwApp {
         self.selected_backups = BackupManager::new(&self.paths)
             .list_backups(id)
             .unwrap_or_default();
+        let pending = ModpackInstaller::load_pending_manual_downloads(&self.paths, id);
+        if !pending.is_empty() && self.manual_downloads_instance_id.as_deref() == Some(id.as_str())
+        {
+            self.manual_downloads_items = pending;
+        }
     }
 
     fn reload_accounts(&mut self) {
@@ -1325,18 +1343,25 @@ impl McwApp {
                         Ok(rep) => {
                             self.selected_instance_id = Some(rep.instance_id.clone());
                             self.reload_instances();
-                            self.modpack_manual_downloads = rep.manual_downloads;
-                            if self.modpack_manual_downloads.is_empty() {
-                                self.show_create_modal = false;
+                            self.show_create_modal = false;
+                            if !rep.manual_downloads.is_empty() {
+                                self.manual_downloads_instance_id = Some(rep.instance_id.clone());
+                                self.manual_downloads_items = rep.manual_downloads.clone();
+                                self.show_manual_downloads_modal = true;
                             }
                             self.notice_banner = Some((
                                 format!(
-                                    "Installed modpack '{}' (MC {}, {} — {} files, {} overrides).",
+                                    "Installed modpack '{}' (MC {}, {} — {} files, {} overrides{}).",
                                     rep.instance_id,
                                     rep.game_version,
                                     rep.loader.name,
                                     rep.downloaded_files,
-                                    rep.extracted_overrides
+                                    rep.extracted_overrides,
+                                    if rep.manual_downloads.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(", {} manual downloads required", rep.manual_downloads.len())
+                                    }
                                 ),
                                 false,
                             ));
@@ -2055,6 +2080,44 @@ impl McwApp {
     fn render_mods_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, inst: &Instance) {
         let p = self.palette;
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
+
+        // Banner if this instance still has pending manual downloads (CurseForge opt-out mods)
+        let pending_manual =
+            ModpackInstaller::load_pending_manual_downloads(&self.paths, &inst.instance_id);
+        if !pending_manual.is_empty() {
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.warning))
+                .corner_radius(CornerRadius::same(3))
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} mod(s) require manual download (third-party distribution disabled).",
+                                pending_manual.len()
+                            ))
+                            .strong()
+                            .color(p.warning),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let btn = Button::new(
+                                RichText::new("Open Manual Downloads")
+                                    .color(p.accent_text)
+                                    .strong(),
+                            )
+                            .fill(p.accent)
+                            .small();
+                            if ui.add(btn).clicked() {
+                                self.manual_downloads_instance_id = Some(inst.instance_id.clone());
+                                self.manual_downloads_items = pending_manual.clone();
+                                self.show_manual_downloads_modal = true;
+                            }
+                        });
+                    });
+                });
+            ui.add_space(6.0);
+        }
 
         // Mod Provider Search Bar (Modrinth | CurseForge)
         ui.horizontal(|ui| {
@@ -3380,6 +3443,162 @@ impl McwApp {
                     });
                 });
         }
+
+        // 8. Dedicated Manual Downloads Screen (CurseForge opt-out mods)
+        if self.show_manual_downloads_modal {
+            let inst_id = self
+                .manual_downloads_instance_id
+                .clone()
+                .or_else(|| self.selected_instance_id.clone())
+                .unwrap_or_default();
+            egui::Window::new(format!(
+                "Manual Downloads Required ({} remaining)",
+                self.manual_downloads_items.len()
+            ))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(580.0)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_width(540.0);
+                ui.label(
+                    RichText::new(
+                        "These mods have third-party distribution disabled by their authors on CurseForge.",
+                    )
+                    .strong()
+                    .color(p.warning),
+                );
+                ui.label(
+                    RichText::new(
+                        "1. Click 'Open Page' (or 'Open Next 5') to download the .jar files in your browser.\n2. Click 'Scan Downloads & Import' to automatically copy them into this instance's mods/ folder.",
+                    )
+                    .size(11.5)
+                    .color(p.text_muted),
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Downloads Folder:");
+                    ui.add(
+                        TextEdit::singleline(&mut self.manual_downloads_dir_input)
+                            .desired_width(300.0),
+                    );
+                    let scan_btn = Button::new(
+                        RichText::new("Scan Downloads & Import")
+                            .color(p.accent_text)
+                            .strong(),
+                    )
+                    .fill(p.accent);
+                    if ui.add(scan_btn).clicked() && !inst_id.is_empty() {
+                        let dl_dir = PathBuf::from(self.manual_downloads_dir_input.trim());
+                        match ModpackInstaller::scan_and_import_manual_downloads(
+                            &self.paths,
+                            &inst_id,
+                            &self.manual_downloads_items,
+                            &dl_dir,
+                        ) {
+                            Ok((imported, remaining)) => {
+                                self.manual_downloads_items = remaining;
+                                self.load_selected_details();
+                                self.notice_banner = Some((
+                                    format!(
+                                        "Imported {imported} mod(s) from Downloads ({} remaining).",
+                                        self.manual_downloads_items.len()
+                                    ),
+                                    false,
+                                ));
+                                if self.manual_downloads_items.is_empty() {
+                                    self.show_manual_downloads_modal = false;
+                                }
+                            }
+                            Err(e) => {
+                                self.notice_banner =
+                                    Some((format!("Scan Downloads failed: {e}"), true));
+                            }
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.manual_downloads_items.is_empty(),
+                            Button::new("Open Next 5 Links"),
+                        )
+                        .clicked()
+                    {
+                        for item in self.manual_downloads_items.iter().take(5) {
+                            open_external(&item.website_url);
+                        }
+                    }
+                    if !inst_id.is_empty() && ui.button("Open Instance mods/ Folder").clicked() {
+                        let mods_dir = self.paths.minecraft_dir(&inst_id).join("mods");
+                        let _ = std::fs::create_dir_all(&mods_dir);
+                        open_external(&mods_dir.display().to_string());
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                if self.manual_downloads_items.is_empty() {
+                    ui.label(
+                        RichText::new("All manual mods have been imported!")
+                            .strong()
+                            .color(p.accent),
+                    );
+                } else {
+                    ScrollArea::vertical()
+                        .id_salt("manual_downloads_modal_scroll")
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            for item in &self.manual_downloads_items {
+                                Frame::new()
+                                    .fill(p.elevated)
+                                    .stroke(Stroke::new(1.0_f32, p.border))
+                                    .corner_radius(CornerRadius::same(3))
+                                    .inner_margin(egui::Margin::symmetric(8, 5))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.label(
+                                                    RichText::new(&item.file_name)
+                                                        .monospace()
+                                                        .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "Mod #{} · File #{}",
+                                                        item.mod_id, item.file_id
+                                                    ))
+                                                    .size(11.0)
+                                                    .color(p.text_muted),
+                                                );
+                                            });
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if ui.small_button("Open Page").clicked() {
+                                                        open_external(&item.website_url);
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    });
+                                ui.add_space(4.0);
+                            }
+                        });
+                }
+
+                ui.add_space(10.0);
+                if ui.button("Close").clicked() {
+                    self.show_manual_downloads_modal = false;
+                }
+            });
+        }
     }
 }
 
@@ -3390,6 +3609,17 @@ impl eframe::App for McwApp {
         self.render_sidebar(ctx);
         self.render_detail_pane(ctx);
         self.render_modals(ctx);
+    }
+}
+
+fn default_user_downloads_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads"))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Downloads"))
     }
 }
 
