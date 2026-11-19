@@ -12,7 +12,9 @@ pub use curseforge::{
     CurseForgeMod, CurseForgeSearchParams, CurseForgeSearchResult,
 };
 pub use ftb::{FtbClient, FtbPackSummary};
-pub use modpack::{ManualDownloadItem, ModpackInstallReport, ModpackInstaller};
+pub use modpack::{
+    ManualDownloadItem, ModpackInstallReport, ModpackInstaller, ModpackProgressCallback,
+};
 pub use modrinth::{
     InstalledModFile, ModrinthClient, ModrinthDependency, ModrinthFile, ModrinthSearchHit,
     ModrinthSearchParams, ModrinthSearchResult, ModrinthVersion,

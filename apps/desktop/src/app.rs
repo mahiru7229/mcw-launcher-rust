@@ -1,4 +1,4 @@
-use crate::state::{AppEvent, ChannelLogSink, ChannelProgressSink};
+use crate::state::{ActiveTask, AppEvent, ChannelLogSink, ChannelProgressSink};
 use crate::theme::{apply_theme, configure_fonts, ThemeMode, ThemePalette};
 use eframe::egui::{
     self, Align, Button, Color32, CornerRadius, Frame, Layout, RichText, ScrollArea, Stroke,
@@ -16,8 +16,8 @@ use mcw_net::DownloadClient;
 use mcw_providers::{
     load_curseforge_api_key, save_curseforge_api_key_to_dotenv, ApiCache, AtLauncherClient,
     AtLauncherPack, CurseForgeClient, CurseForgeMod, CurseForgeSearchParams, FtbClient,
-    FtbPackSummary, ManualDownloadItem, ModpackInstaller, ModrinthClient, ModrinthSearchHit,
-    ModrinthSearchParams,
+    FtbPackSummary, ManualDownloadItem, ModpackInstaller, ModpackProgressCallback, ModrinthClient,
+    ModrinthSearchHit, ModrinthSearchParams,
 };
 use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, LogLine, LogStream,
@@ -28,7 +28,7 @@ use mcw_storage::{
     LauncherPaths, MigrationReport,
 };
 use mcw_updater::{UpdateChannel, UpdateCheckResult, UpdateChecker};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -91,12 +91,20 @@ pub struct McwApp {
     instance_logs: HashMap<String, Vec<LogLine>>,
     logs_errors_only: bool,
 
+    // Concurrent background install tasks (shown live on global bottom progress bar)
+    next_task_id: u64,
+    active_tasks: Vec<ActiveTask>,
+    installing_cf_packs: HashSet<u64>,
+    installing_archive_count: usize,
+    installing_cf_mods: HashSet<u64>,
+    installing_modrinth_slugs: HashSet<String>,
+    installing_java_majors: HashSet<u32>,
+
     // UI state
     active_tab: DetailTab,
     notice_banner: Option<(String, bool)>, // (message, is_error)
     update_status: Option<UpdateCheckResult>,
     checking_update: bool,
-    installing_java: bool,
     backup_busy: bool,
     backup_note_input: String,
     pending_restore_backup_id: Option<String>,
@@ -110,7 +118,6 @@ pub struct McwApp {
     create_error: Option<String>,
     modpack_path_input: String,
     modpack_name_input: String,
-    modpack_installing: bool,
     modpack_manual_downloads: Vec<ManualDownloadItem>,
     pack_browser_query: String,
     pack_browser_searching: bool,
@@ -154,7 +161,6 @@ pub struct McwApp {
     modrinth_results: Vec<ModrinthSearchHit>,
     curseforge_results: Vec<CurseForgeMod>,
     mod_searching: bool,
-    modrinth_installing: bool,
 }
 
 impl McwApp {
@@ -196,11 +202,17 @@ impl McwApp {
             launch_states: HashMap::new(),
             instance_logs: HashMap::new(),
             logs_errors_only: false,
+            next_task_id: 1,
+            active_tasks: Vec::new(),
+            installing_cf_packs: HashSet::new(),
+            installing_archive_count: 0,
+            installing_cf_mods: HashSet::new(),
+            installing_modrinth_slugs: HashSet::new(),
+            installing_java_majors: HashSet::new(),
             active_tab: DetailTab::Overview,
             notice_banner: None,
             update_status: None,
             checking_update: false,
-            installing_java: false,
             backup_busy: false,
             backup_note_input: String::new(),
             pending_restore_backup_id: None,
@@ -212,7 +224,6 @@ impl McwApp {
             create_error: None,
             modpack_path_input: String::new(),
             modpack_name_input: String::new(),
-            modpack_installing: false,
             modpack_manual_downloads: Vec::new(),
             pack_browser_query: String::new(),
             pack_browser_searching: false,
@@ -244,7 +255,6 @@ impl McwApp {
             modrinth_results: Vec::new(),
             curseforge_results: Vec::new(),
             mod_searching: false,
-            modrinth_installing: false,
         };
 
         app.reload_instances();
@@ -315,6 +325,23 @@ impl McwApp {
             self.launch_states.get(instance_id),
             None | Some(LaunchState::Idle)
         )
+    }
+
+    fn begin_task(&mut self, label: impl Into<String>, message: impl Into<String>) -> u64 {
+        let id = self.next_task_id;
+        self.next_task_id += 1;
+        self.active_tasks.push(ActiveTask {
+            id,
+            label: label.into(),
+            message: message.into(),
+            current: 0,
+            total: 0,
+        });
+        id
+    }
+
+    fn finish_task(&mut self, task_id: u64) {
+        self.active_tasks.retain(|t| t.id != task_id);
     }
 
     fn fetch_versions(&mut self, ctx: &egui::Context) {
@@ -655,10 +682,13 @@ impl McwApp {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
         };
-        if self.modrinth_installing {
+        if !self.installing_cf_mods.insert(mod_id) {
             return;
         }
-        self.modrinth_installing = true;
+        let task_id = self.begin_task(
+            format!("Mod (CurseForge): {slug}"),
+            format!("Downloading into {}...", inst.name),
+        );
         let api_key = self.resolved_cf_api_key();
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
         let cache_path = self
@@ -694,6 +724,8 @@ impl McwApp {
             }
             .await;
             let _ = tx.send(AppEvent::CurseForgeModInstallFinished {
+                task_id,
+                mod_id,
                 instance_id: inst.instance_id,
                 result: res,
             });
@@ -741,29 +773,55 @@ impl McwApp {
         pack_name: String,
         ctx: &egui::Context,
     ) {
-        if self.modpack_installing {
+        if !self.installing_cf_packs.insert(mod_id) {
             return;
         }
-        self.modpack_installing = true;
         self.modpack_manual_downloads.clear();
+        let task_id = self.begin_task(
+            format!("Modpack: {pack_name}"),
+            "Fetching modpack metadata...",
+        );
         let api_key = self.resolved_cf_api_key();
         let paths = self.paths.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
+            let tx_prog = tx.clone();
+            let ctx_prog = ctx.clone();
+            let progress: ModpackProgressCallback = Arc::new(move |current, total, message| {
+                let _ = tx_prog.send(AppEvent::TaskProgress {
+                    task_id,
+                    message,
+                    current,
+                    total,
+                });
+                ctx_prog.request_repaint();
+            });
+
             let res = async {
                 let cache_path = paths.cache_root.join("providers").join("api_cache.sqlite");
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
                 let client = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
                 let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
                 client
-                    .install_modpack(mod_id, Some(&slug), Some(&pack_name), &paths, &downloader)
+                    .install_modpack_with_progress(
+                        mod_id,
+                        Some(&slug),
+                        Some(&pack_name),
+                        &paths,
+                        &downloader,
+                        Some(progress),
+                    )
                     .await
                     .map_err(|e| e.to_string())
             }
             .await;
-            let _ = tx.send(AppEvent::ModpackInstalled(res));
+            let _ = tx.send(AppEvent::ModpackInstalled {
+                task_id,
+                cf_pack_id: Some(mod_id),
+                result: res,
+            });
             ctx.request_repaint();
         });
     }
@@ -772,10 +830,13 @@ impl McwApp {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
         };
-        if self.modrinth_installing {
+        if !self.installing_modrinth_slugs.insert(slug.clone()) {
             return;
         }
-        self.modrinth_installing = true;
+        let task_id = self.begin_task(
+            format!("Mod (Modrinth): {slug}"),
+            format!("Resolving & downloading into {}...", inst.name),
+        );
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
         let cache_path = self
             .paths
@@ -805,6 +866,8 @@ impl McwApp {
             }
             .await;
             let _ = tx.send(AppEvent::ModrinthInstallFinished {
+                task_id,
+                slug,
                 instance_id: inst.instance_id,
                 result: res,
             });
@@ -813,14 +876,13 @@ impl McwApp {
     }
 
     fn start_java_install(&mut self, major: u32, ctx: &egui::Context) {
-        if self.installing_java {
+        if !self.installing_java_majors.insert(major) {
             return;
         }
-        self.installing_java = true;
-        self.notice_banner = Some((
-            format!("Downloading managed Eclipse Temurin Java {major}..."),
-            false,
-        ));
+        let task_id = self.begin_task(
+            format!("Temurin Java {major}"),
+            "Downloading & extracting managed runtime...",
+        );
         let runtimes_root = self.paths.runtimes_root.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
@@ -833,7 +895,11 @@ impl McwApp {
                     .map_err(|e| e.to_string())
             }
             .await;
-            let _ = tx.send(AppEvent::JavaInstallFinished(res));
+            let _ = tx.send(AppEvent::JavaInstallFinished {
+                task_id,
+                major,
+                result: res,
+            });
             ctx.request_repaint();
         });
     }
@@ -941,9 +1007,6 @@ impl McwApp {
     }
 
     fn start_modpack_install(&mut self, ctx: &egui::Context) {
-        if self.modpack_installing {
-            return;
-        }
         let archive = PathBuf::from(self.modpack_path_input.trim());
         if !archive.is_file() {
             self.notice_banner = Some((
@@ -952,14 +1015,39 @@ impl McwApp {
             ));
             return;
         }
-        self.modpack_installing = true;
+        self.installing_archive_count += 1;
         self.modpack_manual_downloads.clear();
         let name_override = self.modpack_name_input.trim().to_string();
+        let label_name = if !name_override.is_empty() {
+            name_override.clone()
+        } else {
+            archive
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("modpack")
+                .to_string()
+        };
+        let task_id = self.begin_task(
+            format!("Import: {label_name}"),
+            "Reading modpack archive...",
+        );
         let paths = self.paths.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
+            let tx_prog = tx.clone();
+            let ctx_prog = ctx.clone();
+            let progress: ModpackProgressCallback = Arc::new(move |current, total, message| {
+                let _ = tx_prog.send(AppEvent::TaskProgress {
+                    task_id,
+                    message,
+                    current,
+                    total,
+                });
+                ctx_prog.request_repaint();
+            });
+
             let res = async {
                 let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
                 let cache_path = paths.cache_root.join("providers").join("api_cache.sqlite");
@@ -970,18 +1058,23 @@ impl McwApp {
                 } else {
                     Some(name_override.as_str())
                 };
-                ModpackInstaller::install_from_archive(
+                ModpackInstaller::install_from_archive_with_progress(
                     &paths,
                     &archive,
                     opt_name,
                     &downloader,
                     cf.as_ref(),
+                    Some(progress),
                 )
                 .await
                 .map_err(|e| e.to_string())
             }
             .await;
-            let _ = tx.send(AppEvent::ModpackInstalled(res));
+            let _ = tx.send(AppEvent::ModpackInstalled {
+                task_id,
+                cf_pack_id: None,
+                result: res,
+            });
             ctx.request_repaint();
         });
     }
@@ -1099,6 +1192,18 @@ impl McwApp {
                         self.available_versions = list;
                     }
                 }
+                AppEvent::TaskProgress {
+                    task_id,
+                    message,
+                    current,
+                    total,
+                } => {
+                    if let Some(task) = self.active_tasks.iter_mut().find(|t| t.id == task_id) {
+                        task.message = message;
+                        task.current = current;
+                        task.total = total;
+                    }
+                }
                 AppEvent::LaunchProgress { instance_id, event } => {
                     self.launch_states
                         .insert(instance_id, LaunchState::Preparing(event));
@@ -1209,10 +1314,13 @@ impl McwApp {
                     }
                 }
                 AppEvent::CurseForgeModInstallFinished {
+                    task_id,
+                    mod_id,
                     instance_id,
                     result,
                 } => {
-                    self.modrinth_installing = false;
+                    self.finish_task(task_id);
+                    self.installing_cf_mods.remove(&mod_id);
                     match result {
                         Ok(file_name) => {
                             if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
@@ -1230,10 +1338,13 @@ impl McwApp {
                     }
                 }
                 AppEvent::ModrinthInstallFinished {
+                    task_id,
+                    slug,
                     instance_id,
                     result,
                 } => {
-                    self.modrinth_installing = false;
+                    self.finish_task(task_id);
+                    self.installing_modrinth_slugs.remove(&slug);
                     match result {
                         Ok(count) => {
                             if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
@@ -1250,9 +1361,14 @@ impl McwApp {
                         }
                     }
                 }
-                AppEvent::JavaInstallFinished(res) => {
-                    self.installing_java = false;
-                    match res {
+                AppEvent::JavaInstallFinished {
+                    task_id,
+                    major,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    self.installing_java_majors.remove(&major);
+                    match result {
                         Ok(java) => {
                             self.reload_java();
                             self.notice_banner = Some((
@@ -1337,13 +1453,27 @@ impl McwApp {
                         }
                     }
                 }
-                AppEvent::ModpackInstalled(res) => {
-                    self.modpack_installing = false;
-                    match res {
+                AppEvent::ModpackInstalled {
+                    task_id,
+                    cf_pack_id,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    if let Some(pid) = cf_pack_id {
+                        self.installing_cf_packs.remove(&pid);
+                    } else {
+                        self.installing_archive_count =
+                            self.installing_archive_count.saturating_sub(1);
+                    }
+                    match result {
                         Ok(rep) => {
                             self.selected_instance_id = Some(rep.instance_id.clone());
                             self.reload_instances();
-                            self.show_create_modal = false;
+                            if self.installing_cf_packs.is_empty()
+                                && self.installing_archive_count == 0
+                            {
+                                self.show_create_modal = false;
+                            }
                             if !rep.manual_downloads.is_empty() {
                                 self.manual_downloads_instance_id = Some(rep.instance_id.clone());
                                 self.manual_downloads_items = rep.manual_downloads.clone();
@@ -2197,11 +2327,18 @@ impl McwApp {
                                     ui.with_layout(
                                         Layout::right_to_left(Align::Center),
                                         |ui| {
-                                            let can_install = !self.modrinth_installing
+                                            let is_this_installing =
+                                                self.installing_cf_mods.contains(&cf_mod.id);
+                                            let can_install = !is_this_installing
                                                 && !inst.mod_loader.is_vanilla();
+                                            let btn_label = if is_this_installing {
+                                                "Installing..."
+                                            } else {
+                                                "Install"
+                                            };
                                             let resp = ui.add_enabled(
                                                 can_install,
-                                                Button::new("Install").small(),
+                                                Button::new(btn_label).small(),
                                             );
                                             if inst.mod_loader.is_vanilla() {
                                                 resp.on_disabled_hover_text(
@@ -2267,11 +2404,18 @@ impl McwApp {
                                             .color(p.text_muted),
                                     );
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let is_this_installing =
+                                            self.installing_modrinth_slugs.contains(&hit.slug);
                                         let can_install =
-                                            !self.modrinth_installing && !inst.mod_loader.is_vanilla();
+                                            !is_this_installing && !inst.mod_loader.is_vanilla();
+                                        let btn_label = if is_this_installing {
+                                            "Installing..."
+                                        } else {
+                                            "Install"
+                                        };
                                         let resp = ui.add_enabled(
                                             can_install,
-                                            Button::new("Install").small(),
+                                            Button::new(btn_label).small(),
                                         );
                                         if inst.mod_loader.is_vanilla() {
                                             resp.on_disabled_hover_text(
@@ -2518,19 +2662,29 @@ impl McwApp {
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
+                    let installing_21 = self.installing_java_majors.contains(&21);
                     if ui
                         .add_enabled(
-                            !self.installing_java,
-                            Button::new("Install Temurin Java 21"),
+                            !installing_21,
+                            Button::new(if installing_21 {
+                                "Installing Java 21..."
+                            } else {
+                                "Install Temurin Java 21"
+                            }),
                         )
                         .clicked()
                     {
                         install_java_major = Some(21);
                     }
+                    let installing_17 = self.installing_java_majors.contains(&17);
                     if ui
                         .add_enabled(
-                            !self.installing_java,
-                            Button::new("Install Temurin Java 17"),
+                            !installing_17,
+                            Button::new(if installing_17 {
+                                "Installing Java 17..."
+                            } else {
+                                "Install Temurin Java 17"
+                            }),
                         )
                         .clicked()
                     {
@@ -2732,8 +2886,8 @@ impl McwApp {
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
                                 let import_btn = Button::new(
-                                    RichText::new(if self.modpack_installing {
-                                        "Installing..."
+                                    RichText::new(if self.installing_archive_count > 0 {
+                                        "Import Another Modpack"
                                     } else {
                                         "Import Modpack"
                                     })
@@ -2741,10 +2895,7 @@ impl McwApp {
                                     .strong(),
                                 )
                                 .fill(p.accent);
-                                if ui
-                                    .add_enabled(!self.modpack_installing, import_btn)
-                                    .clicked()
-                                {
+                                if ui.add(import_btn).clicked() {
                                     self.start_modpack_install(ctx);
                                 }
                                 if ui.button("Close").clicked() {
@@ -2812,9 +2963,12 @@ impl McwApp {
                                                         ui.with_layout(
                                                             Layout::right_to_left(Align::Center),
                                                             |ui| {
+                                                                let is_this_installing = self
+                                                                    .installing_cf_packs
+                                                                    .contains(&pack.id);
                                                                 let btn = Button::new(
                                                                     RichText::new(
-                                                                        if self.modpack_installing {
+                                                                        if is_this_installing {
                                                                             "Installing..."
                                                                         } else {
                                                                             "Install Pack"
@@ -2827,7 +2981,7 @@ impl McwApp {
                                                                 .small();
                                                                 if ui
                                                                     .add_enabled(
-                                                                        !self.modpack_installing,
+                                                                        !is_this_installing,
                                                                         btn,
                                                                     )
                                                                     .clicked()
@@ -3600,12 +3754,82 @@ impl McwApp {
             });
         }
     }
+
+    fn render_tasks_bar(&self, ctx: &egui::Context) {
+        if self.active_tasks.is_empty() {
+            return;
+        }
+        let p = self.palette;
+        egui::TopBottomPanel::bottom("mcw_tasks_bar")
+            .frame(
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0_f32, p.border))
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("ACTIVE INSTALLS ({})", self.active_tasks.len()))
+                            .strong()
+                            .size(11.0)
+                            .color(p.accent),
+                    );
+                });
+                ui.add_space(4.0);
+                ScrollArea::vertical()
+                    .id_salt("mcw_active_tasks_scroll")
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        for task in &self.active_tasks {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&task.label).strong().size(12.0).color(p.text));
+                                ui.label(
+                                    RichText::new(&task.message)
+                                        .size(11.5)
+                                        .color(p.text_muted),
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    let right_text = if task.total > 0 {
+                                        let pct = ((task.current.min(task.total) as f64
+                                            / task.total as f64)
+                                            * 100.0)
+                                            .round() as u64;
+                                        format!("{}/{} ({pct}%)", task.current, task.total)
+                                    } else {
+                                        "Working...".to_string()
+                                    };
+                                    ui.label(
+                                        RichText::new(right_text)
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(p.text_muted),
+                                    );
+                                });
+                            });
+                            let fraction = if task.total > 0 {
+                                (task.current as f32 / task.total as f32).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            };
+                            let bar = egui::ProgressBar::new(fraction)
+                                .desired_height(6.0)
+                                .fill(p.accent)
+                                .corner_radius(CornerRadius::same(2))
+                                .animate(task.total == 0);
+                            ui.add(bar);
+                            ui.add_space(4.0);
+                        }
+                    });
+            });
+    }
 }
 
 impl eframe::App for McwApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_events();
         self.render_top_bar(ctx);
+        self.render_tasks_bar(ctx);
         self.render_sidebar(ctx);
         self.render_detail_pane(ctx);
         self.render_modals(ctx);

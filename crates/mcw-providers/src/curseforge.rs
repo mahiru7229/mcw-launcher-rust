@@ -1,5 +1,5 @@
 use crate::cache::ApiCache;
-use crate::modpack::{ModpackInstallReport, ModpackInstaller};
+use crate::modpack::{ModpackInstallReport, ModpackInstaller, ModpackProgressCallback};
 use crate::{ProviderError, Result};
 use mcw_net::{DownloadClient, DownloadRequest};
 use mcw_storage::{atomic_write_text, LauncherPaths};
@@ -245,6 +245,29 @@ impl CurseForgeClient {
         paths: &LauncherPaths,
         downloader: &DownloadClient,
     ) -> Result<ModpackInstallReport> {
+        self.install_modpack_with_progress(
+            mod_id,
+            slug,
+            instance_name_override,
+            paths,
+            downloader,
+            None,
+        )
+        .await
+    }
+
+    pub async fn install_modpack_with_progress(
+        &self,
+        mod_id: u64,
+        slug: Option<&str>,
+        instance_name_override: Option<&str>,
+        paths: &LauncherPaths,
+        downloader: &DownloadClient,
+        on_progress: Option<ModpackProgressCallback>,
+    ) -> Result<ModpackInstallReport> {
+        if let Some(ref cb) = on_progress {
+            cb(0, 1, "Fetching modpack archive metadata...".to_string());
+        }
         let files = self.get_mod_files(mod_id, None, None).await?;
         let file = files
             .into_iter()
@@ -261,17 +284,21 @@ impl CurseForgeClient {
         let pack_dir = paths.cache_root.join("modpacks");
         fs::create_dir_all(&pack_dir)?;
         let archive_path = pack_dir.join(&file.file_name);
+        if let Some(ref cb) = on_progress {
+            cb(0, 1, format!("Downloading {}...", file.file_name));
+        }
         let req = DownloadRequest::new(url, &archive_path)
             .with_sha1(file.sha1())
             .with_size(file.file_length);
         downloader.download_file(&req).await?;
 
-        ModpackInstaller::install_from_archive(
+        ModpackInstaller::install_from_archive_with_progress(
             paths,
             &archive_path,
             instance_name_override,
             downloader,
             Some(self),
+            on_progress,
         )
         .await
     }

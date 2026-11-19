@@ -8,7 +8,10 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use zip::ZipArchive;
+
+pub type ModpackProgressCallback = Arc<dyn Fn(u64, u64, String) + Send + Sync>;
 
 const DOWNLOAD_CONCURRENCY: usize = 20;
 
@@ -95,14 +98,39 @@ impl ModpackInstaller {
         downloader: &DownloadClient,
         curseforge: Option<&CurseForgeClient>,
     ) -> Result<ModpackInstallReport> {
+        Self::install_from_archive_with_progress(
+            paths,
+            archive_path,
+            instance_name_override,
+            downloader,
+            curseforge,
+            None,
+        )
+        .await
+    }
+
+    pub async fn install_from_archive_with_progress(
+        paths: &LauncherPaths,
+        archive_path: &Path,
+        instance_name_override: Option<&str>,
+        downloader: &DownloadClient,
+        curseforge: Option<&CurseForgeClient>,
+        on_progress: Option<ModpackProgressCallback>,
+    ) -> Result<ModpackInstallReport> {
         let file = File::open(archive_path)?;
         let mut archive = ZipArchive::new(file)
             .map_err(|e| ProviderError::Io(io::Error::other(format!("Invalid archive: {e}"))))?;
 
         if archive.by_name("modrinth.index.json").is_ok() {
             drop(archive);
-            return Self::install_mrpack(paths, archive_path, instance_name_override, downloader)
-                .await;
+            return Self::install_mrpack(
+                paths,
+                archive_path,
+                instance_name_override,
+                downloader,
+                on_progress,
+            )
+            .await;
         }
         if archive.by_name("manifest.json").is_ok() {
             drop(archive);
@@ -112,6 +140,7 @@ impl ModpackInstaller {
                 instance_name_override,
                 downloader,
                 curseforge,
+                on_progress,
             )
             .await;
         }
@@ -126,6 +155,7 @@ impl ModpackInstaller {
         archive_path: &Path,
         name_override: Option<&str>,
         downloader: &DownloadClient,
+        on_progress: Option<ModpackProgressCallback>,
     ) -> Result<ModpackInstallReport> {
         let index: MrpackIndex = {
             let file = File::open(archive_path)?;
@@ -178,10 +208,18 @@ impl ModpackInstaller {
         }
 
         let downloaded_files = requests.len();
+        let prog_cb = on_progress.clone();
         downloader
-            .download_batch(requests, DOWNLOAD_CONCURRENCY, |_, _| {})
+            .download_batch(requests, DOWNLOAD_CONCURRENCY, move |done, tot| {
+                if let Some(ref cb) = prog_cb {
+                    cb(done, tot, format!("Downloading mods {done}/{tot}..."));
+                }
+            })
             .await?;
 
+        if let Some(ref cb) = on_progress {
+            cb(1, 1, "Extracting overrides...".to_string());
+        }
         let extracted_overrides = extract_overrides(
             archive_path,
             &["overrides/", "client-overrides/"],
@@ -204,6 +242,7 @@ impl ModpackInstaller {
         name_override: Option<&str>,
         downloader: &DownloadClient,
         curseforge: Option<&CurseForgeClient>,
+        on_progress: Option<ModpackProgressCallback>,
     ) -> Result<ModpackInstallReport> {
         let manifest: CurseForgeManifest = {
             let file = File::open(archive_path)?;
@@ -230,6 +269,13 @@ impl ModpackInstaller {
         let mods_dir = mc_dir.join("mods");
         fs::create_dir_all(&mods_dir)?;
 
+        if let Some(ref cb) = on_progress {
+            cb(
+                0,
+                manifest.files.len() as u64,
+                format!("Resolving {} CurseForge mod files...", manifest.files.len()),
+            );
+        }
         let file_ids: Vec<u64> = manifest.files.iter().map(|f| f.file_id).collect();
         let resolved = cf_client.get_files_batch(&file_ids).await?;
 
@@ -288,10 +334,18 @@ impl ModpackInstaller {
         }
 
         let downloaded_files = requests.len();
+        let prog_cb = on_progress.clone();
         downloader
-            .download_batch(requests, DOWNLOAD_CONCURRENCY, |_, _| {})
+            .download_batch(requests, DOWNLOAD_CONCURRENCY, move |done, tot| {
+                if let Some(ref cb) = prog_cb {
+                    cb(done, tot, format!("Downloading mods {done}/{tot}..."));
+                }
+            })
             .await?;
 
+        if let Some(ref cb) = on_progress {
+            cb(1, 1, "Extracting overrides...".to_string());
+        }
         let override_prefix = format!(
             "{}/",
             manifest

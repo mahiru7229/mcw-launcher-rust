@@ -10,8 +10,23 @@ use mcw_storage::{BackupInfo, MigrationReport, RestoreOutcome};
 use mcw_updater::UpdateCheckResult;
 use std::sync::mpsc::Sender;
 
+#[derive(Debug, Clone)]
+pub struct ActiveTask {
+    pub id: u64,
+    pub label: String,
+    pub message: String,
+    pub current: u64,
+    pub total: u64,
+}
+
 pub enum AppEvent {
     VersionsLoaded(Result<Vec<String>, String>),
+    TaskProgress {
+        task_id: u64,
+        message: String,
+        current: u64,
+        total: u64,
+    },
     LaunchProgress {
         instance_id: String,
         event: ProgressEvent,
@@ -41,7 +56,11 @@ pub enum AppEvent {
         instance_id: String,
         result: Result<RestoreOutcome, String>,
     },
-    ModpackInstalled(Result<ModpackInstallReport, String>),
+    ModpackInstalled {
+        task_id: u64,
+        cf_pack_id: Option<u64>,
+        result: Result<ModpackInstallReport, String>,
+    },
     MigrationFinished {
         dry_run: bool,
         result: Result<MigrationReport, String>,
@@ -52,16 +71,24 @@ pub enum AppEvent {
     CurseForgeSearchFinished(Result<Vec<CurseForgeMod>, String>),
     CurseForgeModpacksSearchFinished(Result<Vec<CurseForgeMod>, String>),
     CurseForgeModInstallFinished {
+        task_id: u64,
+        mod_id: u64,
         instance_id: String,
         result: Result<String, String>,
     },
     FtbSearchFinished(Result<Vec<FtbPackSummary>, String>),
     AtLauncherSearchFinished(Result<Vec<AtLauncherPack>, String>),
     ModrinthInstallFinished {
+        task_id: u64,
+        slug: String,
         instance_id: String,
         result: Result<usize, String>,
     },
-    JavaInstallFinished(Result<JavaInstallation, String>),
+    JavaInstallFinished {
+        task_id: u64,
+        major: u32,
+        result: Result<JavaInstallation, String>,
+    },
     UpdateCheckFinished(Result<UpdateCheckResult, String>),
 }
 

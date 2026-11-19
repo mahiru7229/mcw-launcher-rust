@@ -222,3 +222,10 @@
 ### 20. Migration tự động từ bản Python `1.8.x` (`mcw-storage::migration`, `mcw-cli migrate`)
 - **Chức năng**: Nhập toàn bộ Instance, `.minecraft/` (saves, mods, configs) và `settings.json` từ thư mục MCW Launcher Python `1.8.x` sang Rust Edition mà **không xóa hay chỉnh sửa dữ liệu gốc**, hỗ trợ `--dry-run` và chạy lặp an toàn (bỏ qua Instance đã tồn tại).
 - **Gợi ý cho GUI**: Có thể thêm nút **Import from MCW 1.8.x** trong màn hình Settings hoặc First-Run Wizard.
+
+### 21. Đa nhiệm cài đặt song song & Thanh tiến trình trực tiếp (`mcw-providers`, `mcw-desktop`)
+- **Chức năng**: Cho phép bấm cài đặt nhiều Modpack, nhiều Mod (Modrinth/CurseForge) và nhiều phiên bản Temurin Java **cùng lúc** nhờ Tokio async runtime; chỉ vô hiệu hóa đúng nút của gói đang cài, giữ sáng toàn bộ nút `Install` / `Install Pack` của các gói khác.
+- **Cách hoạt động**:
+  - `ModpackInstaller::install_from_archive_with_progress` và `CurseForgeClient::install_modpack_with_progress` phát callback tiến độ thật (`current`, `total`, `message`) cho từng giai đoạn (tải archive, resolve file, tải song song từng mod `done/total`, giải nén `overrides/`).
+  - `McwApp` quản lý danh sách `active_tasks: Vec<ActiveTask>` và tập `HashSet` theo từng ID/slug thay vì cờ khóa toàn cục.
+  - Thanh `ACTIVE INSTALLS (N)` gắn cố định dưới đáy cửa sổ (`TopBottomPanel::bottom`) tự động xuất hiện khi có tác vụ đang chạy và hiển thị thanh tiến trình + phần trăm trực tiếp cho từng tác vụ.
