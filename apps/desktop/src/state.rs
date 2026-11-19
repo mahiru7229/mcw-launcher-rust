@@ -97,6 +97,15 @@ pub enum AppEvent {
         cf_pack_id: Option<u64>,
         result: Result<ModpackInstallReport, String>,
     },
+    ExternalModpackInstalled {
+        task_id: u64,
+        pack_key: String,
+        result: Result<ModpackInstallReport, String>,
+    },
+    MrpackExportFinished {
+        task_id: u64,
+        result: Result<(std::path::PathBuf, usize), String>,
+    },
     DeviceCodeReady(DeviceCodeResponse),
     MicrosoftLoginFinished(Result<StoredAccount, String>),
     ModrinthSearchFinished(Result<Vec<ModrinthSearchHit>, String>),

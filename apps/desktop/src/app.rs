@@ -130,6 +130,7 @@ pub struct McwApp {
     next_task_id: u64,
     active_tasks: Vec<ActiveTask>,
     installing_cf_packs: HashSet<u64>,
+    installing_ext_packs: HashSet<String>,
     installing_archive_count: usize,
     installing_cf_mods: HashSet<u64>,
     installing_modrinth_slugs: HashSet<String>,
@@ -259,6 +260,7 @@ impl McwApp {
             next_task_id: 1,
             active_tasks: Vec::new(),
             installing_cf_packs: HashSet::new(),
+            installing_ext_packs: HashSet::new(),
             installing_archive_count: 0,
             installing_cf_mods: HashSet::new(),
             installing_modrinth_slugs: HashSet::new(),
@@ -1669,6 +1671,138 @@ impl McwApp {
         });
     }
 
+    fn start_ftb_pack_install(&mut self, pack_id: u64, pack_name: String, ctx: &egui::Context) {
+        let pack_key = format!("ftb:{pack_id}");
+        if !self.installing_ext_packs.insert(pack_key.clone()) {
+            return;
+        }
+        let task_id = self.begin_task(
+            format!("FTB Modpack: {pack_name}"),
+            "Fetching FTB manifest...",
+        );
+        let paths = self.paths.clone();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let tx_p = tx.clone();
+            let ctx_p = ctx.clone();
+            let cb: mcw_providers::modpack::ModpackProgressCallback =
+                Arc::new(move |cur, tot, msg| {
+                    let _ = tx_p.send(AppEvent::TaskProgress {
+                        task_id,
+                        current: cur,
+                        total: tot,
+                        message: msg,
+                    });
+                    ctx_p.request_repaint();
+                });
+
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let ftb = FtbClient::new(cache).map_err(|e| e.to_string())?;
+                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
+                ftb.install_pack_with_progress(pack_id, &pack_name, &paths, &downloader, Some(cb))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+
+            let _ = tx.send(AppEvent::ExternalModpackInstalled {
+                task_id,
+                pack_key,
+                result: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_atlauncher_pack_install(&mut self, pack: AtLauncherPack, ctx: &egui::Context) {
+        let pack_key = format!("atl:{}", pack.id);
+        if !self.installing_ext_packs.insert(pack_key.clone()) {
+            return;
+        }
+        let task_id = self.begin_task(
+            format!("ATLauncher Modpack: {}", pack.name),
+            "Fetching ATLauncher manifest...",
+        );
+        let paths = self.paths.clone();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let tx_p = tx.clone();
+            let ctx_p = ctx.clone();
+            let cb: mcw_providers::modpack::ModpackProgressCallback =
+                Arc::new(move |cur, tot, msg| {
+                    let _ = tx_p.send(AppEvent::TaskProgress {
+                        task_id,
+                        current: cur,
+                        total: tot,
+                        message: msg,
+                    });
+                    ctx_p.request_repaint();
+                });
+
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let atl = AtLauncherClient::new(cache).map_err(|e| e.to_string())?;
+                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
+                atl.install_pack_with_progress(&pack, &paths, &downloader, Some(cb))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+
+            let _ = tx.send(AppEvent::ExternalModpackInstalled {
+                task_id,
+                pack_key,
+                result: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_mrpack_export(&mut self, instance_id: String, ctx: &egui::Context) {
+        let task_id = self.begin_task(
+            format!("Export .mrpack: {instance_id}"),
+            "Packaging mods, configs, and packs...",
+        );
+        let paths = self.paths.clone();
+        let output_path = self
+            .paths
+            .backups_root
+            .join(format!("{instance_id}.mrpack"));
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                ModpackInstaller::export_to_mrpack(&paths, &instance_id, &output_path)
+                    .map(|count| (output_path, count))
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+
+            let _ = tx.send(AppEvent::MrpackExportFinished {
+                task_id,
+                result: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
     fn poll_events(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
@@ -2131,6 +2265,51 @@ impl McwApp {
                         Err(err) => {
                             self.notice_banner =
                                 Some((format!("ATLauncher search failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::ExternalModpackInstalled {
+                    task_id,
+                    pack_key,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    self.installing_ext_packs.remove(&pack_key);
+                    match result {
+                        Ok(rep) => {
+                            self.reload_instances();
+                            self.notice_banner = Some((
+                                format!(
+                                    "Installed modpack '{}' (MC {}, {} — {} files).",
+                                    rep.instance_id,
+                                    rep.game_version,
+                                    rep.loader.name,
+                                    rep.downloaded_files
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Modpack install failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::MrpackExportFinished { task_id, result } => {
+                    self.finish_task(task_id);
+                    match result {
+                        Ok((path, count)) => {
+                            self.notice_banner = Some((
+                                format!(
+                                    "Exported Modrinth modpack ({count} files) to {}",
+                                    path.display()
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Export .mrpack failed: {err}"), true));
                         }
                     }
                 }
@@ -2695,10 +2874,18 @@ impl McwApp {
                 });
                 ui.add_space(10.0);
 
+                let mut trigger_export = false;
                 ui.horizontal(|ui| {
                     if ui.button("Open .minecraft Folder").clicked() {
                         let _ = std::fs::create_dir_all(&mc_dir);
                         open_external(&mc_dir.display().to_string());
+                    }
+
+                    let export_resp = ui.add_enabled(!busy, Button::new("Export .mrpack"));
+                    if busy {
+                        export_resp.on_disabled_hover_text("Stop the instance before exporting");
+                    } else if export_resp.clicked() {
+                        trigger_export = true;
                     }
 
                     let repair_resp = ui.add_enabled(!busy, Button::new("Repair Files"));
@@ -2725,6 +2912,9 @@ impl McwApp {
                         self.show_delete_modal = true;
                     }
                 });
+                if trigger_export {
+                    self.start_mrpack_export(inst.instance_id.clone(), ctx);
+                }
             });
 
         if trigger_repair {
@@ -4248,6 +4438,7 @@ impl McwApp {
                                 }
                             });
                             ui.add_space(6.0);
+                            let mut ftb_install_req: Option<(u64, String)> = None;
                             ScrollArea::vertical()
                                 .id_salt("create_ftb_scroll")
                                 .max_height(240.0)
@@ -4259,6 +4450,8 @@ impl McwApp {
                                         );
                                     } else {
                                         for pack in &self.ftb_results {
+                                            let key = format!("ftb:{}", pack.id);
+                                            let busy_this = self.installing_ext_packs.contains(&key);
                                             Frame::new()
                                                 .fill(p.elevated)
                                                 .stroke(Stroke::new(1.0_f32, p.border))
@@ -4277,6 +4470,30 @@ impl McwApp {
                                                             .size(11.0)
                                                             .color(p.text_muted),
                                                         );
+                                                        ui.with_layout(
+                                                            Layout::right_to_left(Align::Center),
+                                                            |ui| {
+                                                                let btn = Button::new(
+                                                                    RichText::new(if busy_this {
+                                                                        "Installing..."
+                                                                    } else {
+                                                                        "Install Pack"
+                                                                    })
+                                                                    .color(p.accent_text)
+                                                                    .strong(),
+                                                                )
+                                                                .fill(p.accent);
+                                                                if ui
+                                                                    .add_enabled(!busy_this, btn)
+                                                                    .clicked()
+                                                                {
+                                                                    ftb_install_req = Some((
+                                                                        pack.id,
+                                                                        pack.name.clone(),
+                                                                    ));
+                                                                }
+                                                            },
+                                                        );
                                                     });
                                                     if !pack.synopsis.is_empty() {
                                                         ui.label(
@@ -4290,6 +4507,9 @@ impl McwApp {
                                         }
                                     }
                                 });
+                            if let Some((pid, pname)) = ftb_install_req {
+                                self.start_ftb_pack_install(pid, pname, ctx);
+                            }
                             ui.add_space(8.0);
                             if ui.button("Close").clicked() {
                                 self.show_create_modal = false;
@@ -4313,6 +4533,7 @@ impl McwApp {
                                 }
                             });
                             ui.add_space(6.0);
+                            let mut atl_install_req: Option<AtLauncherPack> = None;
                             ScrollArea::vertical()
                                 .id_salt("create_atl_scroll")
                                 .max_height(240.0)
@@ -4324,6 +4545,9 @@ impl McwApp {
                                         );
                                     } else {
                                         for pack in &self.atl_results {
+                                            let key = format!("atl:{}", pack.id);
+                                            let busy_this = self.installing_ext_packs.contains(&key);
+                                            let has_ver = !pack.versions.is_empty();
                                             Frame::new()
                                                 .fill(p.elevated)
                                                 .stroke(Stroke::new(1.0_f32, p.border))
@@ -4331,7 +4555,46 @@ impl McwApp {
                                                 .inner_margin(egui::Margin::same(8))
                                                 .show(ui, |ui| {
                                                     ui.set_width(ui.available_width());
-                                                    ui.label(RichText::new(&pack.name).strong());
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(RichText::new(&pack.name).strong());
+                                                        if let Some(latest) = pack.versions.first() {
+                                                            ui.label(
+                                                                RichText::new(format!(
+                                                                    "v{} · MC {}",
+                                                                    latest.version,
+                                                                    latest.minecraft
+                                                                ))
+                                                                .monospace()
+                                                                .size(11.0)
+                                                                .color(p.text_muted),
+                                                            );
+                                                        }
+                                                        ui.with_layout(
+                                                            Layout::right_to_left(Align::Center),
+                                                            |ui| {
+                                                                let btn = Button::new(
+                                                                    RichText::new(if busy_this {
+                                                                        "Installing..."
+                                                                    } else {
+                                                                        "Install Pack"
+                                                                    })
+                                                                    .color(p.accent_text)
+                                                                    .strong(),
+                                                                )
+                                                                .fill(p.accent);
+                                                                if ui
+                                                                    .add_enabled(
+                                                                        !busy_this && has_ver,
+                                                                        btn,
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    atl_install_req =
+                                                                        Some(pack.clone());
+                                                                }
+                                                            },
+                                                        );
+                                                    });
                                                     if !pack.description.is_empty() {
                                                         ui.label(
                                                             RichText::new(&pack.description)
@@ -4344,6 +4607,9 @@ impl McwApp {
                                         }
                                     }
                                 });
+                            if let Some(pack) = atl_install_req {
+                                self.start_atlauncher_pack_install(pack, ctx);
+                            }
                             ui.add_space(8.0);
                             if ui.button("Close").clicked() {
                                 self.show_create_modal = false;

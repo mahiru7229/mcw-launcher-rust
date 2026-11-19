@@ -480,6 +480,117 @@ impl ModpackInstaller {
 
         Ok((resolved, remaining))
     }
+
+    /// Export an existing instance as a shareable Modrinth `.mrpack` archive containing
+    /// `modrinth.index.json` and `overrides/` (`mods/`, `config/`, `resourcepacks/`,
+    /// `shaderpacks/`, `options.txt`) — excluding personal `saves/`, `logs/`, and `screenshots/`.
+    pub fn export_to_mrpack(
+        paths: &LauncherPaths,
+        instance_id: &str,
+        output_path: &Path,
+    ) -> Result<usize> {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
+
+        let store = InstanceStore::new(paths);
+        let inst = store
+            .load_instance(instance_id)
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+
+        let mut deps = serde_json::Map::new();
+        deps.insert(
+            "minecraft".to_string(),
+            serde_json::Value::String(inst.version_id.clone()),
+        );
+        match inst.mod_loader.name.to_ascii_lowercase().as_str() {
+            "fabric" => {
+                deps.insert(
+                    "fabric-loader".to_string(),
+                    serde_json::Value::String(inst.mod_loader.version.clone()),
+                );
+            }
+            "quilt" => {
+                deps.insert(
+                    "quilt-loader".to_string(),
+                    serde_json::Value::String(inst.mod_loader.version.clone()),
+                );
+            }
+            "forge" => {
+                deps.insert(
+                    "forge".to_string(),
+                    serde_json::Value::String(inst.mod_loader.version.clone()),
+                );
+            }
+            "neoforge" => {
+                deps.insert(
+                    "neoforge".to_string(),
+                    serde_json::Value::String(inst.mod_loader.version.clone()),
+                );
+            }
+            _ => {}
+        }
+
+        let index_json = serde_json::json!({
+            "formatVersion": 1,
+            "game": "minecraft",
+            "versionId": "1.0.0",
+            "name": inst.name,
+            "summary": format!("Exported from MCW Launcher: Rust Edition (MC {})", inst.version_id),
+            "files": [],
+            "dependencies": deps,
+        });
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = File::create(output_path)?;
+        let mut zip = ZipWriter::new(file);
+        let opts =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        zip.start_file("modrinth.index.json", opts)
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        zip.write_all(serde_json::to_string_pretty(&index_json)?.as_bytes())?;
+
+        let mc_dir = paths.minecraft_dir(instance_id);
+        let include_dirs = ["mods", "config", "resourcepacks", "shaderpacks"];
+        let mut exported_files = 0usize;
+
+        for sub in include_dirs {
+            let dir = mc_dir.join(sub);
+            if !dir.is_dir() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(&dir).into_iter().flatten() {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let Ok(rel) = entry.path().strip_prefix(&mc_dir) else {
+                    continue;
+                };
+                let zip_path = format!("overrides/{}", rel.to_string_lossy().replace('\\', "/"));
+                zip.start_file(&zip_path, opts)
+                    .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+                let mut src = File::open(entry.path())?;
+                io::copy(&mut src, &mut zip)?;
+                exported_files += 1;
+            }
+        }
+
+        let options_txt = mc_dir.join("options.txt");
+        if options_txt.is_file() {
+            zip.start_file("overrides/options.txt", opts)
+                .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+            let mut src = File::open(&options_txt)?;
+            io::copy(&mut src, &mut zip)?;
+            exported_files += 1;
+        }
+
+        zip.finish()
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        Ok(exported_files)
+    }
 }
 
 fn normalize_mod_filename(name: &str) -> String {
@@ -725,5 +836,39 @@ mod tests {
         assert_eq!(resolved2, 1);
         assert!(remaining2.is_empty());
         assert!(ModpackInstaller::load_pending_manual_downloads(&paths, "rlcraft").is_empty());
+    }
+
+    #[test]
+    fn exports_instance_to_valid_mrpack_and_skips_saves() {
+        let dir = tempdir().unwrap();
+        let paths = LauncherPaths::portable(dir.path());
+        paths.initialize().unwrap();
+
+        let store = InstanceStore::new(&paths);
+        store
+            .create_instance(
+                "export-test",
+                "1.21.4",
+                ModLoader {
+                    name: "fabric".to_string(),
+                    version: "0.16.10".to_string(),
+                },
+            )
+            .unwrap();
+        let mc = paths.minecraft_dir("export-test");
+        fs::create_dir_all(mc.join("mods")).unwrap();
+        fs::create_dir_all(mc.join("saves/world1")).unwrap();
+        fs::write(mc.join("mods/demo.jar"), b"jar-bytes").unwrap();
+        fs::write(mc.join("saves/world1/level.dat"), b"save-bytes").unwrap();
+
+        let out = dir.path().join("export-test.mrpack");
+        let count = ModpackInstaller::export_to_mrpack(&paths, "export-test", &out).unwrap();
+        assert_eq!(count, 1);
+        assert!(out.is_file());
+
+        let mut zip = ZipArchive::new(File::open(&out).unwrap()).unwrap();
+        assert!(zip.by_name("modrinth.index.json").is_ok());
+        assert!(zip.by_name("overrides/mods/demo.jar").is_ok());
+        assert!(zip.by_name("overrides/saves/world1/level.dat").is_err());
     }
 }
