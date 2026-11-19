@@ -1,6 +1,7 @@
 pub mod arguments;
 pub mod assets;
 pub mod classpath;
+pub mod forge;
 pub mod installer;
 pub mod libraries;
 pub mod manifest;
@@ -11,6 +12,7 @@ pub mod rules;
 pub use arguments::ArgumentBuilder;
 pub use assets::AssetManager;
 pub use classpath::ClasspathBuilder;
+pub use forge::{ForgeFamily, ForgeLoaderService, ForgeLoaderVersion};
 pub use installer::{PreparedLaunch, VanillaLaunchPipeline};
 pub use libraries::LibraryManager;
 pub use manifest::VersionManifestService;
