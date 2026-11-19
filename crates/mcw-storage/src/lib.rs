@@ -1,9 +1,11 @@
 pub mod atomic_fs;
+pub mod backup;
 pub mod instance_store;
 pub mod paths;
 pub mod run_lock;
 
 pub use atomic_fs::{atomic_write_bytes, atomic_write_json, atomic_write_text};
+pub use backup::{BackupInfo, BackupManager, RestoreOutcome};
 pub use instance_store::InstanceStore;
 pub use paths::LauncherPaths;
 pub use run_lock::{InstanceRunLock, LockState, RunningInstanceInfo};
@@ -32,6 +34,8 @@ pub enum StorageError {
     InstanceAlreadyExists(String),
     #[error("Instance '{0}' is already running")]
     InstanceAlreadyRunning(String),
+    #[error("Backup error: {0}")]
+    Backup(String),
     #[error("Invalid relative path: {0}")]
     InvalidRelativePath(String),
 }
