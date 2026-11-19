@@ -229,3 +229,9 @@
   - `ModpackInstaller::install_from_archive_with_progress` và `CurseForgeClient::install_modpack_with_progress` phát callback tiến độ thật (`current`, `total`, `message`) cho từng giai đoạn (tải archive, resolve file, tải song song từng mod `done/total`, giải nén `overrides/`).
   - `McwApp` quản lý danh sách `active_tasks: Vec<ActiveTask>` và tập `HashSet` theo từng ID/slug thay vì cờ khóa toàn cục.
   - Thanh `ACTIVE INSTALLS (N)` gắn cố định dưới đáy cửa sổ (`TopBottomPanel::bottom`) tự động xuất hiện khi có tác vụ đang chạy và hiển thị thanh tiến trình + phần trăm trực tiếp cho từng tác vụ.
+
+### 22. Gắn cờ Modpack chưa đủ mod manual & Cơ chế Auto-Scan / Manual Scan (`mcw-providers`, `mcw-desktop`)
+- **Chức năng**: Mọi Instance Modpack còn thiếu mod tải thủ công (`pending_manual_downloads.json`) luôn được gắn cờ **`Incomplete (N)`** trên Sidebar và biểu ngữ **`INCOMPLETE MODPACK`** ở đầu trang chi tiết; nút **Launch** chuyển thành **`Missing Mods (N)`** để chặn việc vào nhầm game thiếu mod sau khi Cancel modal (chỉ cho phép vào game trực tiếp khi đã tải đủ, hoặc bấm `Launch Anyway (Incomplete)` chủ động trong modal).
+- **Quét tự động & thủ công**:
+  - Hỗ trợ **Auto-scan** (mặc định bật, tự kiểm tra thư mục `Downloads` và `mods/` mỗi 2 giây) và **Manual Scan** (`Scan Now` / `Scan Downloads Now`).
+  - [`ModpackInstaller::scan_and_import_manual_downloads`](crates/mcw-providers/src/modpack.rs) tự bỏ qua file đang tải dở (`.crdownload`, `.part`, `.tmp`, 0-byte) và khớp linh hoạt cả tên file bị trình duyệt thêm hậu tố trùng lặp như `Mod (1).jar`.

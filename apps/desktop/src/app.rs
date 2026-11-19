@@ -32,7 +32,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_LOG_LINES_PER_INSTANCE: usize = 1500;
 
@@ -126,10 +126,14 @@ pub struct McwApp {
     atl_results: Vec<AtLauncherPack>,
 
     // Manual Downloads dedicated screen (CurseForge opt-out mods)
+    pending_manual_counts: HashMap<String, usize>,
     show_manual_downloads_modal: bool,
     manual_downloads_instance_id: Option<String>,
     manual_downloads_items: Vec<ManualDownloadItem>,
     manual_downloads_dir_input: String,
+    manual_auto_scan: bool,
+    last_manual_scan_at: Option<Instant>,
+    manual_scan_status: Option<String>,
 
     // CurseForge API / Launcher Settings modal
     show_api_modal: bool,
@@ -230,10 +234,14 @@ impl McwApp {
             cf_pack_results: Vec::new(),
             ftb_results: Vec::new(),
             atl_results: Vec::new(),
+            pending_manual_counts: HashMap::new(),
             show_manual_downloads_modal: false,
             manual_downloads_instance_id: None,
             manual_downloads_items: Vec::new(),
             manual_downloads_dir_input: default_downloads_dir,
+            manual_auto_scan: true,
+            last_manual_scan_at: None,
+            manual_scan_status: None,
             show_api_modal: false,
             cf_api_key_input: initial_cf_key,
             cf_api_key_visible: false,
@@ -275,7 +283,111 @@ impl McwApp {
         if self.selected_instance_id.is_none() {
             self.selected_instance_id = self.instances.first().map(|i| i.instance_id.clone());
         }
+        self.refresh_pending_manual_counts();
         self.load_selected_details();
+    }
+
+    fn refresh_pending_manual_counts(&mut self) {
+        self.pending_manual_counts.clear();
+        for inst in &self.instances {
+            let pending =
+                ModpackInstaller::load_pending_manual_downloads(&self.paths, &inst.instance_id);
+            if !pending.is_empty() {
+                self.pending_manual_counts
+                    .insert(inst.instance_id.clone(), pending.len());
+            }
+        }
+    }
+
+    fn open_manual_downloads_for(&mut self, instance_id: &str) {
+        let pending = ModpackInstaller::load_pending_manual_downloads(&self.paths, instance_id);
+        if pending.is_empty() {
+            self.pending_manual_counts.remove(instance_id);
+        } else {
+            self.pending_manual_counts
+                .insert(instance_id.to_string(), pending.len());
+        }
+        self.manual_downloads_instance_id = Some(instance_id.to_string());
+        self.manual_downloads_items = pending;
+        self.manual_scan_status = None;
+        self.last_manual_scan_at = None;
+        self.show_manual_downloads_modal = true;
+    }
+
+    fn run_manual_downloads_scan(&mut self, inst_id: &str, manual_trigger: bool) {
+        let current_items = if self.manual_downloads_instance_id.as_deref() == Some(inst_id)
+            && !self.manual_downloads_items.is_empty()
+        {
+            self.manual_downloads_items.clone()
+        } else {
+            ModpackInstaller::load_pending_manual_downloads(&self.paths, inst_id)
+        };
+        if current_items.is_empty() {
+            self.pending_manual_counts.remove(inst_id);
+            if self.manual_downloads_instance_id.as_deref() == Some(inst_id) {
+                self.manual_downloads_items.clear();
+                self.show_manual_downloads_modal = false;
+            }
+            return;
+        }
+
+        let dl_dir = PathBuf::from(self.manual_downloads_dir_input.trim());
+        self.last_manual_scan_at = Some(Instant::now());
+
+        match ModpackInstaller::scan_and_import_manual_downloads(
+            &self.paths,
+            inst_id,
+            &current_items,
+            &dl_dir,
+        ) {
+            Ok((resolved, remaining)) => {
+                if remaining.is_empty() {
+                    self.pending_manual_counts.remove(inst_id);
+                } else {
+                    self.pending_manual_counts
+                        .insert(inst_id.to_string(), remaining.len());
+                }
+                if self.manual_downloads_instance_id.as_deref() == Some(inst_id) {
+                    self.manual_downloads_items = remaining.clone();
+                }
+
+                if resolved > 0 {
+                    if self.selected_instance_id.as_deref() == Some(inst_id) {
+                        self.load_selected_details();
+                    }
+                    let msg = if remaining.is_empty() {
+                        format!("Imported {resolved} mod(s). All manual downloads complete — modpack is ready!")
+                    } else {
+                        format!(
+                            "Imported {resolved} mod(s) ({} remaining).",
+                            remaining.len()
+                        )
+                    };
+                    self.manual_scan_status = Some(msg.clone());
+                    self.notice_banner = Some((msg, false));
+                    if remaining.is_empty()
+                        && self.manual_downloads_instance_id.as_deref() == Some(inst_id)
+                    {
+                        self.show_manual_downloads_modal = false;
+                    }
+                } else if manual_trigger {
+                    let msg = format!(
+                        "No new matching .jar files found in {} ({} still missing).",
+                        dl_dir.display(),
+                        remaining.len()
+                    );
+                    self.manual_scan_status = Some(msg.clone());
+                    self.notice_banner = Some((msg, false));
+                }
+            }
+            Err(e) => {
+                let msg = format!("Scan Downloads failed: {e}");
+                self.manual_scan_status = Some(msg.clone());
+                if manual_trigger {
+                    self.notice_banner = Some((msg, true));
+                }
+            }
+        }
     }
 
     fn load_selected_details(&mut self) {
@@ -293,8 +405,12 @@ impl McwApp {
             .list_backups(id)
             .unwrap_or_default();
         let pending = ModpackInstaller::load_pending_manual_downloads(&self.paths, id);
-        if !pending.is_empty() && self.manual_downloads_instance_id.as_deref() == Some(id.as_str())
-        {
+        if pending.is_empty() {
+            self.pending_manual_counts.remove(id);
+        } else {
+            self.pending_manual_counts.insert(id.clone(), pending.len());
+        }
+        if self.manual_downloads_instance_id.as_deref() == Some(id.as_str()) {
             self.manual_downloads_items = pending;
         }
     }
@@ -1719,23 +1835,39 @@ impl McwApp {
                     for inst in &self.instances {
                         let is_selected =
                             self.selected_instance_id.as_deref() == Some(inst.instance_id.as_str());
+                        let missing_manual = self
+                            .pending_manual_counts
+                            .get(&inst.instance_id)
+                            .copied()
+                            .unwrap_or(0);
                         let (status_text, status_color, is_running) =
                             match self.launch_states.get(&inst.instance_id) {
                                 Some(LaunchState::Running { .. }) => {
-                                    ("Running", p.accent, true)
+                                    ("Running".to_string(), p.accent, true)
                                 }
                                 Some(LaunchState::Preparing(_)) => {
-                                    ("Preparing", p.warning, true)
+                                    ("Preparing".to_string(), p.warning, true)
                                 }
+                                _ if missing_manual > 0 => (
+                                    format!("Incomplete ({missing_manual})"),
+                                    p.warning,
+                                    false,
+                                ),
                                 _ => match inst.last_launch_state.as_str() {
-                                    "crashed" => ("Crashed", p.danger, false),
-                                    "finished" => ("Finished", p.text_muted, false),
-                                    _ => ("Ready", p.text_muted, false),
+                                    "crashed" => ("Crashed".to_string(), p.danger, false),
+                                    "finished" => ("Finished".to_string(), p.text_muted, false),
+                                    _ => ("Ready".to_string(), p.text_muted, false),
                                 },
                             };
 
                         let bg = if is_selected { p.elevated } else { p.surface };
-                        let border_col = if is_selected { p.accent } else { p.border };
+                        let border_col = if is_selected {
+                            p.accent
+                        } else if missing_manual > 0 {
+                            p.warning
+                        } else {
+                            p.border
+                        };
 
                         let resp = Frame::new()
                             .fill(bg)
@@ -1745,8 +1877,15 @@ impl McwApp {
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
-                                    // Signature Moment #1: Left vertical Emerald accent bar
-                                    if is_selected || is_running {
+                                    // Signature Moment #1: Left vertical accent bar (Emerald or Warning if incomplete)
+                                    if is_selected || is_running || missing_manual > 0 {
+                                        let bar_col = if is_running {
+                                            p.accent
+                                        } else if missing_manual > 0 && !is_selected {
+                                            p.warning
+                                        } else {
+                                            p.accent
+                                        };
                                         let (rect, _) = ui.allocate_exact_size(
                                             Vec2::new(3.0, 32.0),
                                             egui::Sense::hover(),
@@ -1754,7 +1893,7 @@ impl McwApp {
                                         ui.painter().rect_filled(
                                             rect,
                                             CornerRadius::same(1),
-                                            p.accent,
+                                            bar_col,
                                         );
                                     }
                                     ui.vertical(|ui| {
@@ -1897,19 +2036,44 @@ impl McwApp {
                                 ui.add_enabled(false, prep_btn);
                             }
                             _ => {
-                                let launch_btn = Button::new(
-                                    RichText::new("Launch").color(p.accent_text).strong(),
-                                )
-                                .fill(p.accent)
-                                .min_size(Vec2::new(120.0, 34.0))
-                                .corner_radius(CornerRadius::same(3));
-                                let resp = ui.add_enabled(has_account, launch_btn);
-                                if !has_account {
-                                    resp.on_disabled_hover_text(
-                                        "Add or sign in to an account first",
-                                    );
-                                } else if resp.clicked() {
-                                    self.start_launch(ctx);
+                                let missing_manual = self
+                                    .pending_manual_counts
+                                    .get(&inst.instance_id)
+                                    .copied()
+                                    .unwrap_or(0);
+                                if missing_manual > 0 {
+                                    let warn_btn = Button::new(
+                                        RichText::new(format!("Missing Mods ({missing_manual})"))
+                                            .color(Color32::BLACK)
+                                            .strong(),
+                                    )
+                                    .fill(p.warning)
+                                    .min_size(Vec2::new(140.0, 34.0))
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui
+                                        .add(warn_btn)
+                                        .on_hover_text(
+                                            "This modpack still has missing manual downloads. Click to complete them before launching.",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.open_manual_downloads_for(&inst.instance_id);
+                                    }
+                                } else {
+                                    let launch_btn = Button::new(
+                                        RichText::new("Launch").color(p.accent_text).strong(),
+                                    )
+                                    .fill(p.accent)
+                                    .min_size(Vec2::new(120.0, 34.0))
+                                    .corner_radius(CornerRadius::same(3));
+                                    let resp = ui.add_enabled(has_account, launch_btn);
+                                    if !has_account {
+                                        resp.on_disabled_hover_text(
+                                            "Add or sign in to an account first",
+                                        );
+                                    } else if resp.clicked() {
+                                        self.start_launch(ctx);
+                                    }
                                 }
                             }
                         }
@@ -1917,6 +2081,54 @@ impl McwApp {
                 });
 
                 ui.add_space(8.0);
+
+                // Persistent flag banner whenever a modpack instance still has missing manual downloads
+                let pending_manual_count = self
+                    .pending_manual_counts
+                    .get(&inst.instance_id)
+                    .copied()
+                    .unwrap_or(0);
+                if pending_manual_count > 0 {
+                    Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0_f32, p.warning))
+                        .corner_radius(CornerRadius::same(3))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("INCOMPLETE MODPACK")
+                                        .strong()
+                                        .monospace()
+                                        .size(11.0)
+                                        .color(p.warning),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{pending_manual_count} manual mod(s) have not been downloaded yet."
+                                    ))
+                                    .size(12.0)
+                                    .color(p.text),
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    let open_btn = Button::new(
+                                        RichText::new("Open Manual Downloads")
+                                            .color(Color32::BLACK)
+                                            .strong(),
+                                    )
+                                    .fill(p.warning)
+                                    .small();
+                                    if ui.add(open_btn).clicked() {
+                                        self.open_manual_downloads_for(&inst.instance_id);
+                                    }
+                                    if ui.small_button("Scan Downloads Now").clicked() {
+                                        self.run_manual_downloads_scan(&inst.instance_id, true);
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(8.0);
+                }
 
                 // Signature Moment #2: Truthful Launch Status Strip
                 match self.launch_states.get(&inst.instance_id) {
@@ -2210,44 +2422,6 @@ impl McwApp {
     fn render_mods_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, inst: &Instance) {
         let p = self.palette;
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
-
-        // Banner if this instance still has pending manual downloads (CurseForge opt-out mods)
-        let pending_manual =
-            ModpackInstaller::load_pending_manual_downloads(&self.paths, &inst.instance_id);
-        if !pending_manual.is_empty() {
-            Frame::new()
-                .fill(p.surface)
-                .stroke(Stroke::new(1.0_f32, p.warning))
-                .corner_radius(CornerRadius::same(3))
-                .inner_margin(egui::Margin::symmetric(10, 6))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!(
-                                "{} mod(s) require manual download (third-party distribution disabled).",
-                                pending_manual.len()
-                            ))
-                            .strong()
-                            .color(p.warning),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let btn = Button::new(
-                                RichText::new("Open Manual Downloads")
-                                    .color(p.accent_text)
-                                    .strong(),
-                            )
-                            .fill(p.accent)
-                            .small();
-                            if ui.add(btn).clicked() {
-                                self.manual_downloads_instance_id = Some(inst.instance_id.clone());
-                                self.manual_downloads_items = pending_manual.clone();
-                                self.show_manual_downloads_modal = true;
-                            }
-                        });
-                    });
-                });
-            ui.add_space(6.0);
-        }
 
         // Mod Provider Search Bar (Modrinth | CurseForge)
         ui.horizontal(|ui| {
@@ -3638,40 +3812,33 @@ impl McwApp {
                             .desired_width(300.0),
                     );
                     let scan_btn = Button::new(
-                        RichText::new("Scan Downloads & Import")
+                        RichText::new("Scan Now")
                             .color(p.accent_text)
                             .strong(),
                     )
                     .fill(p.accent);
                     if ui.add(scan_btn).clicked() && !inst_id.is_empty() {
-                        let dl_dir = PathBuf::from(self.manual_downloads_dir_input.trim());
-                        match ModpackInstaller::scan_and_import_manual_downloads(
-                            &self.paths,
-                            &inst_id,
-                            &self.manual_downloads_items,
-                            &dl_dir,
-                        ) {
-                            Ok((imported, remaining)) => {
-                                self.manual_downloads_items = remaining;
-                                self.load_selected_details();
-                                self.notice_banner = Some((
-                                    format!(
-                                        "Imported {imported} mod(s) from Downloads ({} remaining).",
-                                        self.manual_downloads_items.len()
-                                    ),
-                                    false,
-                                ));
-                                if self.manual_downloads_items.is_empty() {
-                                    self.show_manual_downloads_modal = false;
-                                }
-                            }
-                            Err(e) => {
-                                self.notice_banner =
-                                    Some((format!("Scan Downloads failed: {e}"), true));
-                            }
-                        }
+                        self.run_manual_downloads_scan(&inst_id, true);
                     }
                 });
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.checkbox(
+                        &mut self.manual_auto_scan,
+                        "Auto-scan Downloads & mods/ every 2s",
+                    );
+                    if self.manual_auto_scan && !self.manual_downloads_items.is_empty() {
+                        ui.label(
+                            RichText::new("● Watching")
+                                .size(11.0)
+                                .color(p.accent),
+                        );
+                    }
+                });
+                if let Some(ref status) = self.manual_scan_status {
+                    ui.label(RichText::new(status).size(11.5).color(p.text_muted));
+                }
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -3748,9 +3915,30 @@ impl McwApp {
                 }
 
                 ui.add_space(10.0);
-                if ui.button("Close").clicked() {
-                    self.show_manual_downloads_modal = false;
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        self.show_manual_downloads_modal = false;
+                    }
+                    if !self.manual_downloads_items.is_empty()
+                        && self.active_account().is_some()
+                        && self.selected_instance_id.as_deref() == Some(inst_id.as_str())
+                    {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .button(
+                                    RichText::new("Launch Anyway (Incomplete)").color(p.warning),
+                                )
+                                .on_hover_text(
+                                    "Not recommended: this modpack is missing required manual mods and may crash or lack content.",
+                                )
+                                .clicked()
+                            {
+                                self.show_manual_downloads_modal = false;
+                                self.start_launch(ctx);
+                            }
+                        });
+                    }
+                });
             });
         }
     }
@@ -3828,6 +4016,28 @@ impl McwApp {
 impl eframe::App for McwApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_events();
+
+        // Auto-scan Downloads & mods/ every 2s while Manual Downloads screen is open
+        if self.show_manual_downloads_modal
+            && self.manual_auto_scan
+            && !self.manual_downloads_items.is_empty()
+        {
+            let due = self
+                .last_manual_scan_at
+                .map(|t| t.elapsed() >= Duration::from_secs(2))
+                .unwrap_or(true);
+            if due {
+                if let Some(inst_id) = self
+                    .manual_downloads_instance_id
+                    .clone()
+                    .or_else(|| self.selected_instance_id.clone())
+                {
+                    self.run_manual_downloads_scan(&inst_id, false);
+                }
+            }
+            ctx.request_repaint_after(Duration::from_secs(2));
+        }
+
         self.render_top_bar(ctx);
         self.render_tasks_bar(ctx);
         self.render_sidebar(ctx);

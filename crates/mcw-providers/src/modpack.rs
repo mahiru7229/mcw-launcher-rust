@@ -398,8 +398,11 @@ impl ModpackInstaller {
         remaining
     }
 
-    /// Scan `downloads_dir` (e.g. user's Downloads folder) for any matching `ManualDownloadItem`
-    /// filenames and copy them into `instances/<id>/.minecraft/mods/`. Returns `(imported_count, remaining)`.
+    /// Scan `downloads_dir` (e.g. user's Downloads folder) and the instance's `mods/` folder
+    /// for any matching `ManualDownloadItem` filenames and copy them into `instances/<id>/.minecraft/mods/`.
+    /// Ignores incomplete browser downloads (`.crdownload`, `.part`, `.tmp`, 0-byte files) and handles
+    /// browser duplicate suffixes like `ModName (1).jar` or URL-decoded spaces.
+    /// Returns `(resolved_count, remaining)`.
     pub fn scan_and_import_manual_downloads(
         paths: &LauncherPaths,
         instance_id: &str,
@@ -409,18 +412,54 @@ impl ModpackInstaller {
         let mods_dir = paths.minecraft_dir(instance_id).join("mods");
         fs::create_dir_all(&mods_dir)?;
 
-        let mut imported = 0usize;
+        // Collect completed files in downloads_dir once for flexible matching.
+        let download_entries: Vec<(String, PathBuf)> = fs::read_dir(downloads_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let meta = entry.metadata().ok()?;
+                if meta.len() == 0 {
+                    return None;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                let lower = name.to_ascii_lowercase();
+                if lower.ends_with(".crdownload")
+                    || lower.ends_with(".part")
+                    || lower.ends_with(".tmp")
+                {
+                    return None;
+                }
+                Some((name, path))
+            })
+            .collect();
+
+        let mut resolved = 0usize;
         let mut remaining = Vec::new();
 
         for item in items {
             let target = mods_dir.join(&item.file_name);
-            if target.is_file() {
+            if target.is_file() && target.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                resolved += 1;
                 continue;
             }
-            let candidate = downloads_dir.join(&item.file_name);
-            if candidate.is_file() {
-                fs::copy(&candidate, &target)?;
-                imported += 1;
+            let exact = downloads_dir.join(&item.file_name);
+            let matched_src = if exact.is_file()
+                && exact.metadata().map(|m| m.len() > 0).unwrap_or(false)
+            {
+                Some(exact)
+            } else {
+                find_matching_download(&item.file_name, &download_entries)
+            };
+
+            if let Some(src) = matched_src {
+                fs::copy(&src, &target)?;
+                resolved += 1;
             } else {
                 remaining.push(item.clone());
             }
@@ -435,8 +474,39 @@ impl ModpackInstaller {
             let _ = mcw_storage::atomic_write_text(&pending_path, &json);
         }
 
-        Ok((imported, remaining))
+        Ok((resolved, remaining))
     }
+}
+
+fn normalize_mod_filename(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let replaced = lower.replace("%20", " ").replace('+', " ");
+    // Strip browser duplicate suffix like " (1)" before extension: "foo (1).jar" -> "foo.jar"
+    if let Some((stem, ext)) = replaced.rsplit_once('.') {
+        let trimmed_stem = strip_duplicate_suffix(stem);
+        format!("{trimmed_stem}.{ext}")
+    } else {
+        replaced
+    }
+}
+
+fn strip_duplicate_suffix(stem: &str) -> &str {
+    if let Some(without_close) = stem.strip_suffix(')') {
+        if let Some((prefix, digits)) = without_close.rsplit_once(" (") {
+            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                return prefix;
+            }
+        }
+    }
+    stem
+}
+
+fn find_matching_download(expected: &str, entries: &[(String, PathBuf)]) -> Option<PathBuf> {
+    let expected_norm = normalize_mod_filename(expected);
+    entries
+        .iter()
+        .find(|(name, _)| normalize_mod_filename(name) == expected_norm)
+        .map(|(_, path)| path.clone())
 }
 
 fn parse_mrpack_loader(deps: &HashMap<String, String>) -> ModLoader {
@@ -593,5 +663,67 @@ mod tests {
             fs::read_to_string(paths.minecraft_dir("my-pack").join("options.txt")).unwrap(),
             "fov:0.5\n"
         );
+    }
+
+    #[test]
+    fn scans_and_imports_manual_downloads_with_browser_suffix_and_ignores_partial() {
+        let dir = tempdir().unwrap();
+        let paths = LauncherPaths::portable(dir.path());
+        paths.initialize().unwrap();
+        let inst_dir = paths.instance_dir("rlcraft");
+        fs::create_dir_all(&inst_dir).unwrap();
+
+        let dl_dir = dir.path().join("Downloads");
+        fs::create_dir_all(&dl_dir).unwrap();
+        // Browser duplicate suffix match
+        fs::write(dl_dir.join("OptOutMod-1.0 (1).jar"), b"fake-jar-bytes").unwrap();
+        // Incomplete browser partial download must be ignored
+        fs::write(dl_dir.join("SecondMod-2.0.jar.crdownload"), b"partial").unwrap();
+
+        let items = vec![
+            ManualDownloadItem {
+                mod_id: 100,
+                file_id: 200,
+                file_name: "OptOutMod-1.0.jar".to_string(),
+                website_url: "https://example.com/1".to_string(),
+            },
+            ManualDownloadItem {
+                mod_id: 101,
+                file_id: 201,
+                file_name: "SecondMod-2.0.jar".to_string(),
+                website_url: "https://example.com/2".to_string(),
+            },
+        ];
+
+        let (resolved, remaining) = ModpackInstaller::scan_and_import_manual_downloads(
+            &paths, "rlcraft", &items, &dl_dir,
+        )
+        .unwrap();
+        assert_eq!(resolved, 1);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].file_name, "SecondMod-2.0.jar");
+        assert!(paths
+            .minecraft_dir("rlcraft")
+            .join("mods")
+            .join("OptOutMod-1.0.jar")
+            .is_file());
+        // Still persisted as incomplete
+        assert_eq!(
+            ModpackInstaller::load_pending_manual_downloads(&paths, "rlcraft").len(),
+            1
+        );
+
+        // Now complete the second file
+        fs::write(dl_dir.join("SecondMod-2.0.jar"), b"jar2").unwrap();
+        let (resolved2, remaining2) = ModpackInstaller::scan_and_import_manual_downloads(
+            &paths,
+            "rlcraft",
+            &remaining,
+            &dl_dir,
+        )
+        .unwrap();
+        assert_eq!(resolved2, 1);
+        assert!(remaining2.is_empty());
+        assert!(ModpackInstaller::load_pending_manual_downloads(&paths, "rlcraft").is_empty());
     }
 }
