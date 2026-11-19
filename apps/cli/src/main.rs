@@ -2,7 +2,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use mcw_auth::{AccountStore, MicrosoftAuthClient, OfflineAuth, StoredAccount};
 use mcw_minecraft::{
-    LoaderKind, ModLoaderService, RepairService, VanillaLaunchPipeline, VersionManifestService,
+    ForgeFamily, ForgeLoaderService, LoaderKind, ModLoaderService, RepairService,
+    VanillaLaunchPipeline, VersionManifestService,
 };
 use mcw_models::account::AccountSource;
 use mcw_models::instance::ModLoader;
@@ -16,7 +17,9 @@ use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaProvisioner, LogLine, LogSink, LogStream,
     SupervisedProcess,
 };
-use mcw_storage::{BackupManager, InstanceRunLock, InstanceStore, LauncherPaths};
+use mcw_storage::{
+    migrate_from_python_1_8, BackupManager, InstanceRunLock, InstanceStore, LauncherPaths,
+};
 use mcw_updater::{UpdateChannel, UpdateChecker};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -106,6 +109,14 @@ enum Commands {
         /// Optional instance name override
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Migrate instances and settings from a Python MCW Launcher 1.8.x directory
+    Migrate {
+        /// Path to the Python 1.8.x launcher root directory
+        source: PathBuf,
+        /// Preview what would be migrated without copying files
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Manage Minecraft accounts (Microsoft OAuth & Offline)
     Auth {
@@ -469,14 +480,28 @@ async fn main() -> Result<()> {
             version,
             limit,
         } => {
-            let kind = LoaderKind::parse(&loader)
-                .with_context(|| format!("Unsupported loader '{loader}'. Use 'fabric' or 'quilt'."))?;
             let client = DownloadClient::new()?;
-            let svc = ModLoaderService::new(&paths, &client);
-            let entries = svc.list_versions(kind, &version).await?;
-            for entry in entries.into_iter().take(limit) {
-                let tag = if entry.stable { "stable" } else { "beta" };
-                println!("{:<20} [{}]", entry.version, tag);
+            if let Some(kind) = LoaderKind::parse(&loader) {
+                let svc = ModLoaderService::new(&paths, &client);
+                let entries = svc.list_versions(kind, &version).await?;
+                for entry in entries.into_iter().take(limit) {
+                    let tag = if entry.stable { "stable" } else { "beta" };
+                    println!("{:<20} [{}]", entry.version, tag);
+                }
+            } else if let Some(family) = ForgeFamily::parse(&loader) {
+                let svc = ForgeLoaderService::new(&paths, &client);
+                let entries = svc.list_versions(family, &version).await?;
+                for entry in entries.into_iter().take(limit) {
+                    println!(
+                        "{:<24} ({})",
+                        entry.loader_version,
+                        entry.family.as_str()
+                    );
+                }
+            } else {
+                bail!(
+                    "Unsupported loader '{loader}'. Use 'fabric', 'quilt', 'forge', or 'neoforge'."
+                );
             }
         }
         Commands::Mods { action } => {
@@ -708,6 +733,19 @@ async fn main() -> Result<()> {
                 for m in report.manual_downloads {
                     println!("  - {} -> {}", m.file_name, m.website_url);
                 }
+            }
+        }
+        Commands::Migrate { source, dry_run } => {
+            let report = migrate_from_python_1_8(&source, &paths, dry_run)?;
+            println!(
+                "Migration (dry_run={}) from {}:",
+                dry_run,
+                report.source_root.display()
+            );
+            println!("  Migrated : {:?}", report.migrated_instances);
+            println!("  Skipped  : {:?}", report.skipped_existing);
+            if !report.errors.is_empty() {
+                println!("  Errors   : {:?}", report.errors);
             }
         }
         Commands::Auth { action } => {

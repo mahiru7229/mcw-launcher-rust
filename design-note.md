@@ -214,3 +214,11 @@
 - **Chức năng**: Tra cứu danh mục modpack từ **FTB (`api.modpacks.ch`)** và **ATLauncher (`packsnew.json`)**, dùng chung bộ nhớ đệm SQLite WAL (`ApiCache`).
 - **Gợi ý cho GUI**:
   - Cho phép thêm tab/bộ lọc nguồn **FTB** và **ATLauncher** trong trình duyệt Modpack ở các bản GUI tiếp theo.
+
+### 19. Forge & NeoForge Loader Service (`mcw-minecraft::forge`, `mcw-cli loaders`)
+- **Chức năng**: Tra cứu danh sách phiên bản **Forge** (`maven.minecraftforge.net`) và **NeoForge** (`maven.neoforged.net`, kể cả nhánh legacy `1.20.1`), tải Installer JAR và tách/hợp nhất `version.json` lên nền Vanilla.
+- **Gợi ý cho GUI**: Mở rộng lựa chọn Loader khi tạo Instance từ `Vanilla / Fabric / Quilt` sang đầy đủ `Vanilla / Fabric / Quilt / Forge / NeoForge`.
+
+### 20. Migration tự động từ bản Python `1.8.x` (`mcw-storage::migration`, `mcw-cli migrate`)
+- **Chức năng**: Nhập toàn bộ Instance, `.minecraft/` (saves, mods, configs) và `settings.json` từ thư mục MCW Launcher Python `1.8.x` sang Rust Edition mà **không xóa hay chỉnh sửa dữ liệu gốc**, hỗ trợ `--dry-run` và chạy lặp an toàn (bỏ qua Instance đã tồn tại).
+- **Gợi ý cho GUI**: Có thể thêm nút **Import from MCW 1.8.x** trong màn hình Settings hoặc First-Run Wizard.

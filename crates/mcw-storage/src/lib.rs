@@ -1,12 +1,14 @@
 pub mod atomic_fs;
 pub mod backup;
 pub mod instance_store;
+pub mod migration;
 pub mod paths;
 pub mod run_lock;
 
 pub use atomic_fs::{atomic_write_bytes, atomic_write_json, atomic_write_text};
 pub use backup::{BackupInfo, BackupManager, RestoreOutcome};
 pub use instance_store::InstanceStore;
+pub use migration::{migrate_from_python_1_8, MigrationReport};
 pub use paths::LauncherPaths;
 pub use run_lock::{InstanceRunLock, LockState, RunningInstanceInfo};
 
