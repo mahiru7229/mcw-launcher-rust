@@ -3,10 +3,11 @@ use clap::{Parser, Subcommand};
 use mcw_auth::OfflineAuth;
 use mcw_minecraft::{VanillaLaunchPipeline, VersionManifestService};
 use mcw_models::account::AccountSource;
+use mcw_models::instance::ModLoader;
 use mcw_models::progress::{ProgressEvent, ProgressSink, ProgressStage};
 use mcw_net::DownloadClient;
 use mcw_runtime::{JavaDiscovery, ProcessLauncher};
-use mcw_storage::{InstanceStore, LauncherPaths};
+use mcw_storage::{InstanceRunLock, InstanceStore, LauncherPaths};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -43,6 +44,11 @@ enum Commands {
     },
     /// Discover installed Java runtimes on this machine
     Java,
+    /// Manage Minecraft instances (list, create, show, rename, delete)
+    Instance {
+        #[command(subcommand)]
+        action: InstanceCommands,
+    },
     /// Download/verify and launch a Minecraft Vanilla instance
     Launch {
         /// Instance name
@@ -75,6 +81,43 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum InstanceCommands {
+    /// List all instances
+    List,
+    /// Create a new instance
+    Create {
+        /// Instance name
+        name: String,
+        /// Minecraft version (e.g. 1.21.4)
+        #[arg(long)]
+        version: String,
+        /// Mod loader (vanilla, fabric, quilt)
+        #[arg(long, default_value = "vanilla")]
+        loader: String,
+        /// Mod loader version (optional for vanilla)
+        #[arg(long, default_value = "-1")]
+        loader_version: String,
+    },
+    /// Show detailed info for an instance
+    Show {
+        /// Instance name
+        name: String,
+    },
+    /// Rename an existing instance
+    Rename {
+        /// Current instance name
+        old_name: String,
+        /// New instance name
+        new_name: String,
+    },
+    /// Delete an instance permanently
+    Delete {
+        /// Instance name
+        name: String,
+    },
+}
+
 struct CliProgressSink {
     last_printed_pct: AtomicU64,
 }
@@ -98,10 +141,7 @@ impl ProgressSink for CliProgressSink {
                 let bucket = pct / 10;
                 let prev = self.last_printed_pct.swap(bucket, Ordering::Relaxed);
                 if prev != bucket || event.current == event.total {
-                    println!(
-                        "[{:?}] {} ({}%)",
-                        event.stage, event.message, pct
-                    );
+                    println!("[{:?}] {} ({}%)", event.stage, event.message, pct);
                 }
             }
             _ => {
@@ -169,6 +209,75 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Instance { action } => {
+            let store = InstanceStore::new(&paths);
+            match action {
+                InstanceCommands::List => {
+                    let list = store.list_instances()?;
+                    if list.is_empty() {
+                        println!("No instances found.");
+                    } else {
+                        for inst in list {
+                            let running = if InstanceRunLock::is_running(&paths, &inst.instance_id)
+                            {
+                                "running"
+                            } else {
+                                &inst.last_launch_state
+                            };
+                            println!(
+                                "{:<24} {:<10} {:<10} [{}]",
+                                inst.name, inst.version_id, inst.mod_loader.name, running
+                            );
+                        }
+                    }
+                }
+                InstanceCommands::Create {
+                    name,
+                    version,
+                    loader,
+                    loader_version,
+                } => {
+                    let mod_loader = ModLoader {
+                        name: loader.to_lowercase(),
+                        version: loader_version,
+                    };
+                    let (inst, _) = store.create_instance(&name, &version, mod_loader)?;
+                    println!(
+                        "Created instance '{}' (MC {}, loader: {})",
+                        inst.name, inst.version_id, inst.mod_loader.name
+                    );
+                }
+                InstanceCommands::Show { name } => {
+                    let (inst, settings) = store.get_instance(&name)?;
+                    let running = InstanceRunLock::is_running(&paths, &inst.instance_id);
+                    println!("Name     : {}", inst.name);
+                    println!("Version  : {}", inst.version_id);
+                    println!(
+                        "Loader   : {} ({})",
+                        inst.mod_loader.name, inst.mod_loader.version
+                    );
+                    println!(
+                        "Status   : {}",
+                        if running {
+                            "running"
+                        } else {
+                            &inst.last_launch_state
+                        }
+                    );
+                    println!("Memory   : {}M - {}M", settings.min_memory, settings.max_memory);
+                    println!("Window   : {}x{}", settings.width, settings.height);
+                    println!("Dir      : {}", paths.instance_dir(&inst.instance_id).display());
+                }
+                InstanceCommands::Rename { old_name, new_name } => {
+                    let updated = store.rename_instance(&old_name, &new_name)?;
+                    println!("Renamed instance '{}' -> '{}'", old_name, updated.name);
+                }
+                InstanceCommands::Delete { name } => {
+                    store.delete_instance(&name)?;
+                    println!("Deleted instance '{}'", name);
+                }
+            }
+        }
         Commands::Launch {
             instance,
             version,
@@ -183,6 +292,8 @@ async fn main() -> Result<()> {
             let auth = OfflineAuth::authenticate(&offline)?;
             let store = InstanceStore::new(&paths);
             let (inst, mut settings) = store.ensure_instance(&instance, &version)?;
+            let _lock = InstanceRunLock::acquire(&paths, &inst.instance_id)?;
+
             settings.min_memory = min_mem;
             settings.max_memory = max_mem;
             settings.width = width;
@@ -216,6 +327,7 @@ async fn main() -> Result<()> {
             }
 
             let mut child = ProcessLauncher::spawn_inherited(&prepared.spec)?;
+            _lock.mark_running(child.id())?;
             let status = child.wait().context("Failed waiting on Minecraft process")?;
             println!("Minecraft exited with status: {status}");
         }
