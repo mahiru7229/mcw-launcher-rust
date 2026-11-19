@@ -5,6 +5,7 @@ pub mod installer;
 pub mod libraries;
 pub mod manifest;
 pub mod modloader;
+pub mod repair;
 pub mod rules;
 
 pub use arguments::ArgumentBuilder;
@@ -14,6 +15,7 @@ pub use installer::{PreparedLaunch, VanillaLaunchPipeline};
 pub use libraries::LibraryManager;
 pub use manifest::VersionManifestService;
 pub use modloader::{LoaderKind, LoaderVersionEntry, ModLoaderService};
+pub use repair::{RepairReport, RepairService};
 pub use rules::LibraryRules;
 
 use thiserror::Error;
