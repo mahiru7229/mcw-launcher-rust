@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mcw-models",
+    "crates/mcw-storage",
+    "crates/mcw-net",
+    "crates/mcw-auth",
+    "crates/mcw-runtime",
+    "crates/mcw-minecraft",
+    "apps/cli",
+]
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+futures = "0.3"
+md-5 = "0.10"
+regex = "1.11"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip", "deflate"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha1 = "0.10"
+tempfile = "3.15"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.12", features = ["v3", "v4", "serde"] }
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+# Internal crates
+mcw-models = { path = "crates/mcw-models" }
+mcw-storage = { path = "crates/mcw-storage" }
+mcw-net = { path = "crates/mcw-net" }
+mcw-auth = { path = "crates/mcw-auth" }
+mcw-runtime = { path = "crates/mcw-runtime" }
+mcw-minecraft = { path = "crates/mcw-minecraft" }

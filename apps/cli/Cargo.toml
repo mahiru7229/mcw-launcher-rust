@@ -1,0 +1,22 @@
+[package]
+name = "mcw-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mcw-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+mcw-auth.workspace = true
+mcw-minecraft.workspace = true
+mcw-models.workspace = true
+mcw-net.workspace = true
+mcw-runtime.workspace = true
+mcw-storage.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

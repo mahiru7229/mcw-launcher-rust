@@ -1,0 +1,20 @@
+[package]
+name = "mcw-minecraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mcw-models.workspace = true
+mcw-net.workspace = true
+mcw-runtime.workspace = true
+mcw-storage.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

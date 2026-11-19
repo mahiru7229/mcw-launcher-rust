@@ -1,0 +1,13 @@
+/target
+Cargo.lock
+/cache
+/instances
+/accounts
+/config
+/logs
+/backups
+/themes
+/runtimes
+*.log
+.DS_Store
+Thumbs.db

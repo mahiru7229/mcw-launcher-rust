@@ -1,0 +1,17 @@
+[package]
+name = "mcw-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+futures.workspace = true
+mcw-models.workspace = true
+reqwest.workspace = true
+sha1.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
