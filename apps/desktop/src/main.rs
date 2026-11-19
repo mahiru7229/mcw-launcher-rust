@@ -21,14 +21,14 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("MCW Launcher — Rust Edition")
+            .with_title("MCW Launcher: Rust Edition")
             .with_inner_size([1080.0, 680.0])
             .with_min_inner_size([840.0, 560.0]),
         ..Default::default()
     };
 
     eframe::run_native(
-        "MCW Launcher",
+        "MCW Launcher: Rust Edition",
         options,
         Box::new(move |cc| Ok(Box::new(McwApp::new(cc, paths)))),
     )

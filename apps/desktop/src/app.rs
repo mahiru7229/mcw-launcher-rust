@@ -1694,7 +1694,7 @@ impl McwApp {
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.label(
-                        RichText::new("MCW LAUNCHER")
+                        RichText::new("MCW Launcher: Rust Edition")
                             .strong()
                             .size(14.0)
                             .color(p.text),
