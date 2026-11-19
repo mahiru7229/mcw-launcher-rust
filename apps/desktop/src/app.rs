@@ -14,8 +14,9 @@ use mcw_models::progress::ProgressEvent;
 use mcw_mods::{is_loader_compatible, ModInfo, ModManager};
 use mcw_net::DownloadClient;
 use mcw_providers::{
-    ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient, FtbClient, FtbPackSummary,
-    ManualDownloadItem, ModpackInstaller, ModrinthClient, ModrinthSearchHit, ModrinthSearchParams,
+    ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient, CurseForgeMod,
+    CurseForgeSearchParams, FtbClient, FtbPackSummary, ManualDownloadItem, ModpackInstaller,
+    ModrinthClient, ModrinthSearchHit, ModrinthSearchParams,
 };
 use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, LogLine, LogStream,
@@ -44,8 +45,15 @@ enum DetailTab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContentProviderTab {
+enum ModProviderTab {
     Modrinth,
+    CurseForge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateInstanceTab {
+    Custom,
+    ImportArchive,
     Ftb,
     AtLauncher,
 }
@@ -91,19 +99,21 @@ pub struct McwApp {
     backup_note_input: String,
     pending_restore_backup_id: Option<String>,
 
-    // Create instance modal
+    // Create instance modal (Custom | Import Archive | FTB | ATLauncher)
     show_create_modal: bool,
+    create_tab: CreateInstanceTab,
     create_name: String,
     create_version: String,
     create_loader: String,
     create_error: Option<String>,
-
-    // Import modpack modal
-    show_modpack_modal: bool,
     modpack_path_input: String,
     modpack_name_input: String,
     modpack_installing: bool,
     modpack_manual_downloads: Vec<ManualDownloadItem>,
+    pack_browser_query: String,
+    pack_browser_searching: bool,
+    ftb_results: Vec<FtbPackSummary>,
+    atl_results: Vec<AtLauncherPack>,
 
     // Migration 1.8.x modal
     show_migrate_modal: bool,
@@ -124,13 +134,12 @@ pub struct McwApp {
     ms_login_task: Option<tokio::task::JoinHandle<()>>,
     ms_device_code: Option<DeviceCodeResponse>,
 
-    // Content browser inside Mods tab
-    provider_tab: ContentProviderTab,
-    modrinth_query: String,
+    // Mods browser inside Mods tab (Modrinth | CurseForge)
+    mod_provider_tab: ModProviderTab,
+    mod_search_query: String,
     modrinth_results: Vec<ModrinthSearchHit>,
-    ftb_results: Vec<FtbPackSummary>,
-    atl_results: Vec<AtLauncherPack>,
-    modrinth_searching: bool,
+    curseforge_results: Vec<CurseForgeMod>,
+    mod_searching: bool,
     modrinth_installing: bool,
 }
 
@@ -176,15 +185,19 @@ impl McwApp {
             backup_note_input: String::new(),
             pending_restore_backup_id: None,
             show_create_modal: false,
+            create_tab: CreateInstanceTab::Custom,
             create_name: String::new(),
             create_version: "1.21.4".to_string(),
             create_loader: "vanilla".to_string(),
             create_error: None,
-            show_modpack_modal: false,
             modpack_path_input: String::new(),
             modpack_name_input: String::new(),
             modpack_installing: false,
             modpack_manual_downloads: Vec::new(),
+            pack_browser_query: String::new(),
+            pack_browser_searching: false,
+            ftb_results: Vec::new(),
+            atl_results: Vec::new(),
             show_migrate_modal: false,
             migrate_source_input: String::new(),
             migrate_running: false,
@@ -198,12 +211,11 @@ impl McwApp {
             ms_login_mode: None,
             ms_login_task: None,
             ms_device_code: None,
-            provider_tab: ContentProviderTab::Modrinth,
-            modrinth_query: String::new(),
+            mod_provider_tab: ModProviderTab::Modrinth,
+            mod_search_query: String::new(),
             modrinth_results: Vec::new(),
-            ftb_results: Vec::new(),
-            atl_results: Vec::new(),
-            modrinth_searching: false,
+            curseforge_results: Vec::new(),
+            mod_searching: false,
             modrinth_installing: false,
         };
 
@@ -512,8 +524,8 @@ impl McwApp {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
         };
-        self.modrinth_searching = true;
-        let query = self.modrinth_query.clone();
+        self.mod_searching = true;
+        let query = self.mod_search_query.clone();
         let cache_path = self
             .paths
             .cache_root
@@ -546,6 +558,48 @@ impl McwApp {
             }
             .await;
             let _ = tx.send(AppEvent::ModrinthSearchFinished(res));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_curseforge_search(&mut self, ctx: &egui::Context) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        self.mod_searching = true;
+        let query = self.mod_search_query.clone();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let client = CurseForgeClient::from_env(cache).map_err(|e| e.to_string())?;
+                let loader = if inst.mod_loader.is_vanilla() {
+                    None
+                } else {
+                    Some(inst.mod_loader.name.clone())
+                };
+                let search = client
+                    .search(&CurseForgeSearchParams {
+                        query,
+                        kind: "mod".to_string(),
+                        loader,
+                        game_version: Some(inst.version_id.clone()),
+                        page_size: 12,
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok::<Vec<CurseForgeMod>, String>(search.data)
+            }
+            .await;
+            let _ = tx.send(AppEvent::CurseForgeSearchFinished(res));
             ctx.request_repaint();
         });
     }
@@ -793,8 +847,8 @@ impl McwApp {
     }
 
     fn start_ftb_search(&mut self, ctx: &egui::Context) {
-        self.modrinth_searching = true;
-        let query = self.modrinth_query.clone();
+        self.pack_browser_searching = true;
+        let query = self.pack_browser_query.clone();
         let cache_path = self
             .paths
             .cache_root
@@ -807,9 +861,9 @@ impl McwApp {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
                 let ftb = FtbClient::new(cache).map_err(|e| e.to_string())?;
-                let ids = ftb.search_ids(&query, 8).await.map_err(|e| e.to_string())?;
+                let ids = ftb.search_ids(&query, 10).await.map_err(|e| e.to_string())?;
                 let mut packs = Vec::new();
-                for id in ids.into_iter().take(8) {
+                for id in ids.into_iter().take(10) {
                     if let Ok(p) = ftb.get_pack(id).await {
                         packs.push(p);
                     }
@@ -823,8 +877,8 @@ impl McwApp {
     }
 
     fn start_atlauncher_search(&mut self, ctx: &egui::Context) {
-        self.modrinth_searching = true;
-        let query = self.modrinth_query.clone();
+        self.pack_browser_searching = true;
+        let query = self.pack_browser_query.clone();
         let cache_path = self
             .paths
             .cache_root
@@ -961,12 +1015,22 @@ impl McwApp {
                     }
                 }
                 AppEvent::ModrinthSearchFinished(res) => {
-                    self.modrinth_searching = false;
+                    self.mod_searching = false;
                     match res {
                         Ok(hits) => self.modrinth_results = hits,
                         Err(err) => {
                             self.notice_banner =
                                 Some((format!("Modrinth search failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::CurseForgeSearchFinished(res) => {
+                    self.mod_searching = false;
+                    match res {
+                        Ok(mods) => self.curseforge_results = mods,
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("CurseForge search failed: {err}"), true));
                         }
                     }
                 }
@@ -1086,7 +1150,7 @@ impl McwApp {
                             self.reload_instances();
                             self.modpack_manual_downloads = rep.manual_downloads;
                             if self.modpack_manual_downloads.is_empty() {
-                                self.show_modpack_modal = false;
+                                self.show_create_modal = false;
                             }
                             self.notice_banner = Some((
                                 format!(
@@ -1121,7 +1185,7 @@ impl McwApp {
                     }
                 }
                 AppEvent::FtbSearchFinished(res) => {
-                    self.modrinth_searching = false;
+                    self.pack_browser_searching = false;
                     match res {
                         Ok(packs) => self.ftb_results = packs,
                         Err(err) => {
@@ -1130,7 +1194,7 @@ impl McwApp {
                     }
                 }
                 AppEvent::AtLauncherSearchFinished(res) => {
-                    self.modrinth_searching = false;
+                    self.pack_browser_searching = false;
                     match res {
                         Ok(packs) => self.atl_results = packs,
                         Err(err) => {
@@ -1258,39 +1322,35 @@ impl McwApp {
                     .inner_margin(egui::Margin::same(10)),
             )
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("INSTANCES")
-                            .strong()
-                            .size(11.5)
-                            .color(p.text_muted),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let btn = Button::new(
-                            RichText::new("+ New Instance")
-                                .color(p.accent_text)
-                                .strong(),
-                        )
-                        .fill(p.accent)
-                        .corner_radius(CornerRadius::same(3));
-                        if ui.add(btn).clicked() {
-                            self.create_name.clear();
-                            self.create_error = None;
-                            if self.create_version.is_empty() {
-                                self.create_version = self
-                                    .available_versions
-                                    .first()
-                                    .cloned()
-                                    .unwrap_or_else(|| "1.21.4".to_string());
-                            }
-                            self.show_create_modal = true;
-                        }
-                        if ui.button("Import Pack").clicked() {
-                            self.modpack_manual_downloads.clear();
-                            self.show_modpack_modal = true;
-                        }
-                    });
-                });
+                ui.label(
+                    RichText::new(format!("INSTANCES ({})", self.instances.len()))
+                        .strong()
+                        .size(11.5)
+                        .color(p.text_muted),
+                );
+                ui.add_space(4.0);
+                let new_btn = Button::new(
+                    RichText::new("+ New Instance / Modpack")
+                        .color(p.accent_text)
+                        .strong(),
+                )
+                .fill(p.accent)
+                .min_size(Vec2::new(ui.available_width(), 28.0))
+                .corner_radius(CornerRadius::same(3));
+                if ui.add(new_btn).clicked() {
+                    self.create_tab = CreateInstanceTab::Custom;
+                    self.create_name.clear();
+                    self.create_error = None;
+                    self.modpack_manual_downloads.clear();
+                    if self.create_version.is_empty() {
+                        self.create_version = self
+                            .available_versions
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| "1.21.4".to_string());
+                    }
+                    self.show_create_modal = true;
+                }
 
                 ui.add_space(6.0);
                 ui.separator();
@@ -1810,34 +1870,35 @@ impl McwApp {
         let p = self.palette;
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
 
-        // Multi-provider Content Search Bar (Modrinth | FTB | ATLauncher)
+        // Mod Provider Search Bar (Modrinth | CurseForge)
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.provider_tab, ContentProviderTab::Modrinth, "Modrinth");
-            ui.selectable_value(&mut self.provider_tab, ContentProviderTab::Ftb, "FTB Packs");
             ui.selectable_value(
-                &mut self.provider_tab,
-                ContentProviderTab::AtLauncher,
-                "ATLauncher",
+                &mut self.mod_provider_tab,
+                ModProviderTab::Modrinth,
+                "Modrinth",
             );
-            let hint = match self.provider_tab {
-                ContentProviderTab::Modrinth => "Search Modrinth mods (e.g. sodium, fabric-api)...",
-                ContentProviderTab::Ftb => "Search FTB modpacks (e.g. stoneblock, skies)...",
-                ContentProviderTab::AtLauncher => "Search ATLauncher packs...",
+            ui.selectable_value(
+                &mut self.mod_provider_tab,
+                ModProviderTab::CurseForge,
+                "CurseForge",
+            );
+            let hint = match self.mod_provider_tab {
+                ModProviderTab::Modrinth => "Search Modrinth mods (e.g. sodium, fabric-api)...",
+                ModProviderTab::CurseForge => "Search CurseForge mods (requires CURSEFORGE_API_KEY)...",
             };
             let te = ui.add(
-                TextEdit::singleline(&mut self.modrinth_query)
+                TextEdit::singleline(&mut self.mod_search_query)
                     .hint_text(hint)
-                    .desired_width(250.0),
+                    .desired_width(270.0),
             );
             let search_clicked = ui
-                .add_enabled(!self.modrinth_searching, Button::new("Search"))
+                .add_enabled(!self.mod_searching, Button::new("Search"))
                 .clicked();
             if search_clicked || (te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
             {
-                match self.provider_tab {
-                    ContentProviderTab::Modrinth => self.start_modrinth_search(ctx),
-                    ContentProviderTab::Ftb => self.start_ftb_search(ctx),
-                    ContentProviderTab::AtLauncher => self.start_atlauncher_search(ctx),
+                match self.mod_provider_tab {
+                    ModProviderTab::Modrinth => self.start_modrinth_search(ctx),
+                    ModProviderTab::CurseForge => self.start_curseforge_search(ctx),
                 }
             }
             if ui.button("Refresh Local").clicked() {
@@ -1845,7 +1906,8 @@ impl McwApp {
             }
         });
 
-        if self.provider_tab == ContentProviderTab::Ftb && !self.ftb_results.is_empty() {
+        if self.mod_provider_tab == ModProviderTab::CurseForge && !self.curseforge_results.is_empty()
+        {
             ui.add_space(6.0);
             Frame::new()
                 .fill(p.surface)
@@ -1854,55 +1916,53 @@ impl McwApp {
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("FTB Pack Catalog").strong().size(12.0).color(p.text_muted));
+                        ui.label(
+                            RichText::new("CurseForge Results")
+                                .strong()
+                                .size(12.0)
+                                .color(p.text_muted),
+                        );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("Close").clicked() {
-                                self.ftb_results.clear();
+                            if ui.small_button("Close results").clicked() {
+                                self.curseforge_results.clear();
                             }
                         });
                     });
-                    ScrollArea::vertical().id_salt("ftb_results_scroll").max_height(160.0).show(ui, |ui| {
-                        for pack in &self.ftb_results {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&pack.name).strong());
-                                ui.label(RichText::new(format!("#{} · {} installs", pack.id, pack.installs)).monospace().size(11.0).color(p.text_muted));
-                            });
-                            if !pack.synopsis.is_empty() {
-                                ui.label(RichText::new(&pack.synopsis).size(11.5).color(p.text_muted));
-                            }
-                        }
-                    });
-                });
-        }
-
-        if self.provider_tab == ContentProviderTab::AtLauncher && !self.atl_results.is_empty() {
-            ui.add_space(6.0);
-            Frame::new()
-                .fill(p.surface)
-                .stroke(Stroke::new(1.0_f32, p.border))
-                .corner_radius(CornerRadius::same(3))
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("ATLauncher Pack Catalog").strong().size(12.0).color(p.text_muted));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("Close").clicked() {
-                                self.atl_results.clear();
+                    ScrollArea::vertical()
+                        .id_salt("curseforge_results_scroll")
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for cf_mod in &self.curseforge_results {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&cf_mod.name).strong());
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "#{} · {} downloads",
+                                            cf_mod.id, cf_mod.download_count
+                                        ))
+                                        .monospace()
+                                        .size(11.0)
+                                        .color(p.text_muted),
+                                    );
+                                    if let Some(url) =
+                                        cf_mod.links.as_ref().and_then(|l| l.website_url.as_ref())
+                                    {
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                if ui.small_button("Open Page").clicked() {
+                                                    open_external(url);
+                                                }
+                                            },
+                                        );
+                                    }
+                                });
                             }
                         });
-                    });
-                    ScrollArea::vertical().id_salt("atl_results_scroll").max_height(160.0).show(ui, |ui| {
-                        for pack in &self.atl_results {
-                            ui.label(RichText::new(&pack.name).strong());
-                            if !pack.description.is_empty() {
-                                ui.label(RichText::new(&pack.description).size(11.5).color(p.text_muted));
-                            }
-                        }
-                    });
                 });
         }
 
-        if !self.modrinth_results.is_empty() {
+        if self.mod_provider_tab == ModProviderTab::Modrinth && !self.modrinth_results.is_empty() {
             ui.add_space(6.0);
             Frame::new()
                 .fill(p.surface)
@@ -2239,80 +2299,305 @@ impl McwApp {
     fn render_modals(&mut self, ctx: &egui::Context) {
         let p = self.palette;
 
-        // 1. Create Instance Modal
+        // 1. Unified Create Instance / Modpack Modal (Custom | Import Archive | FTB | ATLauncher)
         if self.show_create_modal {
             egui::Window::new("Create Instance")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.set_min_width(360.0);
-                    ui.label("Instance Name:");
-                    ui.text_edit_singleline(&mut self.create_name);
-                    ui.add_space(6.0);
-
-                    ui.label("Minecraft Version:");
-                    egui::ComboBox::from_id_salt("create_mc_version")
-                        .selected_text(&self.create_version)
-                        .width(240.0)
-                        .show_ui(ui, |ui| {
-                            for v in self.available_versions.iter().take(40) {
-                                ui.selectable_value(&mut self.create_version, v.clone(), v);
-                            }
-                        });
-                    ui.add_space(6.0);
-
-                    ui.label("Mod Loader:");
+                    ui.set_min_width(460.0);
                     ui.horizontal(|ui| {
-                        for loader in ["vanilla", "fabric", "quilt", "forge", "neoforge"] {
-                            ui.selectable_value(&mut self.create_loader, loader.to_string(), loader);
-                        }
+                        ui.selectable_value(
+                            &mut self.create_tab,
+                            CreateInstanceTab::Custom,
+                            "Custom",
+                        );
+                        ui.selectable_value(
+                            &mut self.create_tab,
+                            CreateInstanceTab::ImportArchive,
+                            "Import Archive",
+                        );
+                        ui.selectable_value(
+                            &mut self.create_tab,
+                            CreateInstanceTab::Ftb,
+                            "FTB Modpacks",
+                        );
+                        ui.selectable_value(
+                            &mut self.create_tab,
+                            CreateInstanceTab::AtLauncher,
+                            "ATLauncher",
+                        );
                     });
+                    ui.separator();
+                    ui.add_space(6.0);
 
-                    if let Some(ref err) = self.create_error {
-                        ui.add_space(4.0);
-                        ui.label(RichText::new(err).color(p.danger));
-                    }
+                    match self.create_tab {
+                        CreateInstanceTab::Custom => {
+                            ui.label("Instance Name:");
+                            ui.text_edit_singleline(&mut self.create_name);
+                            ui.add_space(6.0);
 
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        let create_btn = Button::new(
-                            RichText::new("Create Instance").color(p.accent_text).strong(),
-                        )
-                        .fill(p.accent);
-                        if ui.add(create_btn).clicked() {
-                            let store = InstanceStore::new(&self.paths);
-                            let mod_loader = ModLoader {
-                                name: self.create_loader.clone(),
-                                version: if self.create_loader == "vanilla" {
-                                    "-1".to_string()
-                                } else {
-                                    "latest".to_string()
-                                },
-                            };
-                            match store.create_instance(
-                                &self.create_name,
-                                &self.create_version,
-                                mod_loader,
-                            ) {
-                                Ok((created, _)) => {
+                            ui.label("Minecraft Version:");
+                            egui::ComboBox::from_id_salt("create_mc_version")
+                                .selected_text(&self.create_version)
+                                .width(240.0)
+                                .show_ui(ui, |ui| {
+                                    for v in self.available_versions.iter().take(40) {
+                                        ui.selectable_value(&mut self.create_version, v.clone(), v);
+                                    }
+                                });
+                            ui.add_space(6.0);
+
+                            ui.label("Mod Loader:");
+                            ui.horizontal(|ui| {
+                                for loader in ["vanilla", "fabric", "quilt", "forge", "neoforge"] {
+                                    ui.selectable_value(
+                                        &mut self.create_loader,
+                                        loader.to_string(),
+                                        loader,
+                                    );
+                                }
+                            });
+
+                            if let Some(ref err) = self.create_error {
+                                ui.add_space(4.0);
+                                ui.label(RichText::new(err).color(p.danger));
+                            }
+
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                let create_btn = Button::new(
+                                    RichText::new("Create Instance")
+                                        .color(p.accent_text)
+                                        .strong(),
+                                )
+                                .fill(p.accent);
+                                if ui.add(create_btn).clicked() {
+                                    let store = InstanceStore::new(&self.paths);
+                                    let mod_loader = ModLoader {
+                                        name: self.create_loader.clone(),
+                                        version: if self.create_loader == "vanilla" {
+                                            "-1".to_string()
+                                        } else {
+                                            "latest".to_string()
+                                        },
+                                    };
+                                    match store.create_instance(
+                                        &self.create_name,
+                                        &self.create_version,
+                                        mod_loader,
+                                    ) {
+                                        Ok((created, _)) => {
+                                            self.show_create_modal = false;
+                                            self.selected_instance_id = Some(created.instance_id);
+                                            self.reload_instances();
+                                            self.notice_banner = Some((
+                                                format!("Created instance '{}'.", created.name),
+                                                false,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            self.create_error = Some(e.to_string());
+                                        }
+                                    }
+                                }
+                                if ui.button("Cancel").clicked() {
                                     self.show_create_modal = false;
-                                    self.selected_instance_id = Some(created.instance_id);
-                                    self.reload_instances();
-                                    self.notice_banner = Some((
-                                        format!("Created instance '{}'.", created.name),
-                                        false,
-                                    ));
                                 }
-                                Err(e) => {
-                                    self.create_error = Some(e.to_string());
+                            });
+                        }
+                        CreateInstanceTab::ImportArchive => {
+                            ui.label("Modpack Archive Path (.mrpack or CurseForge .zip):");
+                            ui.add(
+                                TextEdit::singleline(&mut self.modpack_path_input)
+                                    .hint_text(r"C:\Users\...\Downloads\modpack.mrpack")
+                                    .desired_width(430.0),
+                            );
+                            ui.add_space(6.0);
+                            ui.label("Instance Name Override (optional):");
+                            ui.add(
+                                TextEdit::singleline(&mut self.modpack_name_input)
+                                    .hint_text("Leave blank to use modpack name")
+                                    .desired_width(300.0),
+                            );
+
+                            if !self.modpack_manual_downloads.is_empty() {
+                                ui.add_space(8.0);
+                                Frame::new()
+                                    .fill(p.elevated)
+                                    .stroke(Stroke::new(1.0_f32, p.warning))
+                                    .corner_radius(CornerRadius::same(3))
+                                    .inner_margin(egui::Margin::same(8))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "Manual downloads required ({} files):",
+                                                self.modpack_manual_downloads.len()
+                                            ))
+                                            .strong()
+                                            .color(p.warning),
+                                        );
+                                        ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                                            for item in &self.modpack_manual_downloads {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        RichText::new(&item.file_name)
+                                                            .monospace()
+                                                            .size(11.0),
+                                                    );
+                                                    if ui.small_button("Open URL").clicked() {
+                                                        open_external(&item.website_url);
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    });
+                            }
+
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                let import_btn = Button::new(
+                                    RichText::new(if self.modpack_installing {
+                                        "Installing..."
+                                    } else {
+                                        "Import Modpack"
+                                    })
+                                    .color(p.accent_text)
+                                    .strong(),
+                                )
+                                .fill(p.accent);
+                                if ui
+                                    .add_enabled(!self.modpack_installing, import_btn)
+                                    .clicked()
+                                {
+                                    self.start_modpack_install(ctx);
                                 }
+                                if ui.button("Close").clicked() {
+                                    self.show_create_modal = false;
+                                }
+                            });
+                        }
+                        CreateInstanceTab::Ftb => {
+                            ui.horizontal(|ui| {
+                                let te = ui.add(
+                                    TextEdit::singleline(&mut self.pack_browser_query)
+                                        .hint_text("Search FTB modpacks (e.g. stoneblock, skies)...")
+                                        .desired_width(330.0),
+                                );
+                                let go = ui
+                                    .add_enabled(!self.pack_browser_searching, Button::new("Search"))
+                                    .clicked();
+                                if go
+                                    || (te.lost_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                {
+                                    self.start_ftb_search(ctx);
+                                }
+                            });
+                            ui.add_space(6.0);
+                            ScrollArea::vertical()
+                                .id_salt("create_ftb_scroll")
+                                .max_height(240.0)
+                                .show(ui, |ui| {
+                                    if self.ftb_results.is_empty() {
+                                        ui.label(
+                                            RichText::new("Enter a search term to browse FTB modpacks.")
+                                                .color(p.text_muted),
+                                        );
+                                    } else {
+                                        for pack in &self.ftb_results {
+                                            Frame::new()
+                                                .fill(p.elevated)
+                                                .stroke(Stroke::new(1.0_f32, p.border))
+                                                .corner_radius(CornerRadius::same(3))
+                                                .inner_margin(egui::Margin::same(8))
+                                                .show(ui, |ui| {
+                                                    ui.set_width(ui.available_width());
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(RichText::new(&pack.name).strong());
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "#{} · {} installs",
+                                                                pack.id, pack.installs
+                                                            ))
+                                                            .monospace()
+                                                            .size(11.0)
+                                                            .color(p.text_muted),
+                                                        );
+                                                    });
+                                                    if !pack.synopsis.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(&pack.synopsis)
+                                                                .size(11.5)
+                                                                .color(p.text_muted),
+                                                        );
+                                                    }
+                                                });
+                                            ui.add_space(4.0);
+                                        }
+                                    }
+                                });
+                            ui.add_space(8.0);
+                            if ui.button("Close").clicked() {
+                                self.show_create_modal = false;
                             }
                         }
-                        if ui.button("Cancel").clicked() {
-                            self.show_create_modal = false;
+                        CreateInstanceTab::AtLauncher => {
+                            ui.horizontal(|ui| {
+                                let te = ui.add(
+                                    TextEdit::singleline(&mut self.pack_browser_query)
+                                        .hint_text("Search ATLauncher packs (or leave empty to list)...")
+                                        .desired_width(330.0),
+                                );
+                                let go = ui
+                                    .add_enabled(!self.pack_browser_searching, Button::new("Search"))
+                                    .clicked();
+                                if go
+                                    || (te.lost_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                {
+                                    self.start_atlauncher_search(ctx);
+                                }
+                            });
+                            ui.add_space(6.0);
+                            ScrollArea::vertical()
+                                .id_salt("create_atl_scroll")
+                                .max_height(240.0)
+                                .show(ui, |ui| {
+                                    if self.atl_results.is_empty() {
+                                        ui.label(
+                                            RichText::new("Click Search to browse ATLauncher modpacks.")
+                                                .color(p.text_muted),
+                                        );
+                                    } else {
+                                        for pack in &self.atl_results {
+                                            Frame::new()
+                                                .fill(p.elevated)
+                                                .stroke(Stroke::new(1.0_f32, p.border))
+                                                .corner_radius(CornerRadius::same(3))
+                                                .inner_margin(egui::Margin::same(8))
+                                                .show(ui, |ui| {
+                                                    ui.set_width(ui.available_width());
+                                                    ui.label(RichText::new(&pack.name).strong());
+                                                    if !pack.description.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(&pack.description)
+                                                                .size(11.5)
+                                                                .color(p.text_muted),
+                                                        );
+                                                    }
+                                                });
+                                            ui.add_space(4.0);
+                                        }
+                                    }
+                                });
+                            ui.add_space(8.0);
+                            if ui.button("Close").clicked() {
+                                self.show_create_modal = false;
+                            }
                         }
-                    });
+                    }
                 });
         }
 
@@ -2633,83 +2918,7 @@ impl McwApp {
                 });
         }
 
-        // 6. Import Modpack Modal (.mrpack / CurseForge .zip)
-        if self.show_modpack_modal {
-            egui::Window::new("Import Modpack (.mrpack / CurseForge .zip)")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(420.0);
-                    ui.label("Archive File Path (.mrpack or .zip):");
-                    ui.add(
-                        TextEdit::singleline(&mut self.modpack_path_input)
-                            .hint_text(r"C:\Users\...\Downloads\modpack.mrpack")
-                            .desired_width(400.0),
-                    );
-                    ui.add_space(6.0);
-                    ui.label("Instance Name Override (optional):");
-                    ui.add(
-                        TextEdit::singleline(&mut self.modpack_name_input)
-                            .hint_text("Leave blank to use modpack name")
-                            .desired_width(300.0),
-                    );
-
-                    if !self.modpack_manual_downloads.is_empty() {
-                        ui.add_space(8.0);
-                        Frame::new()
-                            .fill(p.elevated)
-                            .stroke(Stroke::new(1.0_f32, p.warning))
-                            .corner_radius(CornerRadius::same(3))
-                            .inner_margin(egui::Margin::same(8))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "Manual downloads required ({} files — third-party distribution disabled):",
-                                        self.modpack_manual_downloads.len()
-                                    ))
-                                    .strong()
-                                    .color(p.warning),
-                                );
-                                ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-                                    for item in &self.modpack_manual_downloads {
-                                        ui.horizontal(|ui| {
-                                            ui.label(RichText::new(&item.file_name).monospace().size(11.0));
-                                            if ui.small_button("Open URL").clicked() {
-                                                open_external(&item.website_url);
-                                            }
-                                        });
-                                    }
-                                });
-                            });
-                    }
-
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        let import_btn = Button::new(
-                            RichText::new(if self.modpack_installing {
-                                "Installing..."
-                            } else {
-                                "Import Modpack"
-                            })
-                            .color(p.accent_text)
-                            .strong(),
-                        )
-                        .fill(p.accent);
-                        if ui
-                            .add_enabled(!self.modpack_installing, import_btn)
-                            .clicked()
-                        {
-                            self.start_modpack_install(ctx);
-                        }
-                        if ui.button("Close").clicked() {
-                            self.show_modpack_modal = false;
-                        }
-                    });
-                });
-        }
-
-        // 7. Import from MCW Python 1.8.x Modal
+        // 6. Import from MCW Python 1.8.x Modal
         if self.show_migrate_modal {
             egui::Window::new("Import from MCW Launcher 1.8.x")
                 .collapsible(false)

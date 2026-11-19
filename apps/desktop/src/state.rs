@@ -2,7 +2,9 @@ use eframe::egui::Context;
 use mcw_auth::{DeviceCodeResponse, StoredAccount};
 use mcw_minecraft::RepairReport;
 use mcw_models::progress::{ProgressEvent, ProgressSink};
-use mcw_providers::{AtLauncherPack, FtbPackSummary, ModpackInstallReport, ModrinthSearchHit};
+use mcw_providers::{
+    AtLauncherPack, CurseForgeMod, FtbPackSummary, ModpackInstallReport, ModrinthSearchHit,
+};
 use mcw_runtime::{JavaInstallation, LogLine, LogSink, ProcessControl, ProcessExitReport};
 use mcw_storage::{BackupInfo, MigrationReport, RestoreOutcome};
 use mcw_updater::UpdateCheckResult;
@@ -47,6 +49,7 @@ pub enum AppEvent {
     DeviceCodeReady(DeviceCodeResponse),
     MicrosoftLoginFinished(Result<StoredAccount, String>),
     ModrinthSearchFinished(Result<Vec<ModrinthSearchHit>, String>),
+    CurseForgeSearchFinished(Result<Vec<CurseForgeMod>, String>),
     FtbSearchFinished(Result<Vec<FtbPackSummary>, String>),
     AtLauncherSearchFinished(Result<Vec<AtLauncherPack>, String>),
     ModrinthInstallFinished {
