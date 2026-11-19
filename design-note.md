@@ -97,3 +97,15 @@
 - **Gợi ý cho GUI**:
   - Khi Launch cần tải Java tự động, hiển thị rõ giai đoạn `InstallingJava` ("Đang tải Eclipse Temurin Java 17...").
   - Khi hệ thống tự nâng Java do mod yêu cầu (ví dụ 1.16.1 + Fabric → Java 17), có thể hiển thị badge giải thích ngắn trong Instance Settings ("Auto-selected Java 17 — required by installed mods").
+
+### 9. Fabric & Quilt Mod Loader (`mcw-minecraft`, `mcw-cli`)
+- **Chức năng**: Liệt kê phiên bản Fabric Loader / Quilt Loader theo từng bản Minecraft, tự chọn bản `stable` mới nhất khi người dùng để mặc định, tải & cache profile JSON, hợp nhất thư viện Maven và `mainClass` lên nền Vanilla.
+- **Cách hoạt động**:
+  - **Fabric Meta v2** (`https://meta.fabricmc.net/v2`) & **Quilt Meta v3** (`https://meta.quiltmc.org/v3`):
+    - `ModLoaderService::list_versions(kind, game_version)` trả danh sách `LoaderVersionEntry { version, stable }`.
+    - `ModLoaderService::install_and_merge` tải `/profile/json`, cache vào `cache/versions/{loader}-{loader_ver}-{mc_ver}.json` (có offline fallback khi mất mạng).
+  - Chuyển từng Maven coordinate (`group:artifact:version`) thành `LibraryEntry` (cho phép `size == 0` đúng bài học #1) rồi nối vào cuối `base.libraries` để `ClasspathBuilder` tự động ưu tiên phiên bản mới hơn (ví dụ ASM của Fabric ghi đè ASM của Vanilla).
+  - Giữ `client_jar` theo `base_version_id`, cập nhật `mainClass` (`KnotClient` / `Quilt`), hợp nhất `arguments` (`jvm` + `game`), và phát giai đoạn `ProgressStage::InstallingModLoader`.
+- **Gợi ý cho GUI**:
+  - Màn hình Tạo Instance / Cài đặt Loader: cho chọn Loader (`Vanilla` / `Fabric` / `Quilt`), gọi `ModLoaderService::list_versions` để đổ dropdown phiên bản Loader kèm đánh dấu `(Recommended / Stable)`.
+  - Nếu chọn Fabric/Quilt mà không chọn phiên bản cụ thể, Core tự lấy bản stable mới nhất.

@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use mcw_auth::{AccountStore, MicrosoftAuthClient, OfflineAuth, StoredAccount};
-use mcw_minecraft::{VanillaLaunchPipeline, VersionManifestService};
+use mcw_minecraft::{LoaderKind, ModLoaderService, VanillaLaunchPipeline, VersionManifestService};
 use mcw_models::account::AccountSource;
 use mcw_models::instance::ModLoader;
 use mcw_models::progress::{ProgressEvent, ProgressSink, ProgressStage};
@@ -53,6 +53,16 @@ enum Commands {
         #[command(subcommand)]
         action: InstanceCommands,
     },
+    /// List available Fabric or Quilt loader versions for a Minecraft version
+    Loaders {
+        /// Loader name: fabric or quilt
+        loader: String,
+        /// Minecraft version (e.g. 1.21.4)
+        version: String,
+        /// Maximum number of entries to print
+        #[arg(long, default_value_t = 15)]
+        limit: usize,
+    },
     /// Manage Minecraft accounts (Microsoft OAuth & Offline)
     Auth {
         #[command(subcommand)]
@@ -66,6 +76,12 @@ enum Commands {
         /// Minecraft version (e.g. 1.21.4)
         #[arg(long)]
         version: String,
+        /// Mod loader override (vanilla, fabric, quilt)
+        #[arg(long)]
+        loader: Option<String>,
+        /// Mod loader version override (e.g. latest or 0.16.10)
+        #[arg(long)]
+        loader_version: Option<String>,
         /// Offline player username (mutually exclusive with --account)
         #[arg(long)]
         offline: Option<String>,
@@ -337,6 +353,21 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Loaders {
+            loader,
+            version,
+            limit,
+        } => {
+            let kind = LoaderKind::parse(&loader)
+                .with_context(|| format!("Unsupported loader '{loader}'. Use 'fabric' or 'quilt'."))?;
+            let client = DownloadClient::new()?;
+            let svc = ModLoaderService::new(&paths, &client);
+            let entries = svc.list_versions(kind, &version).await?;
+            for entry in entries.into_iter().take(limit) {
+                let tag = if entry.stable { "stable" } else { "beta" };
+                println!("{:<20} [{}]", entry.version, tag);
+            }
+        }
         Commands::Auth { action } => {
             let store = AccountStore::new(&paths);
             match action {
@@ -423,6 +454,8 @@ async fn main() -> Result<()> {
         Commands::Launch {
             instance,
             version,
+            loader,
+            loader_version,
             offline,
             account,
             java,
@@ -459,7 +492,15 @@ async fn main() -> Result<()> {
             };
 
             let store = InstanceStore::new(&paths);
-            let (inst, mut settings) = store.ensure_instance(&instance, &version)?;
+            let (mut inst, mut settings) = store.ensure_instance(&instance, &version)?;
+            if let Some(loader_name) = loader {
+                inst.mod_loader.name = loader_name.to_ascii_lowercase();
+                inst.mod_loader.version = loader_version.unwrap_or_else(|| "latest".to_string());
+                store.save_instance(&inst)?;
+            } else if let Some(lv) = loader_version {
+                inst.mod_loader.version = lv;
+                store.save_instance(&inst)?;
+            }
             let _lock = InstanceRunLock::acquire(&paths, &inst.instance_id)?;
 
             settings.min_memory = min_mem;

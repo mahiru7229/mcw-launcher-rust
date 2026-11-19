@@ -3,6 +3,7 @@ use crate::assets::AssetManager;
 use crate::classpath::ClasspathBuilder;
 use crate::libraries::LibraryManager;
 use crate::manifest::VersionManifestService;
+use crate::modloader::{LoaderKind, ModLoaderService};
 use crate::{MinecraftError, Result};
 use mcw_models::account::{AccountSource, Authentication};
 use mcw_models::instance::{Instance, InstanceSettings};
@@ -58,9 +59,30 @@ impl<'a> VanillaLaunchPipeline<'a> {
             current: 0,
             total: 1,
         });
-        let metadata = manifest_svc.load_version_metadata(&entry).await?;
+        let base_metadata = manifest_svc.load_version_metadata(&entry).await?;
+        let base_version_id = base_metadata.id.clone();
 
-        // 2. Download client JAR
+        // 1b. Merge Mod Loader profile if Fabric or Quilt
+        let metadata = if let Some(kind) = LoaderKind::parse(&instance.mod_loader.name) {
+            progress.on_progress(ProgressEvent {
+                stage: ProgressStage::InstallingModLoader,
+                message: format!(
+                    "Resolving {} loader for {}...",
+                    kind.as_str(),
+                    base_version_id
+                ),
+                current: 0,
+                total: 1,
+            });
+            let loader_svc = ModLoaderService::new(self.paths, self.client);
+            loader_svc
+                .install_and_merge(kind, &base_metadata, &instance.mod_loader.version)
+                .await?
+        } else {
+            base_metadata
+        };
+
+        // 2. Download client JAR (always keyed by base Vanilla version id)
         let client_artifact = metadata
             .downloads
             .as_ref()
@@ -68,10 +90,10 @@ impl<'a> VanillaLaunchPipeline<'a> {
             .ok_or_else(|| {
                 MinecraftError::InvalidMetadata(format!(
                     "Version '{}' is missing client download metadata",
-                    metadata.id
+                    base_version_id
                 ))
             })?;
-        let client_jar = self.paths.client_jar(&metadata.id);
+        let client_jar = self.paths.client_jar(&base_version_id);
         progress.on_progress(ProgressEvent {
             stage: ProgressStage::DownloadingClient,
             message: format!("Downloading client JAR ({})...", metadata.id),
@@ -99,7 +121,7 @@ impl<'a> VanillaLaunchPipeline<'a> {
         //    allow higher Java for Vanilla/Fabric/Quilt, and auto-provision Temurin if missing)
         let metadata_java_major = metadata.java_version.as_ref().map(|j| j.major_version);
         let mut required_java =
-            JavaMajorPolicy::required_for_minecraft(&metadata.id, metadata_java_major)?;
+            JavaMajorPolicy::required_for_minecraft(&base_version_id, metadata_java_major)?;
         let loader_name = instance.mod_loader.name.to_ascii_lowercase();
         if loader_name == "fabric" || loader_name == "quilt" {
             let mods_dir = self.paths.minecraft_dir(&instance.instance_id).join("mods");
