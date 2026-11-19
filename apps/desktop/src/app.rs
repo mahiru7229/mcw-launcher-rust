@@ -1,3 +1,4 @@
+use crate::i18n::{tr, Language, LauncherPrefs};
 use crate::state::{ActiveTask, AppEvent, ChannelLogSink, ChannelProgressSink};
 use crate::theme::{apply_theme, configure_fonts, ThemeMode, ThemePalette};
 use eframe::egui::{
@@ -65,6 +66,7 @@ enum CreateInstanceTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LauncherSettingsTab {
     Appearance,
+    Language,
 }
 
 enum LaunchState {
@@ -80,6 +82,7 @@ pub struct McwApp {
     rx: Receiver<AppEvent>,
 
     theme_mode: ThemeMode,
+    language: Language,
     palette: ThemePalette,
 
     // Core data (lightweight metadata + lazy per-instance caches so switching is instant)
@@ -192,7 +195,9 @@ pub struct McwApp {
 impl McwApp {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: LauncherPaths) -> Self {
         configure_fonts(&cc.egui_ctx);
-        let theme_mode = ThemeMode::Dark;
+        let prefs = LauncherPrefs::load(&paths);
+        let theme_mode = prefs.theme_mode();
+        let language = prefs.language_enum();
         let palette = apply_theme(&cc.egui_ctx, theme_mode);
 
         let runtime = Arc::new(
@@ -213,6 +218,7 @@ impl McwApp {
             tx,
             rx,
             theme_mode,
+            language,
             palette,
             instances: Vec::new(),
             selected_instance_id: None,
@@ -306,6 +312,21 @@ impl McwApp {
         app.reload_java();
         app.fetch_versions(&cc.egui_ctx);
         app
+    }
+
+    fn t(&self, key: &'static str) -> &'static str {
+        tr(self.language, key)
+    }
+
+    fn save_prefs(&self) {
+        let prefs = LauncherPrefs {
+            theme: match self.theme_mode {
+                ThemeMode::Dark => "dark".to_string(),
+                ThemeMode::Light => "light".to_string(),
+            },
+            language: self.language.code().to_string(),
+        };
+        prefs.save(&self.paths);
     }
 
     fn reload_instances(&mut self) {
@@ -2145,7 +2166,7 @@ impl McwApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // Gear icon button for Launcher Settings (separate window)
                         if gear_icon_button(ui, p, self.show_launcher_settings)
-                            .on_hover_text("Launcher Settings")
+                            .on_hover_text(self.t("Launcher Settings"))
                             .clicked()
                         {
                             self.show_launcher_settings = !self.show_launcher_settings;
@@ -2162,7 +2183,7 @@ impl McwApp {
                                 };
                                 format!("Account: {} ({kind})", a.username)
                             }
-                            None => "Sign in / Add Account".to_string(),
+                            None => self.t("Sign in / Add Account").to_string(),
                         };
                         if ui.button(acc_label).clicked() {
                             self.show_account_modal = true;
@@ -2423,7 +2444,9 @@ impl McwApp {
                         match self.launch_states.get(&inst.instance_id) {
                             Some(LaunchState::Running { control, .. }) => {
                                 let stop_btn = Button::new(
-                                    RichText::new("Stop Game").color(Color32::WHITE).strong(),
+                                    RichText::new(self.t("Stop Game"))
+                                        .color(Color32::WHITE)
+                                        .strong(),
                                 )
                                 .fill(p.danger)
                                 .min_size(Vec2::new(120.0, 34.0))
@@ -2434,7 +2457,7 @@ impl McwApp {
                             }
                             Some(LaunchState::Preparing(_)) => {
                                 let prep_btn = Button::new(
-                                    RichText::new("Preparing...").color(p.text_muted),
+                                    RichText::new(self.t("Preparing...")).color(p.text_muted),
                                 )
                                 .min_size(Vec2::new(120.0, 34.0))
                                 .corner_radius(CornerRadius::same(3));
@@ -2466,7 +2489,9 @@ impl McwApp {
                                     }
                                 } else {
                                     let launch_btn = Button::new(
-                                        RichText::new("Launch").color(p.accent_text).strong(),
+                                        RichText::new(self.t("Launch"))
+                                            .color(p.accent_text)
+                                            .strong(),
                                     )
                                     .fill(p.accent)
                                     .min_size(Vec2::new(120.0, 34.0))
@@ -2590,14 +2615,14 @@ impl McwApp {
                 // Detail Tabs
                 ui.horizontal(|ui| {
                     for (tab, label) in [
-                        (DetailTab::Overview, "Overview"),
-                        (DetailTab::Mods, "Mods"),
-                        (DetailTab::Packs, "Packs"),
-                        (DetailTab::Worlds, "Worlds"),
-                        (DetailTab::Screenshots, "Screenshots"),
-                        (DetailTab::Backups, "Backups"),
-                        (DetailTab::Logs, "Logs"),
-                        (DetailTab::Settings, "Settings"),
+                        (DetailTab::Overview, self.t("Overview")),
+                        (DetailTab::Mods, self.t("Mods")),
+                        (DetailTab::Packs, self.t("Packs")),
+                        (DetailTab::Worlds, self.t("Worlds")),
+                        (DetailTab::Screenshots, self.t("Screenshots")),
+                        (DetailTab::Backups, self.t("Backups")),
+                        (DetailTab::Logs, self.t("Logs")),
+                        (DetailTab::Settings, self.t("Settings")),
                     ] {
                         let active = self.active_tab == tab;
                         let btn = Button::new(
@@ -4715,7 +4740,7 @@ impl McwApp {
                                     let is_app = self.launcher_settings_tab
                                         == LauncherSettingsTab::Appearance;
                                     let tab_btn = Button::new(
-                                        RichText::new("Appearance")
+                                        RichText::new(self.t("Appearance"))
                                             .strong()
                                             .size(13.5)
                                             .color(if is_app { p.accent_text } else { p.text }),
@@ -4727,6 +4752,23 @@ impl McwApp {
                                         self.launcher_settings_tab =
                                             LauncherSettingsTab::Appearance;
                                     }
+
+                                    ui.add_space(6.0);
+
+                                    let is_lang =
+                                        self.launcher_settings_tab == LauncherSettingsTab::Language;
+                                    let lang_btn = Button::new(
+                                        RichText::new(self.t("Language"))
+                                            .strong()
+                                            .size(13.5)
+                                            .color(if is_lang { p.accent_text } else { p.text }),
+                                    )
+                                    .fill(if is_lang { p.accent } else { p.elevated })
+                                    .min_size(Vec2::new(120.0, 34.0))
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui.add(lang_btn).clicked() {
+                                        self.launcher_settings_tab = LauncherSettingsTab::Language;
+                                    }
                                 });
                             });
 
@@ -4736,14 +4778,14 @@ impl McwApp {
                         ui.vertical(|ui| match self.launcher_settings_tab {
                             LauncherSettingsTab::Appearance => {
                                 ui.label(
-                                    RichText::new("Appearance")
+                                    RichText::new(self.t("Appearance"))
                                         .strong()
                                         .size(15.0)
                                         .color(p.text),
                                 );
                                 ui.label(
                                     RichText::new(
-                                        "Select the launcher color theme (Default: Dark).",
+                                        self.t("Select the launcher color theme (Default: Dark)."),
                                     )
                                     .size(12.0)
                                     .color(p.text_muted),
@@ -4753,9 +4795,14 @@ impl McwApp {
                                 ui.horizontal(|ui| {
                                     let dark_selected = self.theme_mode == ThemeMode::Dark;
                                     let dark_btn = Button::new(
-                                        RichText::new("Dark (Default)").strong().size(13.0).color(
-                                            if dark_selected { p.accent_text } else { p.text },
-                                        ),
+                                        RichText::new(self.t("Dark (Default)"))
+                                            .strong()
+                                            .size(13.0)
+                                            .color(if dark_selected {
+                                                p.accent_text
+                                            } else {
+                                                p.text
+                                            }),
                                     )
                                     .fill(if dark_selected { p.accent } else { p.elevated })
                                     .stroke(Stroke::new(
@@ -4767,13 +4814,14 @@ impl McwApp {
                                     if ui.add(dark_btn).clicked() && !dark_selected {
                                         self.theme_mode = ThemeMode::Dark;
                                         self.palette = apply_theme(ctx, self.theme_mode);
+                                        self.save_prefs();
                                     }
 
                                     ui.add_space(8.0);
 
                                     let light_selected = self.theme_mode == ThemeMode::Light;
                                     let light_btn = Button::new(
-                                        RichText::new("Light").strong().size(13.0).color(
+                                        RichText::new(self.t("Light")).strong().size(13.0).color(
                                             if light_selected {
                                                 p.accent_text
                                             } else {
@@ -4791,6 +4839,68 @@ impl McwApp {
                                     if ui.add(light_btn).clicked() && !light_selected {
                                         self.theme_mode = ThemeMode::Light;
                                         self.palette = apply_theme(ctx, self.theme_mode);
+                                        self.save_prefs();
+                                    }
+                                });
+                            }
+                            LauncherSettingsTab::Language => {
+                                ui.label(
+                                    RichText::new(self.t("Language"))
+                                        .strong()
+                                        .size(15.0)
+                                        .color(p.text),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        self.t("Select the interface language for MCW Launcher."),
+                                    )
+                                    .size(12.0)
+                                    .color(p.text_muted),
+                                );
+                                ui.add_space(12.0);
+
+                                ui.horizontal(|ui| {
+                                    let en_selected = self.language == Language::En;
+                                    let en_btn = Button::new(
+                                        RichText::new("English (en-US)").strong().size(13.0).color(
+                                            if en_selected { p.accent_text } else { p.text },
+                                        ),
+                                    )
+                                    .fill(if en_selected { p.accent } else { p.elevated })
+                                    .stroke(Stroke::new(
+                                        1.0_f32,
+                                        if en_selected { p.accent } else { p.border },
+                                    ))
+                                    .min_size(Vec2::new(150.0, 42.0))
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui.add(en_btn).clicked() && !en_selected {
+                                        self.language = Language::En;
+                                        self.save_prefs();
+                                    }
+
+                                    ui.add_space(8.0);
+
+                                    let vi_selected = self.language == Language::Vi;
+                                    let vi_btn = Button::new(
+                                        RichText::new("Tiếng Việt (vi-VN)")
+                                            .strong()
+                                            .size(13.0)
+                                            .color(if vi_selected {
+                                                p.accent_text
+                                            } else {
+                                                p.text
+                                            }),
+                                    )
+                                    .fill(if vi_selected { p.accent } else { p.elevated })
+                                    .stroke(Stroke::new(
+                                        1.0_f32,
+                                        if vi_selected { p.accent } else { p.border },
+                                    ))
+                                    .min_size(Vec2::new(150.0, 42.0))
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui.add(vi_btn).clicked() && !vi_selected {
+                                        self.language = Language::Vi;
+                                        self.save_prefs();
                                     }
                                 });
                             }
