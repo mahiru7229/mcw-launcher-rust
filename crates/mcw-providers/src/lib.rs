@@ -11,10 +11,10 @@ pub use curseforge::{
     load_curseforge_api_key, save_curseforge_api_key_to_dotenv, CurseForgeClient, CurseForgeFile,
     CurseForgeMod, CurseForgeSearchParams, CurseForgeSearchResult,
 };
-pub use ftb::{FtbClient, FtbPackSummary};
+pub use ftb::{FtbClient, FtbPackSummary, FtbVersionSummary};
 pub use modpack::{
-    ManualDownloadItem, ModpackExportMode, ModpackExportOptions, ModpackInstallReport,
-    ModpackInstaller, ModpackProgressCallback,
+    normalize_modloader, parse_cf_loader_id, ManualDownloadItem, ModpackExportMode,
+    ModpackExportOptions, ModpackInstallReport, ModpackInstaller, ModpackProgressCallback,
 };
 pub use modrinth::{
     InstalledModFile, ModrinthClient, ModrinthDependency, ModrinthFile, ModrinthSearchHit,

@@ -1,5 +1,5 @@
 use crate::cache::ApiCache;
-use crate::modpack::{ModpackInstallReport, ModpackProgressCallback};
+use crate::modpack::{normalize_modloader, ModpackInstallReport, ModpackProgressCallback};
 use crate::{ProviderError, Result};
 use mcw_models::instance::ModLoader;
 use mcw_net::{DownloadClient, DownloadRequest};
@@ -43,6 +43,25 @@ impl FtbPackSummary {
             .or_else(|| self.art.iter().find(|a| !a.url.is_empty()))
             .map(|a| a.url.as_str())
     }
+
+    pub fn website_url(&self) -> String {
+        format!("https://www.feed-the-beast.com/modpacks/{}", self.id)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FtbVersionSummary {
+    pub id: u64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub release_type: String,
+    #[serde(default)]
+    pub mc_version: String,
+    #[serde(default)]
+    pub loader: String,
+    #[serde(default)]
+    pub recommended_memory_mb: u32,
 }
 
 #[derive(Clone)]
@@ -105,10 +124,86 @@ impl FtbClient {
         Ok(packs)
     }
 
+    /// List all downloadable versions of an FTB pack (newest first) for the install dialog.
+    pub async fn get_pack_versions(&self, pack_id: u64) -> Result<Vec<FtbVersionSummary>> {
+        let pack_raw = self
+            .cached_get(&format!("{FTB_API_BASE}/modpack/{pack_id}"))
+            .await?;
+        let pack_json: serde_json::Value = serde_json::from_str(&pack_raw)?;
+        let mut versions = Vec::new();
+        if let Some(arr) = pack_json.get("versions").and_then(|v| v.as_array()) {
+            for v in arr.iter().rev() {
+                let Some(id) = v.get("id").and_then(|x| x.as_u64()) else {
+                    continue;
+                };
+                let name = v
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let release_type = v
+                    .get("type")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("Release")
+                    .to_string();
+                let mut mc_version = String::new();
+                let mut loader = String::new();
+                if let Some(targets) = v.get("targets").and_then(|x| x.as_array()) {
+                    for t in targets {
+                        let kind = t.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                        let tname = t.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                        let tver = t.get("version").and_then(|x| x.as_str()).unwrap_or("");
+                        if kind.eq_ignore_ascii_case("game")
+                            && tname.eq_ignore_ascii_case("minecraft")
+                        {
+                            mc_version = tver.to_string();
+                        } else if kind.eq_ignore_ascii_case("modloader") && !tname.is_empty() {
+                            loader = normalize_modloader(tname, tver, &mc_version).name;
+                        }
+                    }
+                }
+                let recommended_memory_mb = v
+                    .get("specs")
+                    .and_then(|s| s.get("recommended"))
+                    .and_then(|r| r.as_u64())
+                    .unwrap_or(0) as u32;
+                versions.push(FtbVersionSummary {
+                    id,
+                    name: if name.is_empty() {
+                        format!("v{id}")
+                    } else {
+                        name
+                    },
+                    release_type,
+                    mc_version,
+                    loader,
+                    recommended_memory_mb,
+                });
+            }
+        }
+        Ok(versions)
+    }
+
     /// Download and install the latest version of an FTB modpack directly into a new Instance.
     pub async fn install_pack_with_progress(
         &self,
         pack_id: u64,
+        pack_name: &str,
+        paths: &LauncherPaths,
+        downloader: &DownloadClient,
+        progress: Option<ModpackProgressCallback>,
+    ) -> Result<ModpackInstallReport> {
+        self.install_pack_version_with_progress(
+            pack_id, None, pack_name, paths, downloader, progress,
+        )
+        .await
+    }
+
+    /// Download and install a specific version (or latest if `None`) of an FTB modpack.
+    pub async fn install_pack_version_with_progress(
+        &self,
+        pack_id: u64,
+        version_id: Option<u64>,
         pack_name: &str,
         paths: &LauncherPaths,
         downloader: &DownloadClient,
@@ -120,31 +215,35 @@ impl FtbClient {
             }
         };
 
-        emit(0, 0, format!("Fetching FTB pack #{pack_id} metadata..."));
-        let pack_raw = self
-            .cached_get(&format!("{FTB_API_BASE}/modpack/{pack_id}"))
-            .await?;
-        let pack_json: serde_json::Value = serde_json::from_str(&pack_raw)?;
-        let latest_ver_id = pack_json
-            .get("versions")
-            .and_then(|v| v.as_array())
-            .and_then(|arr| arr.last())
-            .and_then(|v| v.get("id"))
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| {
-                ProviderError::Io(std::io::Error::other(format!(
-                    "FTB pack #{pack_id} has no downloadable versions"
-                )))
-            })?;
+        let target_ver_id = if let Some(vid) = version_id {
+            vid
+        } else {
+            emit(0, 0, format!("Fetching FTB pack #{pack_id} metadata..."));
+            let pack_raw = self
+                .cached_get(&format!("{FTB_API_BASE}/modpack/{pack_id}"))
+                .await?;
+            let pack_json: serde_json::Value = serde_json::from_str(&pack_raw)?;
+            pack_json
+                .get("versions")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.last())
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| {
+                    ProviderError::Io(std::io::Error::other(format!(
+                        "FTB pack #{pack_id} has no downloadable versions"
+                    )))
+                })?
+        };
 
-        emit(0, 0, format!("Fetching FTB manifest v{latest_ver_id}..."));
+        emit(0, 0, format!("Fetching FTB manifest v{target_ver_id}..."));
         let ver_raw = self
-            .cached_get(&format!("{FTB_API_BASE}/modpack/{pack_id}/{latest_ver_id}"))
+            .cached_get(&format!("{FTB_API_BASE}/modpack/{pack_id}/{target_ver_id}"))
             .await?;
         let ver_json: serde_json::Value = serde_json::from_str(&ver_raw)?;
 
         let mut game_version = "1.20.1".to_string();
-        let mut loader = ModLoader::vanilla();
+        let mut loader_raw: Option<(String, String)> = None;
         if let Some(targets) = ver_json.get("targets").and_then(|v| v.as_array()) {
             for t in targets {
                 let kind = t.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -153,13 +252,14 @@ impl FtbClient {
                 if kind.eq_ignore_ascii_case("game") && name.eq_ignore_ascii_case("minecraft") {
                     game_version = ver.to_string();
                 } else if kind.eq_ignore_ascii_case("modloader") && !name.is_empty() {
-                    loader = ModLoader {
-                        name: name.to_ascii_lowercase(),
-                        version: ver.to_string(),
-                    };
+                    loader_raw = Some((name.to_string(), ver.to_string()));
                 }
             }
         }
+        let loader = match loader_raw {
+            Some((name, ver)) => normalize_modloader(&name, &ver, &game_version),
+            None => ModLoader::vanilla(),
+        };
 
         let store = InstanceStore::new(paths);
         let mut candidate_name = pack_name.trim().to_string();

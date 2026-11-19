@@ -1,5 +1,5 @@
 use crate::cache::ApiCache;
-use crate::modpack::{ModpackInstallReport, ModpackProgressCallback};
+use crate::modpack::{normalize_modloader, ModpackInstallReport, ModpackProgressCallback};
 use crate::{ProviderError, Result};
 use mcw_models::instance::ModLoader;
 use mcw_net::{DownloadClient, DownloadRequest};
@@ -29,6 +29,14 @@ pub struct AtLauncherVersionEntry {
     pub version: String,
     #[serde(default, deserialize_with = "null_to_default")]
     pub minecraft: String,
+    #[serde(
+        rename = "isRecommended",
+        default,
+        deserialize_with = "null_to_default"
+    )]
+    pub is_recommended: bool,
+    #[serde(rename = "isDev", default, deserialize_with = "null_to_default")]
+    pub is_dev: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +51,27 @@ pub struct AtLauncherPack {
     pub safe_name: String,
     #[serde(default, deserialize_with = "null_to_default")]
     pub versions: Vec<AtLauncherVersionEntry>,
+}
+
+impl AtLauncherPack {
+    pub fn effective_safe_name(&self) -> String {
+        if self.safe_name.is_empty() {
+            self.name.replace(' ', "")
+        } else {
+            self.safe_name.clone()
+        }
+    }
+
+    pub fn icon_url(&self) -> String {
+        format!(
+            "{ATLAUNCHER_CDN_BASE}launcher/images/{}.png",
+            self.effective_safe_name().to_ascii_lowercase()
+        )
+    }
+
+    pub fn website_url(&self) -> String {
+        format!("https://atlauncher.com/pack/{}", self.effective_safe_name())
+    }
 }
 
 pub struct AtLauncherClient {
@@ -103,35 +132,53 @@ impl AtLauncherClient {
         downloader: &DownloadClient,
         progress: Option<ModpackProgressCallback>,
     ) -> Result<ModpackInstallReport> {
+        self.install_pack_version_with_progress(pack, None, None, paths, downloader, progress)
+            .await
+    }
+
+    /// Download and install a specific version (or latest if `None`) of an ATLauncher modpack.
+    pub async fn install_pack_version_with_progress(
+        &self,
+        pack: &AtLauncherPack,
+        version_override: Option<&str>,
+        name_override: Option<&str>,
+        paths: &LauncherPaths,
+        downloader: &DownloadClient,
+        progress: Option<ModpackProgressCallback>,
+    ) -> Result<ModpackInstallReport> {
         let emit = |cur: u64, tot: u64, msg: String| {
             if let Some(ref cb) = progress {
                 cb(cur, tot, msg);
             }
         };
 
-        let latest = pack.versions.first().ok_or_else(|| {
+        let chosen = if let Some(v) = version_override {
+            pack.versions
+                .iter()
+                .find(|entry| entry.version == v)
+                .or_else(|| pack.versions.first())
+        } else {
+            pack.versions.first()
+        }
+        .ok_or_else(|| {
             ProviderError::Io(std::io::Error::other(format!(
                 "ATLauncher pack '{}' has no published versions",
                 pack.name
             )))
         })?;
-        let safe_name = if pack.safe_name.is_empty() {
-            pack.name.replace(' ', "")
-        } else {
-            pack.safe_name.clone()
-        };
+        let safe_name = pack.effective_safe_name();
 
         emit(
             0,
             0,
             format!(
                 "Fetching ATLauncher manifest ({} v{})...",
-                pack.name, latest.version
+                pack.name, chosen.version
             ),
         );
         let cfg_url = format!(
             "{ATLAUNCHER_CDN_BASE}packs/{safe_name}/versions/{}/Configs.json",
-            latest.version
+            chosen.version
         );
         let resp = self.http.get(&cfg_url).send().await?;
         let status = resp.status();
@@ -148,45 +195,28 @@ impl AtLauncherClient {
             .get("minecraft")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .unwrap_or(if latest.minecraft.is_empty() {
+            .unwrap_or(if chosen.minecraft.is_empty() {
                 "1.20.1"
             } else {
-                &latest.minecraft
+                &chosen.minecraft
             })
             .to_string();
 
-        let loader = if let Some(l) = cfg.get("loader") {
-            let ltype = l
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("vanilla")
-                .to_ascii_lowercase();
-            let lver = l
-                .get("metadata")
-                .and_then(|m| m.get("version"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if ltype == "vanilla" || lver.is_empty() {
-                ModLoader::vanilla()
-            } else {
-                ModLoader {
-                    name: ltype,
-                    version: lver,
-                }
-            }
-        } else {
-            ModLoader::vanilla()
-        };
+        let loader = parse_atlauncher_loader(&cfg, &game_version);
 
         let store = InstanceStore::new(paths);
-        let mut candidate_name = pack.name.trim().to_string();
-        if candidate_name.is_empty() {
-            candidate_name = safe_name.clone();
-        }
+        let base_name = name_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| pack.name.trim());
+        let mut candidate_name = if base_name.is_empty() {
+            safe_name.clone()
+        } else {
+            base_name.to_string()
+        };
         let mut idx = 2usize;
         while store.load_instance(&candidate_name).is_ok() {
-            candidate_name = format!("{} ({idx})", pack.name.trim());
+            candidate_name = format!("{base_name} ({idx})");
             idx += 1;
         }
         let (inst, _) = store
@@ -200,6 +230,12 @@ impl AtLauncherClient {
         if let Some(mods) = cfg.get("mods").and_then(|v| v.as_array()) {
             for m in mods {
                 if !m.get("client").and_then(|v| v.as_bool()).unwrap_or(true) {
+                    continue;
+                }
+                // Skip loader JAR entries (matching Python ATLauncherClient._is_loader_file)
+                let mod_type = m.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let mod_name = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if is_atlauncher_loader_entry(mod_type, mod_name) {
                     continue;
                 }
                 if m.get("optional").and_then(|v| v.as_bool()).unwrap_or(false)
@@ -260,6 +296,60 @@ impl AtLauncherClient {
     }
 }
 
+fn is_atlauncher_loader_entry(mod_type: &str, mod_name: &str) -> bool {
+    let t = mod_type.trim().to_ascii_lowercase();
+    let n = mod_name.trim().to_ascii_lowercase();
+    t == "forge"
+        || t == "neoforge"
+        || n == "minecraft forge"
+        || n == "forge"
+        || n.contains("neoforge")
+}
+
+/// Extract and normalize ATLauncher modloader from `Configs.json` (matching Python `ATLauncherClient._loader`).
+fn parse_atlauncher_loader(cfg: &serde_json::Value, game_version: &str) -> ModLoader {
+    if let Some(l) = cfg.get("loader").and_then(|v| v.as_object()) {
+        let ltype = l.get("type").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let meta = l.get("metadata").and_then(|v| v.as_object());
+        let raw_ver = meta
+            .and_then(|m| m.get("version").and_then(|v| v.as_str()))
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                meta.and_then(|m| m.get("loader").and_then(|v| v.as_str()))
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .or_else(|| {
+                meta.and_then(|m| m.get("rawVersion").and_then(|v| v.as_str()))
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .or_else(|| {
+                l.get("version")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or("");
+        if !ltype.is_empty() {
+            return normalize_modloader(ltype, raw_ver, game_version);
+        }
+    }
+    // Legacy pack fallback: inspect `mods[]` for embedded Forge/NeoForge entries
+    if let Some(mods) = cfg.get("mods").and_then(|v| v.as_array()) {
+        for m in mods {
+            let mtype = m.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let mname = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let mver = m.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            let lower_name = mname.to_ascii_lowercase();
+            if lower_name.contains("neoforge") {
+                return normalize_modloader("neoforge", mver, game_version);
+            }
+            if mtype.eq_ignore_ascii_case("forge") || lower_name == "minecraft forge" {
+                return normalize_modloader("forge", mver, game_version);
+            }
+        }
+    }
+    ModLoader::vanilla()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +379,29 @@ mod tests {
         assert_eq!(packs[0].description, "");
         assert_eq!(packs[0].versions[0].minecraft, "");
         assert!(packs[1].versions.is_empty());
+    }
+
+    #[test]
+    fn parses_modern_and_legacy_atlauncher_loaders() {
+        let modern: serde_json::Value = serde_json::json!({
+            "minecraft": "1.20.1",
+            "loader": {
+                "type": "MinecraftForge",
+                "metadata": { "rawVersion": "1.20.1-47.3.0" }
+            }
+        });
+        let l1 = parse_atlauncher_loader(&modern, "1.20.1");
+        assert_eq!(l1.name, "forge");
+        assert_eq!(l1.version, "47.3.0");
+
+        let legacy: serde_json::Value = serde_json::json!({
+            "minecraft": "1.12.2",
+            "mods": [
+                { "name": "Minecraft Forge", "type": "forge", "version": "14.23.5.2860" }
+            ]
+        });
+        let l2 = parse_atlauncher_loader(&legacy, "1.12.2");
+        assert_eq!(l2.name, "forge");
+        assert_eq!(l2.version, "14.23.5.2860");
     }
 }

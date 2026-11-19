@@ -69,9 +69,11 @@ struct CfMinecraftSpec {
     version: String,
     #[serde(rename = "modLoaders", default)]
     mod_loaders: Vec<CfModLoader>,
+    #[serde(rename = "modLoader", default)]
+    mod_loader: Option<CfModLoader>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct CfModLoader {
     id: String,
     #[serde(default)]
@@ -197,7 +199,7 @@ impl ModpackInstaller {
             .get("minecraft")
             .cloned()
             .unwrap_or_else(|| "1.21.4".to_string());
-        let loader = parse_mrpack_loader(&index.dependencies);
+        let loader = parse_mrpack_loader(&index.dependencies, &game_version);
         let target_name = name_override
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(&index.name);
@@ -278,7 +280,13 @@ impl ModpackInstaller {
 
         let cf_client = curseforge.ok_or(ProviderError::MissingApiKey)?;
         let game_version = manifest.minecraft.version.clone();
-        let loader = parse_cf_loader(&manifest.minecraft.mod_loaders);
+        let mut cf_loaders = manifest.minecraft.mod_loaders.clone();
+        if cf_loaders.is_empty() {
+            if let Some(single) = manifest.minecraft.mod_loader.clone() {
+                cf_loaders.push(single);
+            }
+        }
+        let loader = parse_cf_loader(&cf_loaders, &game_version);
         let target_name = name_override
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(&manifest.name);
@@ -843,35 +851,80 @@ fn find_matching_download(expected: &str, entries: &[(String, PathBuf)]) -> Opti
         .map(|(_, path)| path.clone())
 }
 
-fn parse_mrpack_loader(deps: &HashMap<String, String>) -> ModLoader {
-    if let Some(v) = deps.get("fabric-loader") {
-        return ModLoader {
-            name: "fabric".to_string(),
-            version: v.clone(),
-        };
+/// Canonicalize a modloader name and defensively strip redundant prefixes from its version string
+/// (matching MCW Launcher Python's `ModLoaderManager.resolve` and `LOADER_ALIASES`).
+pub fn normalize_modloader(loader_name: &str, raw_version: &str, game_version: &str) -> ModLoader {
+    let cleaned_name: String = loader_name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '_' | '-'))
+        .collect();
+    let canonical = match cleaned_name.as_str() {
+        "" | "vanilla" | "minecraft" | "none" => return ModLoader::vanilla(),
+        "fabric" | "fabricloader" => "fabric",
+        "quilt" | "quiltloader" => "quilt",
+        "forge" | "minecraftforge" => "forge",
+        "neoforge" | "neoforged" | "neo" => "neoforge",
+        other => other,
+    };
+
+    let mut ver = raw_version.trim().to_string();
+    // 1. Strip `<loader_name>-` prefix (e.g. `forge-47.3.0` -> `47.3.0`)
+    for prefix in [
+        format!("{canonical}-"),
+        format!("{canonical}/"),
+        format!("{canonical}_"),
+    ] {
+        if ver.len() > prefix.len() && ver[..prefix.len()].eq_ignore_ascii_case(&prefix) {
+            ver = ver[prefix.len()..].trim().to_string();
+        }
     }
-    if let Some(v) = deps.get("quilt-loader") {
-        return ModLoader {
-            name: "quilt".to_string(),
-            version: v.clone(),
-        };
+    // 2. For fabric/quilt, strip redundant `loader-` prefix (e.g. `fabric-loader-0.16.9` -> `0.16.9`)
+    if matches!(canonical, "fabric" | "quilt")
+        && ver.len() > 7
+        && ver[..7].eq_ignore_ascii_case("loader-")
+    {
+        ver = ver[7..].trim().to_string();
     }
-    if let Some(v) = deps.get("neoforge") {
-        return ModLoader {
-            name: "neoforge".to_string(),
-            version: v.clone(),
-        };
+    // 3. Strip `<game_version>-` prefix (e.g. `1.20.1-47.3.0` -> `47.3.0`)
+    let gv = game_version.trim();
+    if !gv.is_empty() {
+        let gv_prefix = format!("{gv}-");
+        if ver.len() > gv_prefix.len() && ver[..gv_prefix.len()].eq_ignore_ascii_case(&gv_prefix) {
+            ver = ver[gv_prefix.len()..].trim().to_string();
+        }
     }
-    if let Some(v) = deps.get("forge") {
-        return ModLoader {
-            name: "forge".to_string(),
-            version: v.clone(),
-        };
+
+    let ver_lower = ver.to_ascii_lowercase();
+    if matches!(
+        ver_lower.as_str(),
+        "" | "-1" | "auto" | "latest" | "recommended" | "none"
+    ) {
+        ver = String::new();
+    }
+
+    ModLoader {
+        name: canonical.to_string(),
+        version: ver,
+    }
+}
+
+fn parse_mrpack_loader(deps: &HashMap<String, String>, game_version: &str) -> ModLoader {
+    for (key, loader) in [
+        ("fabric-loader", "fabric"),
+        ("quilt-loader", "quilt"),
+        ("neoforge", "neoforge"),
+        ("forge", "forge"),
+    ] {
+        if let Some(v) = deps.get(key) {
+            return normalize_modloader(loader, v, game_version);
+        }
     }
     ModLoader::vanilla()
 }
 
-fn parse_cf_loader(loaders: &[CfModLoader]) -> ModLoader {
+fn parse_cf_loader(loaders: &[CfModLoader], game_version: &str) -> ModLoader {
     let chosen = loaders
         .iter()
         .find(|l| l.primary)
@@ -879,11 +932,44 @@ fn parse_cf_loader(loaders: &[CfModLoader]) -> ModLoader {
     let Some(entry) = chosen else {
         return ModLoader::vanilla();
     };
-    if let Some((kind, ver)) = entry.id.split_once('-') {
-        ModLoader {
-            name: kind.to_ascii_lowercase(),
-            version: ver.to_string(),
+    parse_cf_loader_id(&entry.id, game_version)
+}
+
+/// Parse CurseForge `modLoaders[].id` (e.g. `"fabric-loader-0.16.9"`, `"forge-1.20.1-47.3.0"`,
+/// `"neoforge-21.1.72"`, `"quilt-loader-0.27.0"`, `"forge"`) matching Python's `_parse_loader_id`.
+pub fn parse_cf_loader_id(raw_id: &str, game_version: &str) -> ModLoader {
+    let text = raw_id.trim();
+    if text.is_empty() {
+        return ModLoader::vanilla();
+    }
+    let lower = text.to_ascii_lowercase();
+    // Ordered longest-first so `fabric-loader` / `neoforged` / `minecraftforge` match before shorter aliases.
+    const ALIASES: &[(&str, &str)] = &[
+        ("minecraftforge", "forge"),
+        ("fabric-loader", "fabric"),
+        ("quilt-loader", "quilt"),
+        ("neoforged", "neoforge"),
+        ("neoforge", "neoforge"),
+        ("fabric", "fabric"),
+        ("quilt", "quilt"),
+        ("forge", "forge"),
+        ("neo", "neoforge"),
+    ];
+    for &(alias, canonical) in ALIASES {
+        if lower == alias {
+            return normalize_modloader(canonical, "", game_version);
         }
+        if lower.starts_with(alias) {
+            let rest = &text[alias.len()..];
+            if let Some(first_ch) = rest.chars().next() {
+                if matches!(first_ch, '-' | '/' | '_' | ' ') {
+                    return normalize_modloader(canonical, &rest[1..], game_version);
+                }
+            }
+        }
+    }
+    if let Some((kind, ver)) = text.split_once('-') {
+        normalize_modloader(kind, ver, game_version)
     } else {
         ModLoader::vanilla()
     }
@@ -1089,5 +1175,36 @@ mod tests {
         assert!(zip.by_name("modrinth.index.json").is_ok());
         assert!(zip.by_name("overrides/mods/demo.jar").is_ok());
         assert!(zip.by_name("overrides/saves/world1/level.dat").is_err());
+    }
+
+    #[test]
+    fn normalizes_modpack_loaders_matching_python() {
+        let l1 = parse_cf_loader_id("fabric-loader-0.16.9", "1.21.4");
+        assert_eq!(l1.name, "fabric");
+        assert_eq!(l1.version, "0.16.9");
+
+        let l2 = parse_cf_loader_id("forge-1.20.1-47.3.0", "1.20.1");
+        assert_eq!(l2.name, "forge");
+        assert_eq!(l2.version, "47.3.0");
+
+        let l3 = parse_cf_loader_id("quilt-loader-0.27.0", "1.20.1");
+        assert_eq!(l3.name, "quilt");
+        assert_eq!(l3.version, "0.27.0");
+
+        let l4 = parse_cf_loader_id("neoforged-21.1.72", "1.21.1");
+        assert_eq!(l4.name, "neoforge");
+        assert_eq!(l4.version, "21.1.72");
+
+        let l5 = normalize_modloader("FabricLoader", "loader-0.16.10", "1.21.4");
+        assert_eq!(l5.name, "fabric");
+        assert_eq!(l5.version, "0.16.10");
+
+        let l6 = normalize_modloader("MinecraftForge", "1.20.1-47.2.20", "1.20.1");
+        assert_eq!(l6.name, "forge");
+        assert_eq!(l6.version, "47.2.20");
+
+        let l7 = parse_cf_loader_id("forge", "1.20.1");
+        assert_eq!(l7.name, "forge");
+        assert_eq!(l7.version, "");
     }
 }

@@ -3,6 +3,7 @@ use mcw_auth::{DeviceCodeResponse, StoredAccount};
 use mcw_minecraft::{RepairReport, ScreenshotInfo, WorldInfo};
 use mcw_models::progress::{ProgressEvent, ProgressSink};
 use mcw_mods::{ContentKind, ContentPackInfo, ModInfo};
+use mcw_net::TaskControl;
 use mcw_providers::{
     AtLauncherPack, CurseForgeMod, FtbPackSummary, ModpackInstallReport, ModrinthSearchHit,
 };
@@ -11,6 +12,7 @@ use mcw_runtime::{
 };
 use mcw_storage::{BackupInfo, RestoreOutcome};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct ActiveTask {
@@ -19,6 +21,28 @@ pub struct ActiveTask {
     pub message: String,
     pub current: u64,
     pub total: u64,
+    pub control: Arc<TaskControl>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModpackChannel {
+    Release,
+    Beta,
+    Alpha,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ModpackVersionOption {
+    pub id: String,
+    pub label: String,
+    pub mc_version: String,
+    pub loader: String,
+    pub channel: ModpackChannel,
+    pub download_url: Option<String>,
+    pub file_name: String,
+    pub file_size: u64,
+    pub recommended_ram_mb: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +69,10 @@ pub enum AppEvent {
     ModVersionsLoaded {
         target_key: String,
         versions: Result<Vec<ModVersionChoice>, String>,
+    },
+    ModpackInstallVersionsLoaded {
+        request_id: u64,
+        versions: Result<Vec<ModpackVersionOption>, String>,
     },
     DirectModFileInstalled {
         task_id: u64,

@@ -129,6 +129,9 @@ pub struct CurseForgeFile {
     pub display_name: String,
     #[serde(rename = "fileName")]
     pub file_name: String,
+    /// CurseForge release channel: 1 = Release, 2 = Beta, 3 = Alpha.
+    #[serde(rename = "releaseType", default = "default_cf_release_type")]
+    pub release_type: u32,
     #[serde(rename = "fileLength", default)]
     pub file_length: u64,
     #[serde(rename = "downloadUrl", default)]
@@ -137,6 +140,10 @@ pub struct CurseForgeFile {
     pub game_versions: Vec<String>,
     #[serde(default)]
     pub hashes: Vec<CurseForgeHash>,
+}
+
+fn default_cf_release_type() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -677,6 +684,7 @@ mod tests {
             mod_id: 12345,
             display_name: String::new(),
             file_name: "opt-out-mod.jar".to_string(),
+            release_type: 1,
             file_length: 1024,
             download_url: None,
             game_versions: vec![],

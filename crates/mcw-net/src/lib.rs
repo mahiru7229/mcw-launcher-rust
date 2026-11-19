@@ -6,11 +6,76 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 
 static GLOBAL_DOWNLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Cooperative pause / resume / cancel controller for background downloads and tasks
+/// (mirroring MCW Launcher Python's `DownloadPauseController`).
+#[derive(Debug, Default)]
+pub struct TaskControl {
+    paused: AtomicBool,
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+impl TaskControl {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn toggle_pause(&self) -> bool {
+        if self.is_paused() {
+            self.resume();
+            false
+        } else {
+            self.pause();
+            true
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.paused.store(false, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Blocks asynchronously while paused; returns `Err(NetError::Cancelled)` when cancelled.
+    pub async fn check(&self) -> Result<()> {
+        loop {
+            if self.is_cancelled() {
+                return Err(NetError::Cancelled);
+            }
+            if !self.is_paused() {
+                return Ok(());
+            }
+            tokio::select! {
+                _ = self.notify.notified() => {}
+                _ = sleep(Duration::from_millis(200)) => {}
+            }
+        }
+    }
+}
 
 /// Returns cumulative bytes downloaded by all `DownloadClient` instances in this process.
 /// Used by the desktop UI to compute real-time network download speed (B/s, KB/s, MB/s).
@@ -24,6 +89,8 @@ use tracing::debug;
 
 #[derive(Debug, Error)]
 pub enum NetError {
+    #[error("Task cancelled by user")]
+    Cancelled,
     #[error("HTTP client initialization failed: {0}")]
     ClientInit(#[from] reqwest::Error),
     #[error("Download failed for {url} after retries: {reason}")]
@@ -104,6 +171,7 @@ pub struct DownloadOutcome {
 pub struct DownloadClient {
     http: reqwest::Client,
     max_retries: usize,
+    control: Option<Arc<TaskControl>>,
 }
 
 impl DownloadClient {
@@ -117,7 +185,21 @@ impl DownloadClient {
         Ok(Self {
             http,
             max_retries: 4,
+            control: None,
         })
+    }
+
+    pub fn with_task_control(&self, control: Arc<TaskControl>) -> Self {
+        let mut cloned = self.clone();
+        cloned.control = Some(control);
+        cloned
+    }
+
+    async fn check_control(&self) -> Result<()> {
+        if let Some(ref ctrl) = self.control {
+            ctrl.check().await?;
+        }
+        Ok(())
     }
 
     pub fn http(&self) -> &reqwest::Client {
@@ -127,6 +209,7 @@ impl DownloadClient {
     pub async fn get_text(&self, url: &str) -> Result<String> {
         let mut last_err = String::new();
         for attempt in 0..=self.max_retries {
+            self.check_control().await?;
             match self
                 .http
                 .get(url)
@@ -158,6 +241,7 @@ impl DownloadClient {
     }
 
     pub async fn download_file(&self, req: &DownloadRequest) -> Result<DownloadOutcome> {
+        self.check_control().await?;
         if req.destination.is_file()
             && verify_file(
                 &req.destination,
@@ -188,6 +272,7 @@ impl DownloadClient {
 
         for url in urls {
             for attempt in 0..=self.max_retries {
+                self.check_control().await?;
                 match self.download_once(url, &part_path, req).await {
                     Ok(bytes_written) => {
                         verify_file(&part_path, req.expected_sha1.as_deref(), req.expected_size)?;
@@ -197,6 +282,9 @@ impl DownloadClient {
                             skipped: false,
                             bytes_written,
                         });
+                    }
+                    Err(NetError::Cancelled) => {
+                        return Err(NetError::Cancelled);
                     }
                     Err(err) => {
                         last_err = err.to_string();
@@ -297,6 +385,7 @@ impl DownloadClient {
         let mut written = if append_mode { resume_from } else { 0 };
         let mut stream = response.bytes_stream();
         while let Some(chunk_res) = stream.next().await {
+            self.check_control().await?;
             let chunk = chunk_res.map_err(|e| NetError::DownloadFailed {
                 url: url.to_string(),
                 reason: e.to_string(),

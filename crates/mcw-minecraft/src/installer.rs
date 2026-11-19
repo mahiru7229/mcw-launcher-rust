@@ -134,6 +134,12 @@ impl<'a> VanillaLaunchPipeline<'a> {
         };
 
         // 4. Merge Mod Loader profile (Fabric, Quilt, Forge, or NeoForge)
+        // Defensively clean redundant prefixes (`forge-`, `loader-`, `<mc_version>-`) matching Python's ModLoaderManager.
+        let clean_loader_ver = sanitize_loader_version(
+            &instance.mod_loader.name,
+            &instance.mod_loader.version,
+            &base_version_id,
+        );
         let metadata = if let Some(kind) = LoaderKind::parse(&instance.mod_loader.name) {
             progress.on_progress(ProgressEvent {
                 stage: ProgressStage::InstallingModLoader,
@@ -147,7 +153,7 @@ impl<'a> VanillaLaunchPipeline<'a> {
             });
             let loader_svc = ModLoaderService::new(self.paths, self.client);
             loader_svc
-                .install_and_merge(kind, &base_metadata, &instance.mod_loader.version)
+                .install_and_merge(kind, &base_metadata, &clean_loader_ver)
                 .await?
         } else if let Some(family) = ForgeFamily::parse(&instance.mod_loader.name) {
             progress.on_progress(ProgressEvent {
@@ -155,7 +161,7 @@ impl<'a> VanillaLaunchPipeline<'a> {
                 message: format!(
                     "Installing {} {} for {}...",
                     family.as_str(),
-                    instance.mod_loader.version,
+                    clean_loader_ver,
                     base_version_id
                 ),
                 current: 0,
@@ -163,12 +169,7 @@ impl<'a> VanillaLaunchPipeline<'a> {
             });
             let forge_svc = ForgeLoaderService::new(self.paths, self.client);
             forge_svc
-                .install_and_merge(
-                    family,
-                    &base_metadata,
-                    &instance.mod_loader.version,
-                    Some(&java.path),
-                )
+                .install_and_merge(family, &base_metadata, &clean_loader_ver, Some(&java.path))
                 .await?
         } else {
             base_metadata
@@ -261,5 +262,44 @@ impl<'a> VanillaLaunchPipeline<'a> {
                 game_args,
             },
         })
+    }
+}
+
+fn sanitize_loader_version(loader_name: &str, raw_version: &str, game_version: &str) -> String {
+    let canonical = loader_name.trim().to_ascii_lowercase();
+    let mut ver = raw_version.trim().to_string();
+    for prefix in [
+        format!("{canonical}-"),
+        format!("{canonical}/"),
+        format!("{canonical}_"),
+    ] {
+        if !canonical.is_empty()
+            && ver.len() > prefix.len()
+            && ver[..prefix.len()].eq_ignore_ascii_case(&prefix)
+        {
+            ver = ver[prefix.len()..].trim().to_string();
+        }
+    }
+    if matches!(canonical.as_str(), "fabric" | "quilt")
+        && ver.len() > 7
+        && ver[..7].eq_ignore_ascii_case("loader-")
+    {
+        ver = ver[7..].trim().to_string();
+    }
+    let gv = game_version.trim();
+    if !gv.is_empty() {
+        let gv_prefix = format!("{gv}-");
+        if ver.len() > gv_prefix.len() && ver[..gv_prefix.len()].eq_ignore_ascii_case(&gv_prefix) {
+            ver = ver[gv_prefix.len()..].trim().to_string();
+        }
+    }
+    let lower = ver.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "" | "-1" | "auto" | "latest" | "recommended" | "none"
+    ) {
+        String::new()
+    } else {
+        ver
     }
 }

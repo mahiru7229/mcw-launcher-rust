@@ -272,6 +272,116 @@ impl<'a> InstanceStore<'a> {
         let path = self.paths.instance_settings_json(instance_id);
         atomic_write_json(&path, settings)
     }
+
+    /// Resolve the on-disk icon file path for an instance, supporting both Python's
+    /// `.mcw/instance-icon.<ext>` relative paths, custom absolute paths, and legacy `icon.png`.
+    pub fn resolve_instance_icon_path(&self, instance: &Instance) -> Option<std::path::PathBuf> {
+        let icon = instance.icon.trim();
+        let inst_dir = self.paths.instance_dir(&instance.instance_id);
+        if !icon.is_empty() && !icon.eq_ignore_ascii_case("grass_block") {
+            let candidate = std::path::Path::new(icon);
+            if candidate.is_absolute() && candidate.is_file() {
+                return Some(candidate.to_path_buf());
+            }
+            let rel = inst_dir.join(icon);
+            if rel.is_file() {
+                return Some(rel);
+            }
+        }
+        // Fallback: check `.mcw/instance-icon.*` or `icon.png` in instance dir
+        let mcw_dir = inst_dir.join(".mcw");
+        for ext in ["png", "jpg", "jpeg", "webp", "bmp", "ico"] {
+            let p = mcw_dir.join(format!("instance-icon.{ext}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        let legacy = inst_dir.join("icon.png");
+        if legacy.is_file() {
+            return Some(legacy);
+        }
+        None
+    }
+
+    /// Save raw image bytes as the instance icon at `<instance_dir>/.mcw/instance-icon.<ext>`,
+    /// detecting format from magic bytes (matching Python `instance_artwork_manager.py`).
+    pub fn set_instance_icon_bytes(&self, instance_id: &str, bytes: &[u8]) -> Result<Instance> {
+        if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+            return Err(StorageError::Io {
+                path: instance_id.to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Icon file must be between 1 byte and 8 MiB",
+                ),
+            });
+        }
+        let ext = detect_image_extension(bytes).unwrap_or("png");
+        let inst_dir = self.paths.instance_dir(instance_id);
+        let mcw_dir = inst_dir.join(".mcw");
+        fs::create_dir_all(&mcw_dir).map_err(|source| StorageError::Io {
+            path: mcw_dir.display().to_string(),
+            source,
+        })?;
+        // Remove any previous icon with a different extension
+        for old_ext in ["png", "jpg", "jpeg", "webp", "bmp", "ico"] {
+            let old = mcw_dir.join(format!("instance-icon.{old_ext}"));
+            if old.is_file() {
+                let _ = fs::remove_file(&old);
+            }
+        }
+        let dest = mcw_dir.join(format!("instance-icon.{ext}"));
+        crate::atomic_fs::atomic_write_bytes(&dest, bytes)?;
+
+        let mut instance = self.load_instance(instance_id)?;
+        instance.icon = format!(".mcw/instance-icon.{ext}");
+        self.save_instance(&instance)?;
+        Ok(instance)
+    }
+
+    /// Copy a user-selected image file as the instance icon.
+    pub fn set_instance_icon(
+        &self,
+        instance_id: &str,
+        src_path: &std::path::Path,
+    ) -> Result<Instance> {
+        let bytes = fs::read(src_path).map_err(|source| StorageError::Io {
+            path: src_path.display().to_string(),
+            source,
+        })?;
+        self.set_instance_icon_bytes(instance_id, &bytes)
+    }
+
+    /// Reset an instance's icon back to the default `"grass_block"`.
+    pub fn reset_instance_icon(&self, instance_id: &str) -> Result<Instance> {
+        let inst_dir = self.paths.instance_dir(instance_id);
+        let mcw_dir = inst_dir.join(".mcw");
+        for ext in ["png", "jpg", "jpeg", "webp", "bmp", "ico"] {
+            let old = mcw_dir.join(format!("instance-icon.{ext}"));
+            if old.is_file() {
+                let _ = fs::remove_file(&old);
+            }
+        }
+        let mut instance = self.load_instance(instance_id)?;
+        instance.icon = "grass_block".to_string();
+        self.save_instance(&instance)?;
+        Ok(instance)
+    }
+}
+
+fn detect_image_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        Some("jpg")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("bmp")
+    } else if bytes.len() >= 4 && bytes[0..4] == [0x00, 0x00, 0x01, 0x00] {
+        Some("ico")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

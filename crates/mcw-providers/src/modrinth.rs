@@ -68,6 +68,9 @@ pub struct ModrinthVersion {
     pub project_id: String,
     pub name: String,
     pub version_number: String,
+    /// `"release"`, `"beta"`, or `"alpha"`.
+    #[serde(default = "default_version_type")]
+    pub version_type: String,
     #[serde(default)]
     pub game_versions: Vec<String>,
     #[serde(default)]
@@ -76,6 +79,10 @@ pub struct ModrinthVersion {
     pub files: Vec<ModrinthFile>,
     #[serde(default)]
     pub dependencies: Vec<ModrinthDependency>,
+}
+
+fn default_version_type() -> String {
+    "release".to_string()
 }
 
 impl ModrinthVersion {
