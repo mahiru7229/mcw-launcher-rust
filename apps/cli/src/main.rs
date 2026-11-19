@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use mcw_auth::OfflineAuth;
+use mcw_auth::{AccountStore, MicrosoftAuthClient, OfflineAuth, StoredAccount};
 use mcw_minecraft::{VanillaLaunchPipeline, VersionManifestService};
 use mcw_models::account::AccountSource;
 use mcw_models::instance::ModLoader;
@@ -11,6 +11,7 @@ use mcw_storage::{InstanceRunLock, InstanceStore, LauncherPaths};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -49,6 +50,11 @@ enum Commands {
         #[command(subcommand)]
         action: InstanceCommands,
     },
+    /// Manage Minecraft accounts (Microsoft OAuth & Offline)
+    Auth {
+        #[command(subcommand)]
+        action: AuthCommands,
+    },
     /// Download/verify and launch a Minecraft Vanilla instance
     Launch {
         /// Instance name
@@ -57,9 +63,12 @@ enum Commands {
         /// Minecraft version (e.g. 1.21.4)
         #[arg(long)]
         version: String,
-        /// Offline player username
+        /// Offline player username (mutually exclusive with --account)
         #[arg(long)]
-        offline: String,
+        offline: Option<String>,
+        /// Saved account username or UUID (supports Microsoft & Offline)
+        #[arg(long)]
+        account: Option<String>,
         /// Explicit path to java executable
         #[arg(long)]
         java: Option<PathBuf>,
@@ -115,6 +124,28 @@ enum InstanceCommands {
     Delete {
         /// Instance name
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthCommands {
+    /// Sign in with a Microsoft account (Device Code by default, or --browser for PKCE)
+    Login {
+        /// Use browser PKCE flow on 127.0.0.1:8400 instead of Device Code
+        #[arg(long)]
+        browser: bool,
+    },
+    /// Add an offline account to the local store
+    AddOffline {
+        /// Offline player username
+        username: String,
+    },
+    /// List stored accounts
+    List,
+    /// Remove a stored account
+    Remove {
+        /// Username or UUID
+        account: String,
     },
 }
 
@@ -278,10 +309,94 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Auth { action } => {
+            let store = AccountStore::new(&paths);
+            match action {
+                AuthCommands::Login { browser } => {
+                    let client = MicrosoftAuthClient::new()?;
+                    let oauth = if browser {
+                        client
+                            .authenticate_browser_pkce(Duration::from_secs(180), |url| {
+                                println!("Open this URL in your browser to sign in:\n{url}");
+                                open_url_in_browser(url);
+                            })
+                            .await?
+                    } else {
+                        let dc = client.request_device_code().await?;
+                        println!("=== Microsoft Device Login ===");
+                        println!("URL  : {}", dc.verification_uri);
+                        println!("Code : {}", dc.user_code);
+                        if !dc.message.is_empty() {
+                            println!("{}", dc.message);
+                        }
+                        open_url_in_browser(&dc.verification_uri);
+                        client
+                            .poll_device_code(&dc.device_code, dc.interval, dc.expires_in)
+                            .await?
+                    };
+
+                    println!("Completing Xbox Live -> XSTS -> Minecraft profile...");
+                    let login = client.complete_minecraft_chain(oauth).await?;
+                    let uuid = login.authentication.uuid.clone();
+                    if let Some(ref rt) = login.refresh_token {
+                        AccountStore::store_refresh_token(&uuid, rt)?;
+                    }
+                    let stored = StoredAccount {
+                        uuid,
+                        username: login.profile.name.clone(),
+                        account_type: AccountSource::Microsoft,
+                        skin_url: login.profile.active_skin_url(),
+                        active: true,
+                    };
+                    store.upsert(stored, true)?;
+                    println!(
+                        "Signed in as Microsoft account '{}' ({})",
+                        login.profile.name, login.authentication.uuid
+                    );
+                }
+                AuthCommands::AddOffline { username } => {
+                    let auth = OfflineAuth::authenticate(&username)?;
+                    let stored = StoredAccount {
+                        uuid: auth.uuid.clone(),
+                        username: auth.player_name.clone(),
+                        account_type: AccountSource::Offline,
+                        skin_url: None,
+                        active: true,
+                    };
+                    store.upsert(stored, true)?;
+                    println!(
+                        "Added offline account '{}' ({})",
+                        auth.player_name, auth.uuid
+                    );
+                }
+                AuthCommands::List => {
+                    let accounts = store.list()?;
+                    if accounts.is_empty() {
+                        println!("No accounts stored.");
+                    } else {
+                        for acc in accounts {
+                            let marker = if acc.active { "*" } else { " " };
+                            println!(
+                                "{} {:<20} {:<10} {}",
+                                marker,
+                                acc.username,
+                                format!("{:?}", acc.account_type).to_lowercase(),
+                                acc.uuid
+                            );
+                        }
+                    }
+                }
+                AuthCommands::Remove { account } => {
+                    let removed = store.remove(&account)?;
+                    println!("Removed account '{}'", removed.username);
+                }
+            }
+        }
         Commands::Launch {
             instance,
             version,
             offline,
+            account,
             java,
             min_mem,
             max_mem,
@@ -289,7 +404,32 @@ async fn main() -> Result<()> {
             height,
             dry_run,
         } => {
-            let auth = OfflineAuth::authenticate(&offline)?;
+            let (auth, account_source) = match (offline, account) {
+                (Some(player), None) => (OfflineAuth::authenticate(&player)?, AccountSource::Offline),
+                (None, Some(query)) => {
+                    let acc_store = AccountStore::new(&paths);
+                    let stored = acc_store.find(&query)?;
+                    match stored.account_type {
+                        AccountSource::Offline => (
+                            OfflineAuth::authenticate(&stored.username)?,
+                            AccountSource::Offline,
+                        ),
+                        AccountSource::Microsoft => {
+                            let rt = AccountStore::load_refresh_token(&stored.uuid)?;
+                            let ms_client = MicrosoftAuthClient::new()?;
+                            let refreshed = ms_client.refresh_microsoft_token(&rt).await?;
+                            let login = ms_client.complete_minecraft_chain(refreshed).await?;
+                            if let Some(ref new_rt) = login.refresh_token {
+                                let _ = AccountStore::store_refresh_token(&stored.uuid, new_rt);
+                            }
+                            (login.authentication, AccountSource::Microsoft)
+                        }
+                    }
+                }
+                (None, None) => bail!("Provide either --offline <PLAYER> or --account <USERNAME>"),
+                (Some(_), Some(_)) => bail!("Use either --offline or --account, not both"),
+            };
+
             let store = InstanceStore::new(&paths);
             let (inst, mut settings) = store.ensure_instance(&instance, &version)?;
             let _lock = InstanceRunLock::acquire(&paths, &inst.instance_id)?;
@@ -307,7 +447,7 @@ async fn main() -> Result<()> {
             let pipeline = VanillaLaunchPipeline::new(&paths, &client);
             let sink = Arc::new(CliProgressSink::new());
             let prepared = pipeline
-                .prepare(&inst, &settings, &auth, AccountSource::Offline, sink)
+                .prepare(&inst, &settings, &auth, account_source, sink)
                 .await?;
 
             println!(
@@ -334,4 +474,21 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn open_url_in_browser(url: &str) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
 }

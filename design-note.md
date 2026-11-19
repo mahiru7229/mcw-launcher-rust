@@ -69,3 +69,18 @@
   - Danh sách Instance hiển thị badge trạng thái thật: `Running` (dựa trên `InstanceRunLock::is_running`), `Ready`, `Finished`, `Crashed`.
   - Khi Instance đang chạy: khóa (disable) nút **Rename** và **Delete** kèm lý do rõ ràng, nút **Launch** chuyển thành **Running / Stop**.
   - Thao tác **Delete** là hành động phá hủy dữ liệu: GUI bắt buộc hiện hộp thoại xác nhận nêu rõ tên Instance và việc xóa toàn bộ `.minecraft/` (saves, mods, configs).
+
+### 7. Microsoft OAuth (PKCE + Device Code) & Account Store (`mcw-auth`, `mcw-cli auth`)
+- **Chức năng**: Đăng nhập tài khoản Microsoft bản quyền (hỗ trợ cả **Device Code** và **Browser PKCE**), quản lý danh sách tài khoản Microsoft & Offline, tự động refresh token khi launch.
+- **Cách hoạt động**:
+  - **Device Code Flow** (`request_device_code` → `poll_device_code`): Lấy `user_code` + `verification_uri` để hiển thị cho người dùng, tự poll theo `interval` (xử lý `authorization_pending`, `slow_down`, `expired_token`, `access_denied`).
+  - **Browser PKCE Flow** (`authenticate_browser_pkce`): Sinh `code_verifier` + `S256 code_challenge` + `state` chống CSRF; **bind & lắng nghe `127.0.0.1:8400` xong trước** rồi mới gọi callback mở trình duyệt; trả HTML kèm header bảo mật (`Cache-Control: no-store`, `CSP: default-src 'none'`).
+  - **Chuỗi xác thực Minecraft** (`complete_minecraft_chain`): Microsoft OAuth Token → Xbox Live (`user.auth.xboxlive.com`) → XSTS (`xsts.auth.xboxlive.com`, có thông báo thân thiện cho các mã `XErr` như thiếu Xbox profile, sai vùng, cần xác minh người lớn, tài khoản trẻ em) → Minecraft Services (`login_with_xbox`) → Minecraft Profile & Skin URL.
+  - **Lưu trữ bảo mật (`AccountStore`)**:
+    - Metadata tài khoản (`uuid`, `username`, `account_type`, `skin_url`, `active`) lưu atomic tại `accounts/accounts.json`.
+    - Microsoft `refresh_token` lưu vào **OS Keyring** (Windows Credential Manager / Linux Secret Service) qua crate `keyring`.
+    - **Không bao giờ** lưu Minecraft `access_token` ngắn hạn xuống đĩa; mỗi lần launch tài khoản Microsoft sẽ dùng `refresh_token` để lấy token mới trong RAM.
+- **Gợi ý cho GUI**:
+  - Màn hình đăng nhập Microsoft nên cho phép chọn **Browser Sign-In (mặc định)** hoặc **Device Code** (hiện mã code to, rõ + nút Copy + link mở trình duyệt + trạng thái đang chờ + nút Cancel).
+  - Nếu XSTS trả lỗi (ví dụ chưa tạo Xbox profile), hiển thị nguyên câu thông báo thân thiện từ `AuthError::Xsts` thay vì dump JSON thô.
+  - Thanh tài khoản (Account Switcher) đọc `AccountStore::list()`, hiển thị avatar từ `skin_url` (hoặc `OfflineAuth::default_skin_variant` cho tài khoản Offline).
