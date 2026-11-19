@@ -14,9 +14,10 @@ use mcw_models::progress::ProgressEvent;
 use mcw_mods::{is_loader_compatible, ModInfo, ModManager};
 use mcw_net::DownloadClient;
 use mcw_providers::{
-    ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient, CurseForgeMod,
-    CurseForgeSearchParams, FtbClient, FtbPackSummary, ManualDownloadItem, ModpackInstaller,
-    ModrinthClient, ModrinthSearchHit, ModrinthSearchParams,
+    load_curseforge_api_key, save_curseforge_api_key_to_dotenv, ApiCache, AtLauncherClient,
+    AtLauncherPack, CurseForgeClient, CurseForgeMod, CurseForgeSearchParams, FtbClient,
+    FtbPackSummary, ManualDownloadItem, ModpackInstaller, ModrinthClient, ModrinthSearchHit,
+    ModrinthSearchParams,
 };
 use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, LogLine, LogStream,
@@ -54,6 +55,7 @@ enum ModProviderTab {
 enum CreateInstanceTab {
     Custom,
     ImportArchive,
+    CurseForgePacks,
     Ftb,
     AtLauncher,
 }
@@ -112,8 +114,14 @@ pub struct McwApp {
     modpack_manual_downloads: Vec<ManualDownloadItem>,
     pack_browser_query: String,
     pack_browser_searching: bool,
+    cf_pack_results: Vec<CurseForgeMod>,
     ftb_results: Vec<FtbPackSummary>,
     atl_results: Vec<AtLauncherPack>,
+
+    // CurseForge API / Launcher Settings modal
+    show_api_modal: bool,
+    cf_api_key_input: String,
+    cf_api_key_visible: bool,
 
     // Migration 1.8.x modal
     show_migrate_modal: bool,
@@ -157,6 +165,9 @@ impl McwApp {
         );
         let (tx, rx) = mpsc::channel();
 
+        let initial_cf_key =
+            load_curseforge_api_key(Some(&paths.project_root)).unwrap_or_default();
+
         let mut app = Self {
             paths,
             runtime,
@@ -196,8 +207,12 @@ impl McwApp {
             modpack_manual_downloads: Vec::new(),
             pack_browser_query: String::new(),
             pack_browser_searching: false,
+            cf_pack_results: Vec::new(),
             ftb_results: Vec::new(),
             atl_results: Vec::new(),
+            show_api_modal: false,
+            cf_api_key_input: initial_cf_key,
+            cf_api_key_visible: false,
             show_migrate_modal: false,
             migrate_source_input: String::new(),
             migrate_running: false,
@@ -562,12 +577,21 @@ impl McwApp {
         });
     }
 
+    fn resolved_cf_api_key(&self) -> String {
+        let typed = self.cf_api_key_input.trim();
+        if !typed.is_empty() {
+            return typed.to_string();
+        }
+        load_curseforge_api_key(Some(&self.paths.project_root)).unwrap_or_default()
+    }
+
     fn start_curseforge_search(&mut self, ctx: &egui::Context) {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
         };
         self.mod_searching = true;
         let query = self.mod_search_query.clone();
+        let api_key = self.resolved_cf_api_key();
         let cache_path = self
             .paths
             .cache_root
@@ -579,7 +603,7 @@ impl McwApp {
         self.runtime.spawn(async move {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let client = CurseForgeClient::from_env(cache).map_err(|e| e.to_string())?;
+                let client = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
                 let loader = if inst.mod_loader.is_vanilla() {
                     None
                 } else {
@@ -600,6 +624,128 @@ impl McwApp {
             }
             .await;
             let _ = tx.send(AppEvent::CurseForgeSearchFinished(res));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_curseforge_mod_install(
+        &mut self,
+        mod_id: u64,
+        slug: String,
+        ctx: &egui::Context,
+    ) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        if self.modrinth_installing {
+            return;
+        }
+        self.modrinth_installing = true;
+        let api_key = self.resolved_cf_api_key();
+        let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let client = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
+                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
+                let path = client
+                    .install_mod(
+                        mod_id,
+                        Some(&slug),
+                        &inst.version_id,
+                        &inst.mod_loader.name,
+                        &mods_dir,
+                        &downloader,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok::<String, String>(
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("mod.jar")
+                        .to_string(),
+                )
+            }
+            .await;
+            let _ = tx.send(AppEvent::CurseForgeModInstallFinished {
+                instance_id: inst.instance_id,
+                result: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_curseforge_modpack_search(&mut self, ctx: &egui::Context) {
+        self.pack_browser_searching = true;
+        let query = self.pack_browser_query.clone();
+        let api_key = self.resolved_cf_api_key();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let client = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
+                let search = client
+                    .search(&CurseForgeSearchParams {
+                        query,
+                        kind: "modpack".to_string(),
+                        page_size: 12,
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok::<Vec<CurseForgeMod>, String>(search.data)
+            }
+            .await;
+            let _ = tx.send(AppEvent::CurseForgeModpacksSearchFinished(res));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_curseforge_modpack_install(
+        &mut self,
+        mod_id: u64,
+        slug: String,
+        pack_name: String,
+        ctx: &egui::Context,
+    ) {
+        if self.modpack_installing {
+            return;
+        }
+        self.modpack_installing = true;
+        self.modpack_manual_downloads.clear();
+        let api_key = self.resolved_cf_api_key();
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache_path = paths.cache_root.join("providers").join("api_cache.sqlite");
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let client = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
+                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
+                client
+                    .install_modpack(mod_id, Some(&slug), Some(&pack_name), &paths, &downloader)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+            let _ = tx.send(AppEvent::ModpackInstalled(res));
             ctx.request_repaint();
         });
     }
@@ -800,7 +946,7 @@ impl McwApp {
                 let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
                 let cache_path = paths.cache_root.join("providers").join("api_cache.sqlite");
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let cf = CurseForgeClient::from_env(cache).ok();
+                let cf = CurseForgeClient::from_root(&paths.project_root, cache).ok();
                 let opt_name = if name_override.is_empty() {
                     None
                 } else {
@@ -1031,6 +1177,37 @@ impl McwApp {
                         Err(err) => {
                             self.notice_banner =
                                 Some((format!("CurseForge search failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::CurseForgeModpacksSearchFinished(res) => {
+                    self.pack_browser_searching = false;
+                    match res {
+                        Ok(packs) => self.cf_pack_results = packs,
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("CurseForge modpack search failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::CurseForgeModInstallFinished {
+                    instance_id,
+                    result,
+                } => {
+                    self.modrinth_installing = false;
+                    match result {
+                        Ok(file_name) => {
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                                self.load_selected_details();
+                            }
+                            self.notice_banner = Some((
+                                format!("Installed CurseForge mod '{file_name}'."),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("CurseForge install failed: {err}"), true));
                         }
                     }
                 }
@@ -1286,6 +1463,15 @@ impl McwApp {
                         if ui.button("Import 1.8.x").clicked() {
                             self.migrate_report = None;
                             self.show_migrate_modal = true;
+                        }
+
+                        let cf_btn_label = if self.resolved_cf_api_key().is_empty() {
+                            "CurseForge API"
+                        } else {
+                            "CurseForge API (OK)"
+                        };
+                        if ui.button(cf_btn_label).clicked() {
+                            self.show_api_modal = true;
                         }
 
                         ui.separator();
@@ -1932,6 +2118,7 @@ impl McwApp {
                         .id_salt("curseforge_results_scroll")
                         .max_height(180.0)
                         .show(ui, |ui| {
+                            let mut cf_install: Option<(u64, String)> = None;
                             for cf_mod in &self.curseforge_results {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new(&cf_mod.name).strong());
@@ -1944,19 +2131,38 @@ impl McwApp {
                                         .size(11.0)
                                         .color(p.text_muted),
                                     );
-                                    if let Some(url) =
-                                        cf_mod.links.as_ref().and_then(|l| l.website_url.as_ref())
-                                    {
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                if ui.small_button("Open Page").clicked() {
+                                    ui.with_layout(
+                                        Layout::right_to_left(Align::Center),
+                                        |ui| {
+                                            let can_install = !self.modrinth_installing
+                                                && !inst.mod_loader.is_vanilla();
+                                            let resp = ui.add_enabled(
+                                                can_install,
+                                                Button::new("Install").small(),
+                                            );
+                                            if inst.mod_loader.is_vanilla() {
+                                                resp.on_disabled_hover_text(
+                                                    "Vanilla instances cannot install mods",
+                                                );
+                                            } else if resp.clicked() {
+                                                cf_install =
+                                                    Some((cf_mod.id, cf_mod.slug.clone()));
+                                            }
+                                            if let Some(url) = cf_mod
+                                                .links
+                                                .as_ref()
+                                                .and_then(|l| l.website_url.as_ref())
+                                            {
+                                                if ui.small_button("Web").clicked() {
                                                     open_external(url);
                                                 }
-                                            },
-                                        );
-                                    }
+                                            }
+                                        },
+                                    );
                                 });
+                            }
+                            if let Some((mid, slug)) = cf_install {
+                                self.start_curseforge_mod_install(mid, slug, ctx);
                             }
                         });
                 });
@@ -2320,6 +2526,11 @@ impl McwApp {
                         );
                         ui.selectable_value(
                             &mut self.create_tab,
+                            CreateInstanceTab::CurseForgePacks,
+                            "CurseForge Packs",
+                        );
+                        ui.selectable_value(
+                            &mut self.create_tab,
                             CreateInstanceTab::Ftb,
                             "FTB Modpacks",
                         );
@@ -2477,6 +2688,115 @@ impl McwApp {
                                     self.show_create_modal = false;
                                 }
                             });
+                        }
+                        CreateInstanceTab::CurseForgePacks => {
+                            if self.resolved_cf_api_key().is_empty() {
+                                ui.label(
+                                    RichText::new(
+                                        "CurseForge API key is not configured. Click 'CurseForge API' in the top bar or add CURSEFORGE_API_KEY to .env.",
+                                    )
+                                    .color(p.warning),
+                                );
+                                ui.add_space(6.0);
+                            }
+                            ui.horizontal(|ui| {
+                                let te = ui.add(
+                                    TextEdit::singleline(&mut self.pack_browser_query)
+                                        .hint_text("Search CurseForge modpacks (e.g. RLcraft, ATM10)...")
+                                        .desired_width(330.0),
+                                );
+                                let go = ui
+                                    .add_enabled(!self.pack_browser_searching, Button::new("Search"))
+                                    .clicked();
+                                if go
+                                    || (te.lost_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                {
+                                    self.start_curseforge_modpack_search(ctx);
+                                }
+                            });
+                            ui.add_space(6.0);
+                            let mut install_cf_pack: Option<(u64, String, String)> = None;
+                            ScrollArea::vertical()
+                                .id_salt("create_cf_packs_scroll")
+                                .max_height(240.0)
+                                .show(ui, |ui| {
+                                    if self.cf_pack_results.is_empty() {
+                                        ui.label(
+                                            RichText::new("Search CurseForge modpacks to browse and install.")
+                                                .color(p.text_muted),
+                                        );
+                                    } else {
+                                        for pack in &self.cf_pack_results {
+                                            Frame::new()
+                                                .fill(p.elevated)
+                                                .stroke(Stroke::new(1.0_f32, p.border))
+                                                .corner_radius(CornerRadius::same(3))
+                                                .inner_margin(egui::Margin::same(8))
+                                                .show(ui, |ui| {
+                                                    ui.set_width(ui.available_width());
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(RichText::new(&pack.name).strong());
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "#{} · {} downloads",
+                                                                pack.id, pack.download_count
+                                                            ))
+                                                            .monospace()
+                                                            .size(11.0)
+                                                            .color(p.text_muted),
+                                                        );
+                                                        ui.with_layout(
+                                                            Layout::right_to_left(Align::Center),
+                                                            |ui| {
+                                                                let btn = Button::new(
+                                                                    RichText::new(
+                                                                        if self.modpack_installing {
+                                                                            "Installing..."
+                                                                        } else {
+                                                                            "Install Pack"
+                                                                        },
+                                                                    )
+                                                                    .color(p.accent_text)
+                                                                    .strong(),
+                                                                )
+                                                                .fill(p.accent)
+                                                                .small();
+                                                                if ui
+                                                                    .add_enabled(
+                                                                        !self.modpack_installing,
+                                                                        btn,
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    install_cf_pack = Some((
+                                                                        pack.id,
+                                                                        pack.slug.clone(),
+                                                                        pack.name.clone(),
+                                                                    ));
+                                                                }
+                                                            },
+                                                        );
+                                                    });
+                                                    if !pack.summary.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(&pack.summary)
+                                                                .size(11.5)
+                                                                .color(p.text_muted),
+                                                        );
+                                                    }
+                                                });
+                                            ui.add_space(4.0);
+                                        }
+                                    }
+                                });
+                            if let Some((mid, slug, name)) = install_cf_pack {
+                                self.start_curseforge_modpack_install(mid, slug, name, ctx);
+                            }
+                            ui.add_space(8.0);
+                            if ui.button("Close").clicked() {
+                                self.show_create_modal = false;
+                            }
                         }
                         CreateInstanceTab::Ftb => {
                             ui.horizontal(|ui| {
@@ -2996,6 +3316,68 @@ impl McwApp {
                                 }
                             });
                     }
+                });
+        }
+
+        // 7. CurseForge API Key Settings Modal (.env)
+        if self.show_api_modal {
+            egui::Window::new("CurseForge API Settings")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(420.0);
+                    ui.label(RichText::new("CurseForge Core API v1 Key").strong());
+                    ui.label(
+                        RichText::new(
+                            "Saved locally to .env (gitignored). Used for CurseForge Mods & CurseForge Modpacks.",
+                        )
+                        .size(11.5)
+                        .color(p.text_muted),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            TextEdit::singleline(&mut self.cf_api_key_input)
+                                .password(!self.cf_api_key_visible)
+                                .hint_text("$2a$10$...")
+                                .desired_width(330.0),
+                        );
+                        ui.checkbox(&mut self.cf_api_key_visible, "Show");
+                    });
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let save_btn = Button::new(
+                            RichText::new("Save to .env")
+                                .color(p.accent_text)
+                                .strong(),
+                        )
+                        .fill(p.accent);
+                        if ui.add(save_btn).clicked() {
+                            match save_curseforge_api_key_to_dotenv(
+                                &self.paths.project_root,
+                                &self.cf_api_key_input,
+                            ) {
+                                Ok(env_path) => {
+                                    self.show_api_modal = false;
+                                    self.notice_banner = Some((
+                                        format!(
+                                            "Saved CURSEFORGE_API_KEY to {}.",
+                                            env_path.display()
+                                        ),
+                                        false,
+                                    ));
+                                }
+                                Err(e) => {
+                                    self.notice_banner =
+                                        Some((format!("Failed to save .env: {e}"), true));
+                                }
+                            }
+                        }
+                        if ui.button("Close").clicked() {
+                            self.show_api_modal = false;
+                        }
+                    });
                 });
         }
     }

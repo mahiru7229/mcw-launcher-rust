@@ -8,8 +8,8 @@ pub mod modrinth;
 pub use atlauncher::{AtLauncherClient, AtLauncherPack};
 pub use cache::ApiCache;
 pub use curseforge::{
-    CurseForgeClient, CurseForgeFile, CurseForgeMod, CurseForgeSearchParams,
-    CurseForgeSearchResult,
+    load_curseforge_api_key, save_curseforge_api_key_to_dotenv, CurseForgeClient, CurseForgeFile,
+    CurseForgeMod, CurseForgeSearchParams, CurseForgeSearchResult,
 };
 pub use ftb::{FtbClient, FtbPackSummary};
 pub use modpack::{ManualDownloadItem, ModpackInstallReport, ModpackInstaller};

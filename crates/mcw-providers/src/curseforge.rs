@@ -1,7 +1,12 @@
 use crate::cache::ApiCache;
+use crate::modpack::{ModpackInstallReport, ModpackInstaller};
 use crate::{ProviderError, Result};
+use mcw_net::{DownloadClient, DownloadRequest};
+use mcw_storage::{atomic_write_text, LauncherPaths};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
@@ -169,8 +174,87 @@ impl CurseForgeClient {
     }
 
     pub fn from_env(cache: Option<Arc<ApiCache>>) -> Result<Self> {
-        let key = std::env::var("CURSEFORGE_API_KEY").unwrap_or_default();
+        let key = load_curseforge_api_key(None).unwrap_or_default();
         Self::new(key, cache)
+    }
+
+    pub fn from_root(project_root: &Path, cache: Option<Arc<ApiCache>>) -> Result<Self> {
+        let key = load_curseforge_api_key(Some(project_root)).unwrap_or_default();
+        Self::new(key, cache)
+    }
+
+    /// Download and install the latest compatible mod `.jar` for `(mod_id, game_version, loader)`.
+    pub async fn install_mod(
+        &self,
+        mod_id: u64,
+        slug: Option<&str>,
+        game_version: &str,
+        loader: &str,
+        mods_dir: &Path,
+        downloader: &DownloadClient,
+    ) -> Result<PathBuf> {
+        let files = self
+            .get_mod_files(mod_id, Some(game_version), Some(loader))
+            .await?;
+        let file = files
+            .into_iter()
+            .next()
+            .ok_or_else(|| ProviderError::NoCompatibleVersion {
+                project: slug
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("mod-{mod_id}")),
+                game_version: game_version.to_string(),
+                loader: loader.to_string(),
+            })?;
+
+        let url = file.require_download_url(slug)?;
+        fs::create_dir_all(mods_dir)?;
+        let dest = mods_dir.join(&file.file_name);
+        let req = DownloadRequest::new(url, &dest)
+            .with_sha1(file.sha1())
+            .with_size(file.file_length);
+        downloader.download_file(&req).await?;
+        Ok(dest)
+    }
+
+    /// Download the latest CurseForge modpack `.zip` and install it as a new Instance.
+    pub async fn install_modpack(
+        &self,
+        mod_id: u64,
+        slug: Option<&str>,
+        instance_name_override: Option<&str>,
+        paths: &LauncherPaths,
+        downloader: &DownloadClient,
+    ) -> Result<ModpackInstallReport> {
+        let files = self.get_mod_files(mod_id, None, None).await?;
+        let file = files
+            .into_iter()
+            .next()
+            .ok_or_else(|| ProviderError::NoCompatibleVersion {
+                project: slug
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("modpack-{mod_id}")),
+                game_version: "any".to_string(),
+                loader: "modpack".to_string(),
+            })?;
+
+        let url = file.require_download_url(slug)?;
+        let pack_dir = paths.cache_root.join("modpacks");
+        fs::create_dir_all(&pack_dir)?;
+        let archive_path = pack_dir.join(&file.file_name);
+        let req = DownloadRequest::new(url, &archive_path)
+            .with_sha1(file.sha1())
+            .with_size(file.file_length);
+        downloader.download_file(&req).await?;
+
+        ModpackInstaller::install_from_archive(
+            paths,
+            &archive_path,
+            instance_name_override,
+            downloader,
+            Some(self),
+        )
+        .await
     }
 
     pub async fn search(&self, params: &CurseForgeSearchParams) -> Result<CurseForgeSearchResult> {
@@ -294,9 +378,102 @@ impl CurseForgeClient {
     }
 }
 
+/// Load `CURSEFORGE_API_KEY` from process environment or `.env` files.
+pub fn load_curseforge_api_key(project_root: Option<&Path>) -> Option<String> {
+    if let Ok(val) = std::env::var("CURSEFORGE_API_KEY") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(root) = project_root {
+        candidates.push(root.join(".env"));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(".env"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(".env"));
+            // When running `target/debug/mcw-desktop.exe`, also check workspace root 2 levels up.
+            if let Some(grandparent) = dir.parent().and_then(|p| p.parent()) {
+                candidates.push(grandparent.join(".env"));
+            }
+        }
+    }
+
+    for path in candidates {
+        if let Ok(raw) = fs::read_to_string(&path) {
+            if let Some(val) = parse_dotenv_key(&raw, "CURSEFORGE_API_KEY") {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+/// Update or append `CURSEFORGE_API_KEY=...` in `<project_root>/.env` atomically.
+pub fn save_curseforge_api_key_to_dotenv(project_root: &Path, api_key: &str) -> Result<PathBuf> {
+    let env_path = project_root.join(".env");
+    let clean_key = api_key.trim();
+    let existing = fs::read_to_string(&env_path).unwrap_or_default();
+    let mut lines: Vec<String> = Vec::new();
+    let mut replaced = false;
+
+    for line in existing.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("CURSEFORGE_API_KEY=") {
+            lines.push(format!("CURSEFORGE_API_KEY={clean_key}"));
+            replaced = true;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if !replaced {
+        if !lines.is_empty() && !lines.last().map(|l| l.is_empty()).unwrap_or(true) {
+            lines.push(String::new());
+        }
+        lines.push(format!("CURSEFORGE_API_KEY={clean_key}"));
+    }
+
+    let content = format!("{}\n", lines.join("\n"));
+    atomic_write_text(&env_path, &content)
+        .map_err(|e| ProviderError::Io(std::io::Error::other(e.to_string())))?;
+    Ok(env_path)
+}
+
+fn parse_dotenv_key(content: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line).trim();
+        if let Some(rest) = line.strip_prefix(&prefix) {
+            let val = rest.trim().trim_matches('"').trim_matches('\'').trim();
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_dotenv_key_ignoring_comments_and_quotes() {
+        let content = "# comment\nCURSEFORGE_API_KEY=\"$2a$10$samplekey123\"\n";
+        assert_eq!(
+            parse_dotenv_key(content, "CURSEFORGE_API_KEY").as_deref(),
+            Some("$2a$10$samplekey123")
+        );
+    }
 
     #[test]
     fn disabled_distribution_returns_manual_download_error() {

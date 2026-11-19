@@ -50,6 +50,11 @@ pub enum AppEvent {
     MicrosoftLoginFinished(Result<StoredAccount, String>),
     ModrinthSearchFinished(Result<Vec<ModrinthSearchHit>, String>),
     CurseForgeSearchFinished(Result<Vec<CurseForgeMod>, String>),
+    CurseForgeModpacksSearchFinished(Result<Vec<CurseForgeMod>, String>),
+    CurseForgeModInstallFinished {
+        instance_id: String,
+        result: Result<String, String>,
+    },
     FtbSearchFinished(Result<Vec<FtbPackSummary>, String>),
     AtLauncherSearchFinished(Result<Vec<AtLauncherPack>, String>),
     ModrinthInstallFinished {
