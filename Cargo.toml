@@ -11,10 +11,11 @@ members = [
     "crates/mcw-providers",
     "crates/mcw-updater",
     "apps/cli",
+    "apps/desktop",
 ]
 
 [workspace.package]
-version = "0.3.0-alpha.1"
+version = "0.4.0-alpha.1"
 edition = "2021"
 license = "MIT"
 
@@ -22,6 +23,7 @@ license = "MIT"
 anyhow = "1.0"
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
+eframe = "0.31"
 futures = "0.3"
 keyring = "3.6"
 md-5 = "0.10"

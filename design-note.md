@@ -164,3 +164,17 @@
   - Trả về `UpdateCheckResult { current_version, channel, update_available, latest: Option<ReleaseInfo> }` (có sẵn `source`, `notes`, `html_url`, `download_url`).
 - **Gợi ý cho GUI**:
   - Trang Settings → Updates cho chọn kênh `Stable` / `Beta`, nút "Check for updates", hiển thị changelog (`notes`) khi `update_available == true`.
+
+---
+
+## Mốc `v0.4.0-alpha.1` — Native Desktop GUI (`apps/desktop`, `egui / eframe`)
+
+### 14. Native Rust Desktop GUI (`mcw-desktop`)
+- **Chức năng**: Ứng dụng desktop thuần Rust (`egui` / `eframe 0.31`, không WebView) gắn trực tiếp lên toàn bộ 9 Core crates với bố cục 2 cột Master–Detail đúng chuẩn [DESIGN.md](DESIGN.md).
+- **Cách hoạt động**:
+  - **Theme & Font (`theme.rs`)**: Bảng màu Slate trung tính (Dark mặc định `#111317` + công tắc chuyển Light `#F7F8FA`), màu nhấn Emerald tiết chế (`#10B981`), bo góc sắc `2–4px`, viền `1px`; tự nạp font hệ thống (`Segoe UI` / `Cascadia Mono` / `Consolas`) để hiển thị đầy đủ dấu tiếng Việt và log monospace.
+  - **Không block UI thread (`state.rs`)**: Mọi tác vụ mạng/I/O dài (tải manifest, Launch/Download/Extract, Microsoft OAuth PKCE & Device Code, Modrinth search/install, cài Temurin JDK, kiểm tra cập nhật) đều chạy trên background `tokio::runtime::Runtime` và gửi `AppEvent` về UI qua `mpsc::channel` + `ctx.request_repaint()`.
+  - **Bố cục (`app.rs`)**:
+    - **Top utility bar**: Account Switcher (Offline + Microsoft OAuth), kiểm tra cập nhật (`mcw-updater`), công tắc Dark/Light.
+    - **Sidebar trái**: Danh sách Instance kèm viền nhấn trái Emerald cho Instance đang chọn/chạy + modal `+ New Instance`.
+    - **Panel phải**: Header + nút `Launch`/`Stop` + dải trạng thái tiến trình thật (`ProgressStage`) + 4 tab (**Overview** với Open Folder / Rename / Delete có xác nhận, **Mods** với quét `rayon` + Modrinth v2 search & install, **Logs** với stream live stdout/stderr, **Settings** với RAM / độ phân giải / Java selector & Temurin installer).
