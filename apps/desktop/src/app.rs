@@ -76,12 +76,17 @@ pub struct McwApp {
     theme_mode: ThemeMode,
     palette: ThemePalette,
 
-    // Core data
+    // Core data (lightweight metadata + lazy per-instance caches so switching is instant)
     instances: Vec<Instance>,
     selected_instance_id: Option<String>,
     selected_settings: Option<InstanceSettings>,
     selected_mods: Vec<ModInfo>,
     selected_backups: Vec<BackupInfo>,
+    settings_cache: HashMap<String, InstanceSettings>,
+    mods_cache: HashMap<String, Vec<ModInfo>>,
+    backups_cache: HashMap<String, Vec<BackupInfo>>,
+    loading_mods: HashSet<String>,
+    loading_backups: HashSet<String>,
     accounts: Vec<StoredAccount>,
     java_installations: Vec<JavaInstallation>,
     available_versions: Vec<String>,
@@ -188,6 +193,11 @@ impl McwApp {
             selected_settings: None,
             selected_mods: Vec::new(),
             selected_backups: Vec::new(),
+            settings_cache: HashMap::new(),
+            mods_cache: HashMap::new(),
+            backups_cache: HashMap::new(),
+            loading_mods: HashSet::new(),
+            loading_backups: HashSet::new(),
             accounts: Vec::new(),
             java_installations: Vec::new(),
             available_versions: Vec::new(),
@@ -265,7 +275,7 @@ impl McwApp {
             self.selected_instance_id = self.instances.first().map(|i| i.instance_id.clone());
         }
         self.refresh_pending_manual_counts();
-        self.load_selected_details();
+        self.sync_selected_from_cache();
     }
 
     fn refresh_pending_manual_counts(&mut self) {
@@ -335,8 +345,9 @@ impl McwApp {
                 }
 
                 if resolved > 0 {
+                    self.mods_cache.remove(inst_id);
                     if self.selected_instance_id.as_deref() == Some(inst_id) {
-                        self.load_selected_details();
+                        self.sync_selected_from_cache();
                     }
                     let msg = if remaining.is_empty() {
                         format!(
@@ -373,30 +384,102 @@ impl McwApp {
         }
     }
 
-    fn load_selected_details(&mut self) {
+    /// Lightweight, instantaneous instance switch: NEVER scans `mods/` JARs or `backups/` on disk.
+    /// Reads only cached data (and tiny `settings.json` once per instance).
+    fn sync_selected_from_cache(&mut self) {
         let Some(ref id) = self.selected_instance_id else {
             self.selected_settings = None;
             self.selected_mods.clear();
             self.selected_backups.clear();
             return;
         };
-        let store = InstanceStore::new(&self.paths);
-        self.selected_settings = store.get_instance(id).ok().map(|(_, s)| s);
-        let mods_dir = self.paths.minecraft_dir(id).join("mods");
-        self.selected_mods = ModManager::new(&mods_dir).list();
-        self.selected_backups = BackupManager::new(&self.paths)
-            .list_backups(id)
-            .unwrap_or_default();
-        let pending = ModpackInstaller::load_pending_manual_downloads(&self.paths, id);
-        if pending.is_empty() {
-            self.pending_manual_counts.remove(id);
-            self.manual_downloads_cache.remove(id);
+        if let Some(cached) = self.settings_cache.get(id) {
+            self.selected_settings = Some(cached.clone());
         } else {
-            self.pending_manual_counts.insert(id.clone(), pending.len());
-            if self.open_manual_modals.iter().any(|open_id| open_id == id) {
-                self.manual_downloads_cache.insert(id.clone(), pending);
+            let store = InstanceStore::new(&self.paths);
+            if let Ok((_, s)) = store.get_instance(id) {
+                self.settings_cache.insert(id.clone(), s.clone());
+                self.selected_settings = Some(s);
+            } else {
+                self.selected_settings = None;
             }
         }
+        self.selected_mods = self.mods_cache.get(id).cloned().unwrap_or_default();
+        self.selected_backups = self.backups_cache.get(id).cloned().unwrap_or_default();
+    }
+
+    fn ensure_active_tab_loaded(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.selected_instance_id.clone() else {
+            return;
+        };
+        match self.active_tab {
+            DetailTab::Mods => self.load_mods_async(&id, ctx, false),
+            DetailTab::Backups => self.load_backups_async(&id, ctx, false),
+            _ => {}
+        }
+    }
+
+    fn load_mods_async(&mut self, instance_id: &str, ctx: &egui::Context, force: bool) {
+        if !force {
+            if let Some(cached) = self.mods_cache.get(instance_id) {
+                if self.selected_instance_id.as_deref() == Some(instance_id) {
+                    self.selected_mods = cached.clone();
+                }
+                return;
+            }
+        }
+        if !self.loading_mods.insert(instance_id.to_string()) {
+            return;
+        }
+        let mods_dir = self.paths.minecraft_dir(instance_id).join("mods");
+        let id = instance_id.to_string();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let mods = tokio::task::spawn_blocking(move || ModManager::new(&mods_dir).list())
+                .await
+                .unwrap_or_default();
+            let _ = tx.send(AppEvent::ModsLoaded {
+                instance_id: id,
+                mods,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn load_backups_async(&mut self, instance_id: &str, ctx: &egui::Context, force: bool) {
+        if !force {
+            if let Some(cached) = self.backups_cache.get(instance_id) {
+                if self.selected_instance_id.as_deref() == Some(instance_id) {
+                    self.selected_backups = cached.clone();
+                }
+                return;
+            }
+        }
+        if !self.loading_backups.insert(instance_id.to_string()) {
+            return;
+        }
+        let paths = self.paths.clone();
+        let id = instance_id.to_string();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let id_inner = id.clone();
+            let backups = tokio::task::spawn_blocking(move || {
+                BackupManager::new(&paths)
+                    .list_backups(&id_inner)
+                    .unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default();
+            let _ = tx.send(AppEvent::BackupsLoaded {
+                instance_id: id,
+                backups,
+            });
+            ctx.request_repaint();
+        });
     }
 
     fn reload_accounts(&mut self) {
@@ -1228,7 +1311,7 @@ impl McwApp {
         });
     }
 
-    fn poll_events(&mut self) {
+    fn poll_events(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
                 AppEvent::VersionsLoaded(res) => {
@@ -1241,6 +1324,23 @@ impl McwApp {
                         }
                         self.available_versions = list;
                     }
+                }
+                AppEvent::ModsLoaded { instance_id, mods } => {
+                    self.loading_mods.remove(&instance_id);
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                        self.selected_mods = mods.clone();
+                    }
+                    self.mods_cache.insert(instance_id, mods);
+                }
+                AppEvent::BackupsLoaded {
+                    instance_id,
+                    backups,
+                } => {
+                    self.loading_backups.remove(&instance_id);
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                        self.selected_backups = backups.clone();
+                    }
+                    self.backups_cache.insert(instance_id, backups);
                 }
                 AppEvent::TaskProgress {
                     task_id,
@@ -1373,8 +1473,11 @@ impl McwApp {
                     self.installing_cf_mods.remove(&mod_id);
                     match result {
                         Ok(file_name) => {
-                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
-                                self.load_selected_details();
+                            self.mods_cache.remove(&instance_id);
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
+                                && self.active_tab == DetailTab::Mods
+                            {
+                                self.load_mods_async(&instance_id, ctx, true);
                             }
                             self.notice_banner = Some((
                                 format!("Installed CurseForge mod '{file_name}'."),
@@ -1397,8 +1500,11 @@ impl McwApp {
                     self.installing_modrinth_slugs.remove(&slug);
                     match result {
                         Ok(count) => {
-                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
-                                self.load_selected_details();
+                            self.mods_cache.remove(&instance_id);
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
+                                && self.active_tab == DetailTab::Mods
+                            {
+                                self.load_mods_async(&instance_id, ctx, true);
                             }
                             self.notice_banner = Some((
                                 format!("Installed {count} mod file(s) from Modrinth."),
@@ -1463,8 +1569,11 @@ impl McwApp {
                     match result {
                         Ok(info) => {
                             self.backup_note_input.clear();
-                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
-                                self.load_selected_details();
+                            self.backups_cache.remove(&instance_id);
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
+                                && self.active_tab == DetailTab::Backups
+                            {
+                                self.load_backups_async(&instance_id, ctx, true);
                             }
                             self.notice_banner = Some((
                                 format!(
@@ -1487,8 +1596,11 @@ impl McwApp {
                     self.backup_busy = false;
                     match result {
                         Ok(outcome) => {
+                            self.backups_cache.remove(&instance_id);
+                            self.mods_cache.remove(&instance_id);
                             if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
-                                self.load_selected_details();
+                                self.sync_selected_from_cache();
+                                self.ensure_active_tab_loaded(ctx);
                             }
                             self.notice_banner = Some((
                                 format!(
@@ -1797,7 +1909,8 @@ impl McwApp {
 
                 if let Some(id) = newly_selected {
                     self.selected_instance_id = Some(id);
-                    self.load_selected_details();
+                    self.sync_selected_from_cache();
+                    self.ensure_active_tab_loaded(ctx);
                 }
             });
     }
@@ -2065,9 +2178,7 @@ impl McwApp {
                         .corner_radius(CornerRadius::same(3));
                         if ui.add(btn).clicked() {
                             self.active_tab = tab;
-                            if matches!(tab, DetailTab::Mods | DetailTab::Backups) {
-                                self.load_selected_details();
-                            }
+                            self.ensure_active_tab_loaded(ctx);
                         }
                     }
                 });
@@ -2190,7 +2301,7 @@ impl McwApp {
                 self.start_backup_create(ctx);
             }
             if ui.button("Refresh").clicked() {
-                self.load_selected_details();
+                self.load_backups_async(&inst.instance_id, ctx, true);
             }
         });
 
@@ -2203,9 +2314,12 @@ impl McwApp {
         ui.add_space(4.0);
 
         if self.selected_backups.is_empty() {
-            ui.label(
-                RichText::new("No backups created for this instance yet.").color(p.text_muted),
-            );
+            let msg = if self.loading_backups.contains(&inst.instance_id) {
+                "Loading backups..."
+            } else {
+                "No backups created for this instance yet."
+            };
+            ui.label(RichText::new(msg).color(p.text_muted));
             return;
         }
 
@@ -2265,7 +2379,8 @@ impl McwApp {
         if let Some(id) = delete_id {
             match BackupManager::new(&self.paths).delete_backup(&inst.instance_id, &id) {
                 Ok(()) => {
-                    self.load_selected_details();
+                    self.backups_cache.remove(&inst.instance_id);
+                    self.load_backups_async(&inst.instance_id, ctx, true);
                     self.notice_banner = Some((format!("Deleted backup '{id}'."), false));
                 }
                 Err(e) => {
@@ -2311,7 +2426,7 @@ impl McwApp {
                 }
             }
             if ui.button("Refresh Local").clicked() {
-                self.load_selected_details();
+                self.load_mods_async(&inst.instance_id, ctx, true);
             }
         });
 
@@ -2473,10 +2588,12 @@ impl McwApp {
         ui.add_space(4.0);
 
         if self.selected_mods.is_empty() {
-            ui.label(
-                RichText::new("No mods installed in this instance's mods/ folder.")
-                    .color(p.text_muted),
-            );
+            let msg = if self.loading_mods.contains(&inst.instance_id) {
+                "Scanning mods/ in background..."
+            } else {
+                "No mods installed in this instance's mods/ folder."
+            };
+            ui.label(RichText::new(msg).color(p.text_muted));
             return;
         }
 
@@ -2550,13 +2667,15 @@ impl McwApp {
             if let Err(e) = ModManager::new(&mods_dir).set_enabled(&file_name, enable) {
                 self.notice_banner = Some((format!("Failed to toggle mod: {e}"), true));
             }
-            self.load_selected_details();
+            self.mods_cache.remove(&inst.instance_id);
+            self.load_mods_async(&inst.instance_id, ctx, true);
         }
         if let Some(file_name) = delete_action {
             if let Err(e) = ModManager::new(&mods_dir).delete(&file_name) {
                 self.notice_banner = Some((format!("Failed to delete mod: {e}"), true));
             }
-            self.load_selected_details();
+            self.mods_cache.remove(&inst.instance_id);
+            self.load_mods_async(&inst.instance_id, ctx, true);
         }
     }
 
@@ -2736,6 +2855,8 @@ impl McwApp {
                 let store = InstanceStore::new(&self.paths);
                 match store.save_settings(&inst.instance_id, s) {
                     Ok(()) => {
+                        self.settings_cache
+                            .insert(inst.instance_id.clone(), s.clone());
                         self.notice_banner = Some(("Settings saved.".to_string(), false));
                     }
                     Err(e) => {
@@ -3808,7 +3929,7 @@ impl McwApp {
         if let Some(id) = launch_anyway_id {
             self.open_manual_modals.retain(|open_id| open_id != &id);
             self.selected_instance_id = Some(id);
-            self.load_selected_details();
+            self.sync_selected_from_cache();
             self.start_launch(ctx);
         }
     }
@@ -3885,7 +4006,7 @@ impl McwApp {
 
 impl eframe::App for McwApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_events();
+        self.poll_events(ctx);
 
         // Auto-scan Downloads & mods/ every 2s for all open Manual Downloads windows
         if !self.open_manual_modals.is_empty() && self.manual_auto_scan {

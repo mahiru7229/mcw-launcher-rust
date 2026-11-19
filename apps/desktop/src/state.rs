@@ -2,6 +2,7 @@ use eframe::egui::Context;
 use mcw_auth::{DeviceCodeResponse, StoredAccount};
 use mcw_minecraft::RepairReport;
 use mcw_models::progress::{ProgressEvent, ProgressSink};
+use mcw_mods::ModInfo;
 use mcw_providers::{
     AtLauncherPack, CurseForgeMod, FtbPackSummary, ModpackInstallReport, ModrinthSearchHit,
 };
@@ -20,6 +21,14 @@ pub struct ActiveTask {
 
 pub enum AppEvent {
     VersionsLoaded(Result<Vec<String>, String>),
+    ModsLoaded {
+        instance_id: String,
+        mods: Vec<ModInfo>,
+    },
+    BackupsLoaded {
+        instance_id: String,
+        backups: Vec<BackupInfo>,
+    },
     TaskProgress {
         task_id: u64,
         message: String,
