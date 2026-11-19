@@ -6,7 +6,10 @@ use mcw_models::account::AccountSource;
 use mcw_models::instance::ModLoader;
 use mcw_models::progress::{ProgressEvent, ProgressSink, ProgressStage};
 use mcw_net::DownloadClient;
-use mcw_runtime::{JavaDiscovery, JavaProvisioner, ProcessLauncher};
+use mcw_runtime::{
+    ExitClassification, JavaDiscovery, JavaProvisioner, LogLine, LogSink, LogStream,
+    SupervisedProcess,
+};
 use mcw_storage::{InstanceRunLock, InstanceStore, LauncherPaths};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -177,6 +180,17 @@ enum AuthCommands {
         /// Username or UUID
         account: String,
     },
+}
+
+struct CliLogSink;
+
+impl LogSink for CliLogSink {
+    fn on_log(&self, line: LogLine) {
+        match line.stream {
+            LogStream::Stdout => println!("{}", line.text),
+            LogStream::Stderr => eprintln!("{}", line.text),
+        }
+    }
 }
 
 struct CliProgressSink {
@@ -535,10 +549,49 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            let mut child = ProcessLauncher::spawn_inherited(&prepared.spec)?;
-            _lock.mark_running(child.id())?;
-            let status = child.wait().context("Failed waiting on Minecraft process")?;
-            println!("Minecraft exited with status: {status}");
+            let log_path = paths
+                .logs_root
+                .join(format!("{}-latest.log", inst.instance_id));
+            let supervised =
+                SupervisedProcess::spawn(&prepared.spec, Some(&log_path), Arc::new(CliLogSink))?;
+            _lock.mark_running(supervised.pid())?;
+
+            let control = supervised.control();
+            let ctrl_c_handle = tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    eprintln!("\nStop requested (Ctrl+C) — terminating Minecraft process tree...");
+                    control.request_stop();
+                }
+            });
+
+            let report = supervised.wait().await?;
+            ctrl_c_handle.abort();
+
+            inst.total_playtime_seconds = inst
+                .total_playtime_seconds
+                .saturating_add(report.duration_secs);
+            inst.last_exit_code = report.exit_code;
+            inst.last_launch_crashed = report.classification == ExitClassification::Crashed;
+            inst.last_launch_state = match report.classification {
+                ExitClassification::Crashed => "crashed".to_string(),
+                ExitClassification::Normal | ExitClassification::StoppedByUser => {
+                    "finished".to_string()
+                }
+            };
+            let _ = store.save_instance(&inst);
+
+            println!(
+                "Minecraft exited: {:?} (code: {:?}, duration: {}s, log: {})",
+                report.classification,
+                report.exit_code,
+                report.duration_secs,
+                log_path.display()
+            );
+            if report.unsupported_class_version {
+                eprintln!(
+                    "Hint: Detected UnsupportedClassVersionError — one or more mods require a newer Java version."
+                );
+            }
         }
     }
 

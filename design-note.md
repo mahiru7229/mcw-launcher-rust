@@ -109,3 +109,18 @@
 - **Gợi ý cho GUI**:
   - Màn hình Tạo Instance / Cài đặt Loader: cho chọn Loader (`Vanilla` / `Fabric` / `Quilt`), gọi `ModLoaderService::list_versions` để đổ dropdown phiên bản Loader kèm đánh dấu `(Recommended / Stable)`.
   - Nếu chọn Fabric/Quilt mà không chọn phiên bản cụ thể, Core tự lấy bản stable mới nhất.
+
+### 10. Process Supervisor (Win32 Job Object) & Live Logs (`mcw-runtime`, `mcw-cli`)
+- **Chức năng**: Giám sát tiến trình Minecraft, thu luồng log trực tiếp (stdout + stderr), dừng sạch toàn bộ cây tiến trình trên Windows, phân biệt dừng chủ động vs crash, đo thời gian chơi và nhận diện lỗi `UnsupportedClassVersionError`.
+- **Cách hoạt động**:
+  - **Win32 Job Object (`windows-sys`)**: Gán tiến trình game vào Job Object với cờ `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Khi người dùng nhấn Stop (`ProcessControl::request_stop()`), gọi `TerminateJobObject` để đóng sạch toàn bộ cây tiến trình con (không dùng `powershell.exe Get-CimInstance`).
+  - **Phân loại thoát (`ExitClassification`)**:
+    - `StoppedByUser`: Người dùng chủ động dừng (qua `request_stop()` / Ctrl+C) → **không bao giờ báo nhầm Crash**.
+    - `Normal`: Thoát bình thường với mã `0`.
+    - `Crashed`: Thoát khác `0` khi không có yêu cầu dừng; tự động quét 200 dòng log cuối để phát hiện `UnsupportedClassVersionError` (gợi ý nâng Java).
+  - **Live Logs (`LogSink`)**: Stream từng dòng `LogLine { stream: Stdout|Stderr, text }` ra subscriber (CLI / GUI Logs tab), đồng thời ghi xuống `logs/<instance_id>-latest.log` và giữ ring buffer 200 dòng cuối.
+  - **Cập nhật lịch sử Instance**: Sau khi game thoát, cập nhật `total_playtime_seconds`, `last_exit_code`, `last_launch_crashed`, `last_launch_state` (`finished` / `crashed`) vào `instance.json`.
+- **Gợi ý cho GUI**:
+  - Tab **Logs** lắng nghe `LogSink` theo thời gian thực (tô màu nhẹ phân biệt `Stderr` vs `Stdout`, có nút Copy / Open log file).
+  - Nút **Stop** gọi `ProcessControl::request_stop()` — khi nhận `ExitClassification::StoppedByUser` thì trả trạng thái Instance về `Ready/Finished`, **không** bật popup Crash Report.
+  - Khi nhận `ExitClassification::Crashed`: nếu `unsupported_class_version == true`, gợi ý trực tiếp cho người dùng nâng phiên bản Java.

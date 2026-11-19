@@ -2,11 +2,16 @@ pub mod bytecode;
 pub mod java;
 pub mod launcher;
 pub mod provisioner;
+pub mod supervisor;
 
 pub use bytecode::{detect_jar_required_java, detect_mods_required_java};
 pub use java::{JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver};
 pub use launcher::{LaunchSpec, ProcessLauncher};
 pub use provisioner::{AdoptiumRelease, JavaProvisioner};
+pub use supervisor::{
+    detect_unsupported_class_version, ExitClassification, LogLine, LogSink, LogStream,
+    NoopLogSink, ProcessControl, ProcessExitReport, SupervisedProcess,
+};
 
 use thiserror::Error;
 
