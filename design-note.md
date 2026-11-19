@@ -243,3 +243,9 @@
 ### 23. Tinh gọn Top Bar & Cửa sổ Launcher Settings riêng (`mcw-desktop`)
 - **Chức năng**: Loại bỏ hoàn toàn các nút/modal `CurseForge API`, `Import 1.8.x`, `Check updates` và nút đổi theme rời khỏi thanh Top Bar; chỉ giữ lại nút **Account** và thêm nút **biểu tượng bánh răng** (vẽ vector sắc nét) ở góc trên bên phải.
 - **Cửa sổ Launcher Settings**: Mở dưới dạng cửa sổ độc lập với thanh tab lớn bên trái (`Appearance`), hiện có thiết lập **Theme: Dark (Default) / Light**.
+
+### 24. Quản lý Thế giới (Worlds + Quick Play), Ảnh chụp (Screenshots) & Chia sẻ Log `mclo.gs` (`mcw-minecraft`, `mcw-runtime`, `mcw-desktop`)
+- **Worlds Manager** (`mcw-minecraft::worlds`): Đọc trực tiếp file `level.dat` (Gzip NBT thuần Rust) để hiển thị tên thế giới, chế độ chơi (`SURVIVAL` / `CREATIVE` / `HARDCORE`...), phiên bản MC và dung lượng; hỗ trợ **Quick Play** (`--quickPlaySingleplayer` cho MC >= 1.20 / snapshot >= 23w14a), nhân bản thế giới an toàn (bỏ qua `session.lock`) và xóa có xác nhận.
+- **Screenshots Manager** (`mcw-minecraft::screenshots`): Liệt kê ảnh chụp trong `screenshots/` (mới nhất lên đầu), mở ảnh trực tiếp, copy đường dẫn và xóa nhanh.
+- **mclo.gs Sanitized Upload** (`mcw-runtime::mclogs`): Tự động che giấu `--accessToken`, JWT, Bearer token, email và đường dẫn chứa tên user OS (`C:\Users\<USER>`, `/home/<USER>`) trước khi đẩy log lên `https://api.mclo.gs/1/log`, tự copy link vào clipboard và hiện nút mở trình duyệt.
+- **Hiệu năng UI**: Cả tab **Worlds** lẫn **Screenshots** đều dùng lazy-load bất đồng bộ (Tokio `spawn_blocking`) và cache theo từng Instance nên chuyển Instance vẫn tức thì 0 độ trễ.

@@ -1,12 +1,14 @@
 use eframe::egui::Context;
 use mcw_auth::{DeviceCodeResponse, StoredAccount};
-use mcw_minecraft::RepairReport;
+use mcw_minecraft::{RepairReport, ScreenshotInfo, WorldInfo};
 use mcw_models::progress::{ProgressEvent, ProgressSink};
 use mcw_mods::ModInfo;
 use mcw_providers::{
     AtLauncherPack, CurseForgeMod, FtbPackSummary, ModpackInstallReport, ModrinthSearchHit,
 };
-use mcw_runtime::{JavaInstallation, LogLine, LogSink, ProcessControl, ProcessExitReport};
+use mcw_runtime::{
+    JavaInstallation, LogLine, LogSink, McLogsUploadResult, ProcessControl, ProcessExitReport,
+};
 use mcw_storage::{BackupInfo, RestoreOutcome};
 use std::sync::mpsc::Sender;
 
@@ -29,6 +31,15 @@ pub enum AppEvent {
         instance_id: String,
         backups: Vec<BackupInfo>,
     },
+    WorldsLoaded {
+        instance_id: String,
+        worlds: Vec<WorldInfo>,
+    },
+    ScreenshotsLoaded {
+        instance_id: String,
+        screenshots: Vec<ScreenshotInfo>,
+    },
+    McLogsUploaded(Result<McLogsUploadResult, String>),
     TaskProgress {
         task_id: u64,
         message: String,

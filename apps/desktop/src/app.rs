@@ -5,7 +5,10 @@ use eframe::egui::{
     TextEdit, Vec2,
 };
 use mcw_auth::{AccountStore, DeviceCodeResponse, MicrosoftAuthClient, OfflineAuth, StoredAccount};
-use mcw_minecraft::{RepairService, VanillaLaunchPipeline, VersionManifestService};
+use mcw_minecraft::{
+    is_quick_play_supported, RepairService, ScreenshotInfo, ScreenshotManager,
+    VanillaLaunchPipeline, VersionManifestService, WorldInfo, WorldManager,
+};
 use mcw_models::account::AccountSource;
 use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
 use mcw_models::progress::ProgressEvent;
@@ -19,7 +22,7 @@ use mcw_providers::{
 };
 use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, LogLine, LogStream,
-    ProcessControl, SupervisedProcess,
+    McLogsClient, ProcessControl, SupervisedProcess,
 };
 use mcw_storage::{BackupInfo, BackupManager, InstanceRunLock, InstanceStore, LauncherPaths};
 use std::collections::{HashMap, HashSet};
@@ -34,6 +37,8 @@ const MAX_LOG_LINES_PER_INSTANCE: usize = 1500;
 enum DetailTab {
     Overview,
     Mods,
+    Worlds,
+    Screenshots,
     Backups,
     Logs,
     Settings,
@@ -80,11 +85,20 @@ pub struct McwApp {
     selected_settings: Option<InstanceSettings>,
     selected_mods: Vec<ModInfo>,
     selected_backups: Vec<BackupInfo>,
+    selected_worlds: Vec<WorldInfo>,
+    selected_screenshots: Vec<ScreenshotInfo>,
     settings_cache: HashMap<String, InstanceSettings>,
     mods_cache: HashMap<String, Vec<ModInfo>>,
     backups_cache: HashMap<String, Vec<BackupInfo>>,
+    worlds_cache: HashMap<String, Vec<WorldInfo>>,
+    screenshots_cache: HashMap<String, Vec<ScreenshotInfo>>,
     loading_mods: HashSet<String>,
     loading_backups: HashSet<String>,
+    loading_worlds: HashSet<String>,
+    loading_screenshots: HashSet<String>,
+    pending_delete_world: Option<(String, String)>,
+    uploading_mclogs: bool,
+    last_mclogs_url: Option<String>,
     accounts: Vec<StoredAccount>,
     java_installations: Vec<JavaInstallation>,
     available_versions: Vec<String>,
@@ -191,11 +205,20 @@ impl McwApp {
             selected_settings: None,
             selected_mods: Vec::new(),
             selected_backups: Vec::new(),
+            selected_worlds: Vec::new(),
+            selected_screenshots: Vec::new(),
             settings_cache: HashMap::new(),
             mods_cache: HashMap::new(),
             backups_cache: HashMap::new(),
+            worlds_cache: HashMap::new(),
+            screenshots_cache: HashMap::new(),
             loading_mods: HashSet::new(),
             loading_backups: HashSet::new(),
+            loading_worlds: HashSet::new(),
+            loading_screenshots: HashSet::new(),
+            pending_delete_world: None,
+            uploading_mclogs: false,
+            last_mclogs_url: None,
             accounts: Vec::new(),
             java_installations: Vec::new(),
             available_versions: Vec::new(),
@@ -406,6 +429,8 @@ impl McwApp {
         }
         self.selected_mods = self.mods_cache.get(id).cloned().unwrap_or_default();
         self.selected_backups = self.backups_cache.get(id).cloned().unwrap_or_default();
+        self.selected_worlds = self.worlds_cache.get(id).cloned().unwrap_or_default();
+        self.selected_screenshots = self.screenshots_cache.get(id).cloned().unwrap_or_default();
     }
 
     fn ensure_active_tab_loaded(&mut self, ctx: &egui::Context) {
@@ -414,9 +439,88 @@ impl McwApp {
         };
         match self.active_tab {
             DetailTab::Mods => self.load_mods_async(&id, ctx, false),
+            DetailTab::Worlds => self.load_worlds_async(&id, ctx, false),
+            DetailTab::Screenshots => self.load_screenshots_async(&id, ctx, false),
             DetailTab::Backups => self.load_backups_async(&id, ctx, false),
             _ => {}
         }
+    }
+
+    fn load_worlds_async(&mut self, instance_id: &str, ctx: &egui::Context, force: bool) {
+        if !force {
+            if let Some(cached) = self.worlds_cache.get(instance_id) {
+                if self.selected_instance_id.as_deref() == Some(instance_id) {
+                    self.selected_worlds = cached.clone();
+                }
+                return;
+            }
+        }
+        if !self.loading_worlds.insert(instance_id.to_string()) {
+            return;
+        }
+        let mc_dir = self.paths.minecraft_dir(instance_id);
+        let id = instance_id.to_string();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let worlds = tokio::task::spawn_blocking(move || WorldManager::list_worlds(&mc_dir))
+                .await
+                .unwrap_or_default();
+            let _ = tx.send(AppEvent::WorldsLoaded {
+                instance_id: id,
+                worlds,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn load_screenshots_async(&mut self, instance_id: &str, ctx: &egui::Context, force: bool) {
+        if !force {
+            if let Some(cached) = self.screenshots_cache.get(instance_id) {
+                if self.selected_instance_id.as_deref() == Some(instance_id) {
+                    self.selected_screenshots = cached.clone();
+                }
+                return;
+            }
+        }
+        if !self.loading_screenshots.insert(instance_id.to_string()) {
+            return;
+        }
+        let mc_dir = self.paths.minecraft_dir(instance_id);
+        let id = instance_id.to_string();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let screenshots =
+                tokio::task::spawn_blocking(move || ScreenshotManager::list_screenshots(&mc_dir))
+                    .await
+                    .unwrap_or_default();
+            let _ = tx.send(AppEvent::ScreenshotsLoaded {
+                instance_id: id,
+                screenshots,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_mclogs_upload(&mut self, content: String, ctx: &egui::Context) {
+        if self.uploading_mclogs {
+            return;
+        }
+        self.uploading_mclogs = true;
+        self.last_mclogs_url = None;
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = McLogsClient::upload(&content)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::McLogsUploaded(res));
+            ctx.request_repaint();
+        });
     }
 
     fn load_mods_async(&mut self, instance_id: &str, ctx: &egui::Context, force: bool) {
@@ -556,6 +660,10 @@ impl McwApp {
     }
 
     fn start_launch(&mut self, ctx: &egui::Context) {
+        self.start_launch_with_world(None, ctx);
+    }
+
+    fn start_launch_with_world(&mut self, quick_play_world: Option<String>, ctx: &egui::Context) {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
         };
@@ -632,10 +740,20 @@ impl McwApp {
                     ctx: ctx.clone(),
                 });
 
-                let prepared = pipeline
+                let mut prepared = pipeline
                     .prepare(&inst, &settings, &auth, source, progress_sink)
                     .await
                     .map_err(|e| e.to_string())?;
+
+                if let Some(world_folder) = quick_play_world {
+                    if is_quick_play_supported(&inst.version_id) {
+                        prepared
+                            .spec
+                            .game_args
+                            .push("--quickPlaySingleplayer".to_string());
+                        prepared.spec.game_args.push(world_folder);
+                    }
+                }
 
                 let log_path = paths
                     .logs_root
@@ -1341,6 +1459,46 @@ impl McwApp {
                         self.selected_backups = backups.clone();
                     }
                     self.backups_cache.insert(instance_id, backups);
+                }
+                AppEvent::WorldsLoaded {
+                    instance_id,
+                    worlds,
+                } => {
+                    self.loading_worlds.remove(&instance_id);
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                        self.selected_worlds = worlds.clone();
+                    }
+                    self.worlds_cache.insert(instance_id, worlds);
+                }
+                AppEvent::ScreenshotsLoaded {
+                    instance_id,
+                    screenshots,
+                } => {
+                    self.loading_screenshots.remove(&instance_id);
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                        self.selected_screenshots = screenshots.clone();
+                    }
+                    self.screenshots_cache.insert(instance_id, screenshots);
+                }
+                AppEvent::McLogsUploaded(result) => {
+                    self.uploading_mclogs = false;
+                    match result {
+                        Ok(res) => {
+                            ctx.copy_text(res.url.clone());
+                            self.last_mclogs_url = Some(res.url.clone());
+                            self.notice_banner = Some((
+                                format!(
+                                    "Uploaded sanitized log to {} (copied to clipboard).",
+                                    res.url
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("mclo.gs upload failed: {err}"), true));
+                        }
+                    }
                 }
                 AppEvent::TaskProgress {
                     task_id,
@@ -2150,6 +2308,8 @@ impl McwApp {
                     for (tab, label) in [
                         (DetailTab::Overview, "Overview"),
                         (DetailTab::Mods, "Mods"),
+                        (DetailTab::Worlds, "Worlds"),
+                        (DetailTab::Screenshots, "Screenshots"),
                         (DetailTab::Backups, "Backups"),
                         (DetailTab::Logs, "Logs"),
                         (DetailTab::Settings, "Settings"),
@@ -2182,8 +2342,10 @@ impl McwApp {
                 match self.active_tab {
                     DetailTab::Overview => self.render_overview_tab(ui, ctx, &inst, busy),
                     DetailTab::Mods => self.render_mods_tab(ui, ctx, &inst),
+                    DetailTab::Worlds => self.render_worlds_tab(ui, ctx, &inst, busy),
+                    DetailTab::Screenshots => self.render_screenshots_tab(ui, ctx, &inst),
                     DetailTab::Backups => self.render_backups_tab(ui, ctx, &inst, busy),
-                    DetailTab::Logs => self.render_logs_tab(ui, &inst),
+                    DetailTab::Logs => self.render_logs_tab(ui, ctx, &inst),
                     DetailTab::Settings => self.render_settings_tab(ui, ctx, &inst),
                 }
             });
@@ -2663,7 +2825,260 @@ impl McwApp {
         }
     }
 
-    fn render_logs_tab(&mut self, ui: &mut egui::Ui, inst: &Instance) {
+    fn render_worlds_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        inst: &Instance,
+        busy: bool,
+    ) {
+        let p = self.palette;
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let saves_dir = mc_dir.join("saves");
+        let quick_play_ok = is_quick_play_supported(&inst.version_id);
+        let missing_manual = self
+            .pending_manual_counts
+            .get(&inst.instance_id)
+            .copied()
+            .unwrap_or(0);
+        let has_account = self.active_account().is_some();
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "Singleplayer Worlds ({})",
+                    self.selected_worlds.len()
+                ))
+                .strong()
+                .color(p.text),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Open saves/ Folder").clicked() {
+                    let _ = std::fs::create_dir_all(&saves_dir);
+                    open_external(&saves_dir.display().to_string());
+                }
+                if ui.button("Refresh").clicked() {
+                    self.load_worlds_async(&inst.instance_id, ctx, true);
+                }
+            });
+        });
+
+        ui.add_space(6.0);
+
+        if self.selected_worlds.is_empty() {
+            let msg = if self.loading_worlds.contains(&inst.instance_id) {
+                "Scanning saves/ in background..."
+            } else {
+                "No singleplayer worlds found in this instance's saves/ folder."
+            };
+            ui.label(RichText::new(msg).color(p.text_muted));
+            return;
+        }
+
+        let mut quick_play_target: Option<String> = None;
+        let mut duplicate_target: Option<String> = None;
+        let mut delete_target: Option<String> = None;
+
+        ScrollArea::vertical()
+            .id_salt("worlds_list_scroll")
+            .show(ui, |ui| {
+                for w in &self.selected_worlds {
+                    Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .corner_radius(CornerRadius::same(3))
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(&w.display_name).strong().size(13.5),
+                                        );
+                                        let mode_color =
+                                            if w.is_hardcore { p.danger } else { p.accent };
+                                        ui.label(
+                                            RichText::new(w.game_mode.to_uppercase())
+                                                .monospace()
+                                                .size(10.5)
+                                                .color(mode_color),
+                                        );
+                                        if !w.version_name.is_empty() {
+                                            ui.label(
+                                                RichText::new(format!("MC {}", w.version_name))
+                                                    .monospace()
+                                                    .size(11.0)
+                                                    .color(p.text_muted),
+                                            );
+                                        }
+                                    });
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} · {}",
+                                            w.folder_name,
+                                            format_bytes(w.size_bytes)
+                                        ))
+                                        .monospace()
+                                        .size(11.0)
+                                        .color(p.text_muted),
+                                    );
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !busy,
+                                            Button::new(RichText::new("Delete").color(p.danger)),
+                                        )
+                                        .clicked()
+                                    {
+                                        delete_target = Some(w.folder_name.clone());
+                                    }
+                                    if ui.button("Folder").clicked() {
+                                        open_external(&w.folder_path.display().to_string());
+                                    }
+                                    if ui.add_enabled(!busy, Button::new("Duplicate")).clicked() {
+                                        duplicate_target = Some(w.folder_name.clone());
+                                    }
+                                    if quick_play_ok {
+                                        let can_play = !busy && has_account && missing_manual == 0;
+                                        let play_btn = Button::new(
+                                            RichText::new("Quick Play")
+                                                .color(p.accent_text)
+                                                .strong(),
+                                        )
+                                        .fill(p.accent);
+                                        let resp = ui.add_enabled(can_play, play_btn);
+                                        if resp.clicked() {
+                                            quick_play_target = Some(w.folder_name.clone());
+                                        }
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            });
+
+        if let Some(folder) = quick_play_target {
+            self.start_launch_with_world(Some(folder), ctx);
+        }
+        if let Some(folder) = duplicate_target {
+            match WorldManager::duplicate_world(&mc_dir, &folder) {
+                Ok(dup) => {
+                    self.worlds_cache.remove(&inst.instance_id);
+                    self.load_worlds_async(&inst.instance_id, ctx, true);
+                    self.notice_banner = Some((
+                        format!("Duplicated world '{}' -> '{}'.", folder, dup.folder_name),
+                        false,
+                    ));
+                }
+                Err(e) => {
+                    self.notice_banner = Some((format!("Duplicate world failed: {e}"), true));
+                }
+            }
+        }
+        if let Some(folder) = delete_target {
+            self.pending_delete_world = Some((inst.instance_id.clone(), folder));
+        }
+    }
+
+    fn render_screenshots_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, inst: &Instance) {
+        let p = self.palette;
+        let shots_dir = self
+            .paths
+            .minecraft_dir(&inst.instance_id)
+            .join("screenshots");
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("Screenshots ({})", self.selected_screenshots.len()))
+                    .strong()
+                    .color(p.text),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Open screenshots/ Folder").clicked() {
+                    let _ = std::fs::create_dir_all(&shots_dir);
+                    open_external(&shots_dir.display().to_string());
+                }
+                if ui.button("Refresh").clicked() {
+                    self.load_screenshots_async(&inst.instance_id, ctx, true);
+                }
+            });
+        });
+
+        ui.add_space(6.0);
+
+        if self.selected_screenshots.is_empty() {
+            let msg = if self.loading_screenshots.contains(&inst.instance_id) {
+                "Scanning screenshots/ in background..."
+            } else {
+                "No screenshots captured in this instance yet (press F2 in-game)."
+            };
+            ui.label(RichText::new(msg).color(p.text_muted));
+            return;
+        }
+
+        let mut delete_path: Option<PathBuf> = None;
+
+        ScrollArea::vertical()
+            .id_salt("screenshots_list_scroll")
+            .show(ui, |ui| {
+                for s in &self.selected_screenshots {
+                    Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .corner_radius(CornerRadius::same(3))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(&s.file_name).monospace().strong());
+                                    ui.label(
+                                        RichText::new(format_bytes(s.file_size_bytes))
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(p.text_muted),
+                                    );
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui.button(RichText::new("Delete").color(p.danger)).clicked()
+                                    {
+                                        delete_path = Some(s.path.clone());
+                                    }
+                                    if ui.button("Copy Path").clicked() {
+                                        ctx.copy_text(s.path.display().to_string());
+                                    }
+                                    let open_btn = Button::new(
+                                        RichText::new("Open Image").color(p.accent_text).strong(),
+                                    )
+                                    .fill(p.accent);
+                                    if ui.add(open_btn).clicked() {
+                                        open_external(&s.path.display().to_string());
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            });
+
+        if let Some(path) = delete_path {
+            match ScreenshotManager::delete_screenshot(&path) {
+                Ok(()) => {
+                    self.screenshots_cache.remove(&inst.instance_id);
+                    self.load_screenshots_async(&inst.instance_id, ctx, true);
+                    self.notice_banner = Some(("Deleted screenshot.".to_string(), false));
+                }
+                Err(e) => {
+                    self.notice_banner = Some((format!("Delete screenshot failed: {e}"), true));
+                }
+            }
+        }
+    }
+
+    fn render_logs_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, inst: &Instance) {
         let p = self.palette;
         let log_file = self
             .paths
@@ -2688,6 +3103,50 @@ impl McwApp {
             }
             if log_file.is_file() && ui.button("Open Log File").clicked() {
                 open_external(&log_file.display().to_string());
+            }
+            let upload_label = if self.uploading_mclogs {
+                "Uploading..."
+            } else {
+                "Upload to mclo.gs"
+            };
+            let upload_btn = Button::new(RichText::new(upload_label).color(p.accent_text).strong())
+                .fill(p.accent);
+            if ui
+                .add_enabled(!self.uploading_mclogs, upload_btn)
+                .on_hover_text(
+                    "Automatically redacts tokens, emails, and user paths before uploading",
+                )
+                .clicked()
+            {
+                let live_text = self
+                    .instance_logs
+                    .get(&inst.instance_id)
+                    .map(|lines| {
+                        lines
+                            .iter()
+                            .map(|l| l.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default();
+                let content = if !live_text.trim().is_empty() {
+                    live_text
+                } else {
+                    std::fs::read_to_string(&log_file).unwrap_or_default()
+                };
+                if content.trim().is_empty() {
+                    self.notice_banner = Some((
+                        "No live logs or latest.log file found to upload.".to_string(),
+                        true,
+                    ));
+                } else {
+                    self.start_mclogs_upload(content, ctx);
+                }
+            }
+            if let Some(ref url) = self.last_mclogs_url {
+                if ui.button("Open mclo.gs").clicked() {
+                    open_external(url);
+                }
             }
         });
 
@@ -3595,6 +4054,50 @@ impl McwApp {
                         }
                         if ui.button("Cancel").clicked() {
                             self.pending_restore_backup_id = None;
+                        }
+                    });
+                });
+        }
+
+        // 5b. Delete World Confirmation Modal (Data Safety Gate)
+        if let Some((inst_id, folder_name)) = self.pending_delete_world.clone() {
+            egui::Window::new("Delete World")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(360.0);
+                    ui.label(
+                        RichText::new(format!("Permanently delete world '{folder_name}'?"))
+                            .strong()
+                            .color(p.danger),
+                    );
+                    ui.label("This will permanently remove the world save folder from saves/.");
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let confirm_btn = Button::new(
+                            RichText::new("Delete World").color(Color32::WHITE).strong(),
+                        )
+                        .fill(p.danger);
+                        if ui.add(confirm_btn).clicked() {
+                            let mc_dir = self.paths.minecraft_dir(&inst_id);
+                            match WorldManager::delete_world(&mc_dir, &folder_name) {
+                                Ok(()) => {
+                                    self.pending_delete_world = None;
+                                    self.worlds_cache.remove(&inst_id);
+                                    self.load_worlds_async(&inst_id, ctx, true);
+                                    self.notice_banner =
+                                        Some((format!("Deleted world '{folder_name}'."), false));
+                                }
+                                Err(e) => {
+                                    self.pending_delete_world = None;
+                                    self.notice_banner =
+                                        Some((format!("Delete world failed: {e}"), true));
+                                }
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.pending_delete_world = None;
                         }
                     });
                 });

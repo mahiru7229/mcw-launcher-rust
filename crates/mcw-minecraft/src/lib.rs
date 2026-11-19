@@ -8,6 +8,8 @@ pub mod manifest;
 pub mod modloader;
 pub mod repair;
 pub mod rules;
+pub mod screenshots;
+pub mod worlds;
 
 pub use arguments::ArgumentBuilder;
 pub use assets::AssetManager;
@@ -19,6 +21,8 @@ pub use manifest::VersionManifestService;
 pub use modloader::{LoaderKind, LoaderVersionEntry, ModLoaderService};
 pub use repair::{RepairReport, RepairService};
 pub use rules::LibraryRules;
+pub use screenshots::{ScreenshotInfo, ScreenshotManager};
+pub use worlds::{is_quick_play_supported, WorldInfo, WorldManager};
 
 use thiserror::Error;
 

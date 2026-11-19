@@ -1,12 +1,14 @@
 pub mod bytecode;
 pub mod java;
 pub mod launcher;
+pub mod mclogs;
 pub mod provisioner;
 pub mod supervisor;
 
 pub use bytecode::{detect_jar_required_java, detect_mods_required_java};
 pub use java::{JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver};
 pub use launcher::{LaunchSpec, ProcessLauncher};
+pub use mclogs::{sanitize_log_text, McLogsClient, McLogsUploadResult};
 pub use provisioner::{AdoptiumRelease, JavaProvisioner};
 pub use supervisor::{
     detect_unsupported_class_version, ExitClassification, LogLine, LogSink, LogStream, NoopLogSink,
@@ -29,6 +31,8 @@ pub enum RuntimeError {
     ProvisionFailed(String),
     #[error("Failed to spawn Minecraft process: {0}")]
     SpawnFailed(#[from] std::io::Error),
+    #[error("{0}")]
+    Process(String),
     #[error("Network error: {0}")]
     Net(#[from] mcw_net::NetError),
     #[error("HTTP error: {0}")]
