@@ -232,6 +232,14 @@
 
 ### 22. Gắn cờ Modpack chưa đủ mod manual & Cơ chế Auto-Scan / Manual Scan (`mcw-providers`, `mcw-desktop`)
 - **Chức năng**: Mọi Instance Modpack còn thiếu mod tải thủ công (`pending_manual_downloads.json`) luôn được gắn cờ **`Incomplete (N)`** trên Sidebar và biểu ngữ **`INCOMPLETE MODPACK`** ở đầu trang chi tiết; nút **Launch** chuyển thành **`Missing Mods (N)`** để chặn việc vào nhầm game thiếu mod sau khi Cancel modal (chỉ cho phép vào game trực tiếp khi đã tải đủ, hoặc bấm `Launch Anyway (Incomplete)` chủ động trong modal).
+- **Luồng 2 bước & đa cửa sổ**:
+  - Cửa sổ cài Modpack (`Create Instance`) **không bao giờ tự tắt** khi cài xong 1 gói để người dùng tiếp tục tương tác/cài gói khác.
+  - Ở bước cài đầu tiên, launcher tải hết mọi mod có thể tải tự động và chỉ gắn cờ `Incomplete (N)` cho instance; màn hình tải mod thủ công chỉ bật lên ở lần chạy thứ 2 (khi người dùng bấm vào instance thiếu mod).
+  - Hỗ trợ mở nhiều cửa sổ **Manual Downloads** cùng lúc cho nhiều instance khác nhau, mỗi cửa sổ ghi rõ **tên Instance** trên thanh tiêu đề lẫn phần đầu cửa sổ.
 - **Quét tự động & thủ công**:
   - Hỗ trợ **Auto-scan** (mặc định bật, tự kiểm tra thư mục `Downloads` và `mods/` mỗi 2 giây) và **Manual Scan** (`Scan Now` / `Scan Downloads Now`).
   - [`ModpackInstaller::scan_and_import_manual_downloads`](crates/mcw-providers/src/modpack.rs) tự bỏ qua file đang tải dở (`.crdownload`, `.part`, `.tmp`, 0-byte) và khớp linh hoạt cả tên file bị trình duyệt thêm hậu tố trùng lặp như `Mod (1).jar`.
+
+### 23. Tinh gọn Top Bar & Cửa sổ Launcher Settings riêng (`mcw-desktop`)
+- **Chức năng**: Loại bỏ hoàn toàn các nút/modal `CurseForge API`, `Import 1.8.x`, `Check updates` và nút đổi theme rời khỏi thanh Top Bar; chỉ giữ lại nút **Account** và thêm nút **biểu tượng bánh răng** (vẽ vector sắc nét) ở góc trên bên phải.
+- **Cửa sổ Launcher Settings**: Mở dưới dạng cửa sổ độc lập với thanh tab lớn bên trái (`Appearance`), hiện có thiết lập **Theme: Dark (Default) / Light**.

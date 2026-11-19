@@ -6,8 +6,7 @@ use mcw_providers::{
     AtLauncherPack, CurseForgeMod, FtbPackSummary, ModpackInstallReport, ModrinthSearchHit,
 };
 use mcw_runtime::{JavaInstallation, LogLine, LogSink, ProcessControl, ProcessExitReport};
-use mcw_storage::{BackupInfo, MigrationReport, RestoreOutcome};
-use mcw_updater::UpdateCheckResult;
+use mcw_storage::{BackupInfo, RestoreOutcome};
 use std::sync::mpsc::Sender;
 
 #[derive(Debug, Clone)]
@@ -61,10 +60,6 @@ pub enum AppEvent {
         cf_pack_id: Option<u64>,
         result: Result<ModpackInstallReport, String>,
     },
-    MigrationFinished {
-        dry_run: bool,
-        result: Result<MigrationReport, String>,
-    },
     DeviceCodeReady(DeviceCodeResponse),
     MicrosoftLoginFinished(Result<StoredAccount, String>),
     ModrinthSearchFinished(Result<Vec<ModrinthSearchHit>, String>),
@@ -89,7 +84,6 @@ pub enum AppEvent {
         major: u32,
         result: Result<JavaInstallation, String>,
     },
-    UpdateCheckFinished(Result<UpdateCheckResult, String>),
 }
 
 pub struct ChannelProgressSink {

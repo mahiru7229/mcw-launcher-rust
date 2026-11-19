@@ -14,20 +14,16 @@ use mcw_models::progress::ProgressEvent;
 use mcw_mods::{is_loader_compatible, ModInfo, ModManager};
 use mcw_net::DownloadClient;
 use mcw_providers::{
-    load_curseforge_api_key, save_curseforge_api_key_to_dotenv, ApiCache, AtLauncherClient,
-    AtLauncherPack, CurseForgeClient, CurseForgeMod, CurseForgeSearchParams, FtbClient,
-    FtbPackSummary, ManualDownloadItem, ModpackInstaller, ModpackProgressCallback, ModrinthClient,
-    ModrinthSearchHit, ModrinthSearchParams,
+    load_curseforge_api_key, ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient,
+    CurseForgeMod, CurseForgeSearchParams, FtbClient, FtbPackSummary, ManualDownloadItem,
+    ModpackInstaller, ModpackProgressCallback, ModrinthClient, ModrinthSearchHit,
+    ModrinthSearchParams,
 };
 use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, LogLine, LogStream,
     ProcessControl, SupervisedProcess,
 };
-use mcw_storage::{
-    migrate_from_python_1_8, BackupInfo, BackupManager, InstanceRunLock, InstanceStore,
-    LauncherPaths, MigrationReport,
-};
-use mcw_updater::{UpdateChannel, UpdateCheckResult, UpdateChecker};
+use mcw_storage::{BackupInfo, BackupManager, InstanceRunLock, InstanceStore, LauncherPaths};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -58,6 +54,11 @@ enum CreateInstanceTab {
     CurseForgePacks,
     Ftb,
     AtLauncher,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LauncherSettingsTab {
+    Appearance,
 }
 
 enum LaunchState {
@@ -103,13 +104,11 @@ pub struct McwApp {
     // UI state
     active_tab: DetailTab,
     notice_banner: Option<(String, bool)>, // (message, is_error)
-    update_status: Option<UpdateCheckResult>,
-    checking_update: bool,
     backup_busy: bool,
     backup_note_input: String,
     pending_restore_backup_id: Option<String>,
 
-    // Create instance modal (Custom | Import Archive | FTB | ATLauncher)
+    // Create instance modal (Custom | Import Archive | CurseForge Packs | FTB | ATLauncher)
     show_create_modal: bool,
     create_tab: CreateInstanceTab,
     create_name: String,
@@ -125,26 +124,18 @@ pub struct McwApp {
     ftb_results: Vec<FtbPackSummary>,
     atl_results: Vec<AtLauncherPack>,
 
-    // Manual Downloads dedicated screen (CurseForge opt-out mods)
+    // Manual Downloads dedicated per-instance windows (CurseForge opt-out mods)
     pending_manual_counts: HashMap<String, usize>,
-    show_manual_downloads_modal: bool,
-    manual_downloads_instance_id: Option<String>,
-    manual_downloads_items: Vec<ManualDownloadItem>,
+    open_manual_modals: Vec<String>,
+    manual_downloads_cache: HashMap<String, Vec<ManualDownloadItem>>,
     manual_downloads_dir_input: String,
     manual_auto_scan: bool,
     last_manual_scan_at: Option<Instant>,
-    manual_scan_status: Option<String>,
+    manual_scan_status: HashMap<String, String>,
 
-    // CurseForge API / Launcher Settings modal
-    show_api_modal: bool,
-    cf_api_key_input: String,
-    cf_api_key_visible: bool,
-
-    // Migration 1.8.x modal
-    show_migrate_modal: bool,
-    migrate_source_input: String,
-    migrate_running: bool,
-    migrate_report: Option<(bool, MigrationReport)>,
+    // Launcher Settings separate window (gear icon in top-right)
+    show_launcher_settings: bool,
+    launcher_settings_tab: LauncherSettingsTab,
 
     // Rename & Delete modals
     show_rename_modal: bool,
@@ -181,8 +172,6 @@ impl McwApp {
         );
         let (tx, rx) = mpsc::channel();
 
-        let initial_cf_key =
-            load_curseforge_api_key(Some(&paths.project_root)).unwrap_or_default();
         let default_downloads_dir = default_user_downloads_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
@@ -215,8 +204,6 @@ impl McwApp {
             installing_java_majors: HashSet::new(),
             active_tab: DetailTab::Overview,
             notice_banner: None,
-            update_status: None,
-            checking_update: false,
             backup_busy: false,
             backup_note_input: String::new(),
             pending_restore_backup_id: None,
@@ -235,20 +222,14 @@ impl McwApp {
             ftb_results: Vec::new(),
             atl_results: Vec::new(),
             pending_manual_counts: HashMap::new(),
-            show_manual_downloads_modal: false,
-            manual_downloads_instance_id: None,
-            manual_downloads_items: Vec::new(),
+            open_manual_modals: Vec::new(),
+            manual_downloads_cache: HashMap::new(),
             manual_downloads_dir_input: default_downloads_dir,
             manual_auto_scan: true,
             last_manual_scan_at: None,
-            manual_scan_status: None,
-            show_api_modal: false,
-            cf_api_key_input: initial_cf_key,
-            cf_api_key_visible: false,
-            show_migrate_modal: false,
-            migrate_source_input: String::new(),
-            migrate_running: false,
-            migrate_report: None,
+            manual_scan_status: HashMap::new(),
+            show_launcher_settings: false,
+            launcher_settings_tab: LauncherSettingsTab::Appearance,
             show_rename_modal: false,
             rename_input: String::new(),
             show_delete_modal: false,
@@ -303,31 +284,32 @@ impl McwApp {
         let pending = ModpackInstaller::load_pending_manual_downloads(&self.paths, instance_id);
         if pending.is_empty() {
             self.pending_manual_counts.remove(instance_id);
-        } else {
-            self.pending_manual_counts
-                .insert(instance_id.to_string(), pending.len());
+            self.manual_downloads_cache.remove(instance_id);
+            self.open_manual_modals.retain(|id| id != instance_id);
+            return;
         }
-        self.manual_downloads_instance_id = Some(instance_id.to_string());
-        self.manual_downloads_items = pending;
-        self.manual_scan_status = None;
+        self.pending_manual_counts
+            .insert(instance_id.to_string(), pending.len());
+        self.manual_downloads_cache
+            .insert(instance_id.to_string(), pending);
+        self.manual_scan_status.remove(instance_id);
         self.last_manual_scan_at = None;
-        self.show_manual_downloads_modal = true;
+        if !self.open_manual_modals.iter().any(|id| id == instance_id) {
+            self.open_manual_modals.push(instance_id.to_string());
+        }
     }
 
     fn run_manual_downloads_scan(&mut self, inst_id: &str, manual_trigger: bool) {
-        let current_items = if self.manual_downloads_instance_id.as_deref() == Some(inst_id)
-            && !self.manual_downloads_items.is_empty()
-        {
-            self.manual_downloads_items.clone()
-        } else {
-            ModpackInstaller::load_pending_manual_downloads(&self.paths, inst_id)
-        };
+        let current_items = self
+            .manual_downloads_cache
+            .get(inst_id)
+            .cloned()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| ModpackInstaller::load_pending_manual_downloads(&self.paths, inst_id));
         if current_items.is_empty() {
             self.pending_manual_counts.remove(inst_id);
-            if self.manual_downloads_instance_id.as_deref() == Some(inst_id) {
-                self.manual_downloads_items.clear();
-                self.show_manual_downloads_modal = false;
-            }
+            self.manual_downloads_cache.remove(inst_id);
+            self.open_manual_modals.retain(|id| id != inst_id);
             return;
         }
 
@@ -343,12 +325,13 @@ impl McwApp {
             Ok((resolved, remaining)) => {
                 if remaining.is_empty() {
                     self.pending_manual_counts.remove(inst_id);
+                    self.manual_downloads_cache.remove(inst_id);
+                    self.open_manual_modals.retain(|id| id != inst_id);
                 } else {
                     self.pending_manual_counts
                         .insert(inst_id.to_string(), remaining.len());
-                }
-                if self.manual_downloads_instance_id.as_deref() == Some(inst_id) {
-                    self.manual_downloads_items = remaining.clone();
+                    self.manual_downloads_cache
+                        .insert(inst_id.to_string(), remaining.clone());
                 }
 
                 if resolved > 0 {
@@ -356,33 +339,33 @@ impl McwApp {
                         self.load_selected_details();
                     }
                     let msg = if remaining.is_empty() {
-                        format!("Imported {resolved} mod(s). All manual downloads complete — modpack is ready!")
+                        format!(
+                            "Imported {resolved} mod(s) for '{inst_id}'. All manual downloads complete — modpack is ready!"
+                        )
                     } else {
                         format!(
                             "Imported {resolved} mod(s) ({} remaining).",
                             remaining.len()
                         )
                     };
-                    self.manual_scan_status = Some(msg.clone());
+                    self.manual_scan_status
+                        .insert(inst_id.to_string(), msg.clone());
                     self.notice_banner = Some((msg, false));
-                    if remaining.is_empty()
-                        && self.manual_downloads_instance_id.as_deref() == Some(inst_id)
-                    {
-                        self.show_manual_downloads_modal = false;
-                    }
                 } else if manual_trigger {
                     let msg = format!(
                         "No new matching .jar files found in {} ({} still missing).",
                         dl_dir.display(),
                         remaining.len()
                     );
-                    self.manual_scan_status = Some(msg.clone());
+                    self.manual_scan_status
+                        .insert(inst_id.to_string(), msg.clone());
                     self.notice_banner = Some((msg, false));
                 }
             }
             Err(e) => {
                 let msg = format!("Scan Downloads failed: {e}");
-                self.manual_scan_status = Some(msg.clone());
+                self.manual_scan_status
+                    .insert(inst_id.to_string(), msg.clone());
                 if manual_trigger {
                     self.notice_banner = Some((msg, true));
                 }
@@ -407,11 +390,12 @@ impl McwApp {
         let pending = ModpackInstaller::load_pending_manual_downloads(&self.paths, id);
         if pending.is_empty() {
             self.pending_manual_counts.remove(id);
+            self.manual_downloads_cache.remove(id);
         } else {
             self.pending_manual_counts.insert(id.clone(), pending.len());
-        }
-        if self.manual_downloads_instance_id.as_deref() == Some(id.as_str()) {
-            self.manual_downloads_items = pending;
+            if self.open_manual_modals.iter().any(|open_id| open_id == id) {
+                self.manual_downloads_cache.insert(id.clone(), pending);
+            }
         }
     }
 
@@ -739,10 +723,6 @@ impl McwApp {
     }
 
     fn resolved_cf_api_key(&self) -> String {
-        let typed = self.cf_api_key_input.trim();
-        if !typed.is_empty() {
-            return typed.to_string();
-        }
         load_curseforge_api_key(Some(&self.paths.project_root)).unwrap_or_default()
     }
 
@@ -1195,30 +1175,6 @@ impl McwApp {
         });
     }
 
-    fn start_migration(&mut self, dry_run: bool, ctx: &egui::Context) {
-        if self.migrate_running {
-            return;
-        }
-        let source = PathBuf::from(self.migrate_source_input.trim());
-        self.migrate_running = true;
-        let paths = self.paths.clone();
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-
-        self.runtime.spawn(async move {
-            let res = tokio::task::spawn_blocking(move || {
-                migrate_from_python_1_8(&source, &paths, dry_run).map_err(|e| e.to_string())
-            })
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
-            let _ = tx.send(AppEvent::MigrationFinished {
-                dry_run,
-                result: res,
-            });
-            ctx.request_repaint();
-        });
-    }
-
     fn start_ftb_search(&mut self, ctx: &egui::Context) {
         self.pack_browser_searching = true;
         let query = self.pack_browser_query.clone();
@@ -1268,28 +1224,6 @@ impl McwApp {
             }
             .await;
             let _ = tx.send(AppEvent::AtLauncherSearchFinished(res));
-            ctx.request_repaint();
-        });
-    }
-
-    fn start_update_check(&mut self, ctx: &egui::Context) {
-        if self.checking_update {
-            return;
-        }
-        self.checking_update = true;
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-
-        self.runtime.spawn(async move {
-            let res = async {
-                let checker = UpdateChecker::new().map_err(|e| e.to_string())?;
-                checker
-                    .check(mcw_models::APP_VERSION, UpdateChannel::Stable)
-                    .await
-                    .map_err(|e| e.to_string())
-            }
-            .await;
-            let _ = tx.send(AppEvent::UpdateCheckFinished(res));
             ctx.request_repaint();
         });
     }
@@ -1583,18 +1517,9 @@ impl McwApp {
                     }
                     match result {
                         Ok(rep) => {
-                            self.selected_instance_id = Some(rep.instance_id.clone());
+                            // Keep Create/Modpack install window open so user can keep interacting.
+                            // Missing manual mods are flagged on the instance and shown when the user launches it.
                             self.reload_instances();
-                            if self.installing_cf_packs.is_empty()
-                                && self.installing_archive_count == 0
-                            {
-                                self.show_create_modal = false;
-                            }
-                            if !rep.manual_downloads.is_empty() {
-                                self.manual_downloads_instance_id = Some(rep.instance_id.clone());
-                                self.manual_downloads_items = rep.manual_downloads.clone();
-                                self.show_manual_downloads_modal = true;
-                            }
                             self.notice_banner = Some((
                                 format!(
                                     "Installed modpack '{}' (MC {}, {} — {} files, {} overrides{}).",
@@ -1606,7 +1531,10 @@ impl McwApp {
                                     if rep.manual_downloads.is_empty() {
                                         String::new()
                                     } else {
-                                        format!(", {} manual downloads required", rep.manual_downloads.len())
+                                        format!(
+                                            ", {} manual mod(s) will be prompted when launching",
+                                            rep.manual_downloads.len()
+                                        )
                                     }
                                 ),
                                 false,
@@ -1615,20 +1543,6 @@ impl McwApp {
                         Err(err) => {
                             self.notice_banner =
                                 Some((format!("Modpack install failed: {err}"), true));
-                        }
-                    }
-                }
-                AppEvent::MigrationFinished { dry_run, result } => {
-                    self.migrate_running = false;
-                    match result {
-                        Ok(rep) => {
-                            if !dry_run {
-                                self.reload_instances();
-                            }
-                            self.migrate_report = Some((dry_run, rep));
-                        }
-                        Err(err) => {
-                            self.notice_banner = Some((format!("Migration failed: {err}"), true));
                         }
                     }
                 }
@@ -1648,18 +1562,6 @@ impl McwApp {
                         Err(err) => {
                             self.notice_banner =
                                 Some((format!("ATLauncher search failed: {err}"), true));
-                        }
-                    }
-                }
-                AppEvent::UpdateCheckFinished(res) => {
-                    self.checking_update = false;
-                    match res {
-                        Ok(info) => {
-                            self.update_status = Some(info);
-                        }
-                        Err(err) => {
-                            self.notice_banner =
-                                Some((format!("Update check failed: {err}"), true));
                         }
                     }
                 }
@@ -1693,56 +1595,12 @@ impl McwApp {
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // Dark / Light toggle
-                        let theme_label = match self.theme_mode {
-                            ThemeMode::Dark => "Light",
-                            ThemeMode::Light => "Dark",
-                        };
-                        if ui.button(theme_label).clicked() {
-                            self.theme_mode = match self.theme_mode {
-                                ThemeMode::Dark => ThemeMode::Light,
-                                ThemeMode::Light => ThemeMode::Dark,
-                            };
-                            self.palette = apply_theme(ctx, self.theme_mode);
-                        }
-
-                        // Update check
-                        let upd_label = if self.checking_update {
-                            "Checking...".to_string()
-                        } else if let Some(ref info) = self.update_status {
-                            if info.update_available {
-                                format!(
-                                    "Update: {}",
-                                    info.latest
-                                        .as_ref()
-                                        .map(|l| l.tag_name.as_str())
-                                        .unwrap_or("available")
-                                )
-                            } else {
-                                "Up to date".to_string()
-                            }
-                        } else {
-                            "Check updates".to_string()
-                        };
-                        if ui
-                            .add_enabled(!self.checking_update, Button::new(upd_label))
+                        // Gear icon button for Launcher Settings (separate window)
+                        if gear_icon_button(ui, p, self.show_launcher_settings)
+                            .on_hover_text("Launcher Settings")
                             .clicked()
                         {
-                            self.start_update_check(ctx);
-                        }
-
-                        if ui.button("Import 1.8.x").clicked() {
-                            self.migrate_report = None;
-                            self.show_migrate_modal = true;
-                        }
-
-                        let cf_btn_label = if self.resolved_cf_api_key().is_empty() {
-                            "CurseForge API"
-                        } else {
-                            "CurseForge API (OK)"
-                        };
-                        if ui.button(cf_btn_label).clicked() {
-                            self.show_api_modal = true;
+                            self.show_launcher_settings = !self.show_launcher_settings;
                         }
 
                         ui.separator();
@@ -3081,7 +2939,7 @@ impl McwApp {
                             if self.resolved_cf_api_key().is_empty() {
                                 ui.label(
                                     RichText::new(
-                                        "CurseForge API key is not configured. Click 'CurseForge API' in the top bar or add CURSEFORGE_API_KEY to .env.",
+                                        "CurseForge API key is not configured. Add CURSEFORGE_API_KEY to .env.",
                                     )
                                     .color(p.warning),
                                 );
@@ -3629,166 +3487,175 @@ impl McwApp {
                 });
         }
 
-        // 6. Import from MCW Python 1.8.x Modal
-        if self.show_migrate_modal {
-            egui::Window::new("Import from MCW Launcher 1.8.x")
+        // 6. Launcher Settings Separate Window (opened via top-right gear icon)
+        if self.show_launcher_settings {
+            let mut open = self.show_launcher_settings;
+            egui::Window::new("Launcher Settings")
+                .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
+                .default_width(520.0)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.set_min_width(420.0);
-                    ui.label("Python 1.8.x Root Directory (read-only, source is never modified):");
-                    ui.add(
-                        TextEdit::singleline(&mut self.migrate_source_input)
-                            .hint_text(r"d:\WORKBASE\mcw-launcher")
-                            .desired_width(400.0),
-                    );
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(!self.migrate_running, Button::new("Preview (Dry Run)"))
-                            .clicked()
-                        {
-                            self.start_migration(true, ctx);
-                        }
-                        let run_btn = Button::new(
-                            RichText::new("Migrate Instances")
-                                .color(p.accent_text)
-                                .strong(),
-                        )
-                        .fill(p.accent);
-                        if ui
-                            .add_enabled(!self.migrate_running, run_btn)
-                            .clicked()
-                        {
-                            self.start_migration(false, ctx);
-                        }
-                        if ui.button("Close").clicked() {
-                            self.show_migrate_modal = false;
-                        }
-                    });
-
-                    if let Some((dry_run, ref rep)) = self.migrate_report {
-                        ui.add_space(8.0);
+                    ui.set_min_width(480.0);
+                    ui.set_min_height(240.0);
+                    ui.horizontal_top(|ui| {
+                        // Left big tab rail
                         Frame::new()
-                            .fill(p.elevated)
+                            .fill(p.surface)
                             .stroke(Stroke::new(1.0_f32, p.border))
                             .corner_radius(CornerRadius::same(3))
                             .inner_margin(egui::Margin::same(8))
                             .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(if dry_run {
-                                        "Dry-Run Preview"
-                                    } else {
-                                        "Migration Result"
-                                    })
-                                    .strong(),
-                                );
-                                ui.label(format!(
-                                    "To migrate / migrated ({}): {}",
-                                    rep.migrated_instances.len(),
-                                    rep.migrated_instances.join(", ")
-                                ));
-                                if !rep.skipped_existing.is_empty() {
+                                ui.set_min_width(136.0);
+                                ui.set_min_height(210.0);
+                                ui.vertical(|ui| {
+                                    let is_app = self.launcher_settings_tab
+                                        == LauncherSettingsTab::Appearance;
+                                    let tab_btn = Button::new(
+                                        RichText::new("Appearance")
+                                            .strong()
+                                            .size(13.5)
+                                            .color(if is_app { p.accent_text } else { p.text }),
+                                    )
+                                    .fill(if is_app { p.accent } else { p.elevated })
+                                    .min_size(Vec2::new(120.0, 34.0))
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui.add(tab_btn).clicked() {
+                                        self.launcher_settings_tab =
+                                            LauncherSettingsTab::Appearance;
+                                    }
+                                });
+                            });
+
+                        ui.add_space(10.0);
+
+                        // Right content panel
+                        ui.vertical(|ui| {
+                            match self.launcher_settings_tab {
+                                LauncherSettingsTab::Appearance => {
                                     ui.label(
-                                        RichText::new(format!(
-                                            "Skipped existing ({}): {}",
-                                            rep.skipped_existing.len(),
-                                            rep.skipped_existing.join(", ")
-                                        ))
+                                        RichText::new("Appearance")
+                                            .strong()
+                                            .size(15.0)
+                                            .color(p.text),
+                                    );
+                                    ui.label(
+                                        RichText::new(
+                                            "Select the launcher color theme (Default: Dark).",
+                                        )
+                                        .size(12.0)
                                         .color(p.text_muted),
                                     );
-                                }
-                                if !rep.errors.is_empty() {
-                                    ui.label(
-                                        RichText::new(format!("Errors: {}", rep.errors.join("; ")))
-                                            .color(p.danger),
-                                    );
-                                }
-                            });
-                    }
-                });
-        }
+                                    ui.add_space(12.0);
 
-        // 7. CurseForge API Key Settings Modal (.env)
-        if self.show_api_modal {
-            egui::Window::new("CurseForge API Settings")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(420.0);
-                    ui.label(RichText::new("CurseForge Core API v1 Key").strong());
-                    ui.label(
-                        RichText::new(
-                            "Saved locally to .env (gitignored). Used for CurseForge Mods & CurseForge Modpacks.",
-                        )
-                        .size(11.5)
-                        .color(p.text_muted),
-                    );
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            TextEdit::singleline(&mut self.cf_api_key_input)
-                                .password(!self.cf_api_key_visible)
-                                .hint_text("$2a$10$...")
-                                .desired_width(330.0),
-                        );
-                        ui.checkbox(&mut self.cf_api_key_visible, "Show");
-                    });
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        let save_btn = Button::new(
-                            RichText::new("Save to .env")
-                                .color(p.accent_text)
-                                .strong(),
-                        )
-                        .fill(p.accent);
-                        if ui.add(save_btn).clicked() {
-                            match save_curseforge_api_key_to_dotenv(
-                                &self.paths.project_root,
-                                &self.cf_api_key_input,
-                            ) {
-                                Ok(env_path) => {
-                                    self.show_api_modal = false;
-                                    self.notice_banner = Some((
-                                        format!(
-                                            "Saved CURSEFORGE_API_KEY to {}.",
-                                            env_path.display()
-                                        ),
-                                        false,
-                                    ));
-                                }
-                                Err(e) => {
-                                    self.notice_banner =
-                                        Some((format!("Failed to save .env: {e}"), true));
+                                    ui.horizontal(|ui| {
+                                        let dark_selected = self.theme_mode == ThemeMode::Dark;
+                                        let dark_btn = Button::new(
+                                            RichText::new("Dark (Default)")
+                                                .strong()
+                                                .size(13.0)
+                                                .color(if dark_selected {
+                                                    p.accent_text
+                                                } else {
+                                                    p.text
+                                                }),
+                                        )
+                                        .fill(if dark_selected { p.accent } else { p.elevated })
+                                        .stroke(Stroke::new(
+                                            1.0_f32,
+                                            if dark_selected { p.accent } else { p.border },
+                                        ))
+                                        .min_size(Vec2::new(145.0, 42.0))
+                                        .corner_radius(CornerRadius::same(3));
+                                        if ui.add(dark_btn).clicked() && !dark_selected {
+                                            self.theme_mode = ThemeMode::Dark;
+                                            self.palette = apply_theme(ctx, self.theme_mode);
+                                        }
+
+                                        ui.add_space(8.0);
+
+                                        let light_selected = self.theme_mode == ThemeMode::Light;
+                                        let light_btn = Button::new(
+                                            RichText::new("Light")
+                                                .strong()
+                                                .size(13.0)
+                                                .color(if light_selected {
+                                                    p.accent_text
+                                                } else {
+                                                    p.text
+                                                }),
+                                        )
+                                        .fill(if light_selected { p.accent } else { p.elevated })
+                                        .stroke(Stroke::new(
+                                            1.0_f32,
+                                            if light_selected { p.accent } else { p.border },
+                                        ))
+                                        .min_size(Vec2::new(145.0, 42.0))
+                                        .corner_radius(CornerRadius::same(3));
+                                        if ui.add(light_btn).clicked() && !light_selected {
+                                            self.theme_mode = ThemeMode::Light;
+                                            self.palette = apply_theme(ctx, self.theme_mode);
+                                        }
+                                    });
                                 }
                             }
-                        }
-                        if ui.button("Close").clicked() {
-                            self.show_api_modal = false;
-                        }
+                        });
                     });
                 });
+            self.show_launcher_settings = open;
         }
 
-        // 8. Dedicated Manual Downloads Screen (CurseForge opt-out mods)
-        if self.show_manual_downloads_modal {
-            let inst_id = self
-                .manual_downloads_instance_id
-                .clone()
-                .or_else(|| self.selected_instance_id.clone())
+        // 7. Dedicated Per-Instance Manual Downloads Windows (CurseForge opt-out mods)
+        let open_ids = self.open_manual_modals.clone();
+        let mut to_close: Vec<String> = Vec::new();
+        let mut to_scan: Vec<String> = Vec::new();
+        let mut launch_anyway_id: Option<String> = None;
+
+        for (idx, inst_id) in open_ids.into_iter().enumerate() {
+            let inst_name = self
+                .instances
+                .iter()
+                .find(|i| i.instance_id == inst_id)
+                .map(|i| i.name.clone())
+                .unwrap_or_else(|| inst_id.clone());
+            let items = self
+                .manual_downloads_cache
+                .get(&inst_id)
+                .cloned()
                 .unwrap_or_default();
+            let status_text = self.manual_scan_status.get(&inst_id).cloned();
+
+            let offset = (idx as f32) * 26.0;
+            let mut win_open = true;
             egui::Window::new(format!(
-                "Manual Downloads Required ({} remaining)",
-                self.manual_downloads_items.len()
+                "Manual Downloads — {} ({} remaining)",
+                inst_name,
+                items.len()
             ))
+            .id(egui::Id::new(("manual_downloads_window", &inst_id)))
+            .open(&mut win_open)
             .collapsible(false)
             .resizable(true)
             .default_width(580.0)
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_pos(egui::pos2(160.0 + offset, 110.0 + offset))
             .show(ctx, |ui| {
                 ui.set_min_width(540.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("Instance: {inst_name}"))
+                            .strong()
+                            .size(13.5)
+                            .color(p.accent),
+                    );
+                    ui.label(
+                        RichText::new(format!("({inst_id})"))
+                            .monospace()
+                            .size(11.0)
+                            .color(p.text_muted),
+                    );
+                });
+                ui.add_space(4.0);
                 ui.label(
                     RichText::new(
                         "These mods have third-party distribution disabled by their authors on CurseForge.",
@@ -3798,7 +3665,7 @@ impl McwApp {
                 );
                 ui.label(
                     RichText::new(
-                        "1. Click 'Open Page' (or 'Open Next 5') to download the .jar files in your browser.\n2. Click 'Scan Downloads & Import' to automatically copy them into this instance's mods/ folder.",
+                        "1. Click 'Open Page' (or 'Open Next 5') to download the .jar files in your browser.\n2. Auto-scan imports completed downloads every 2s, or click 'Scan Now' manually.",
                     )
                     .size(11.5)
                     .color(p.text_muted),
@@ -3817,8 +3684,8 @@ impl McwApp {
                             .strong(),
                     )
                     .fill(p.accent);
-                    if ui.add(scan_btn).clicked() && !inst_id.is_empty() {
-                        self.run_manual_downloads_scan(&inst_id, true);
+                    if ui.add(scan_btn).clicked() {
+                        to_scan.push(inst_id.clone());
                     }
                 });
 
@@ -3828,32 +3695,25 @@ impl McwApp {
                         &mut self.manual_auto_scan,
                         "Auto-scan Downloads & mods/ every 2s",
                     );
-                    if self.manual_auto_scan && !self.manual_downloads_items.is_empty() {
-                        ui.label(
-                            RichText::new("● Watching")
-                                .size(11.0)
-                                .color(p.accent),
-                        );
+                    if self.manual_auto_scan && !items.is_empty() {
+                        ui.label(RichText::new("● Watching").size(11.0).color(p.accent));
                     }
                 });
-                if let Some(ref status) = self.manual_scan_status {
+                if let Some(ref status) = status_text {
                     ui.label(RichText::new(status).size(11.5).color(p.text_muted));
                 }
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(
-                            !self.manual_downloads_items.is_empty(),
-                            Button::new("Open Next 5 Links"),
-                        )
+                        .add_enabled(!items.is_empty(), Button::new("Open Next 5 Links"))
                         .clicked()
                     {
-                        for item in self.manual_downloads_items.iter().take(5) {
+                        for item in items.iter().take(5) {
                             open_external(&item.website_url);
                         }
                     }
-                    if !inst_id.is_empty() && ui.button("Open Instance mods/ Folder").clicked() {
+                    if ui.button("Open Instance mods/ Folder").clicked() {
                         let mods_dir = self.paths.minecraft_dir(&inst_id).join("mods");
                         let _ = std::fs::create_dir_all(&mods_dir);
                         open_external(&mods_dir.display().to_string());
@@ -3864,7 +3724,7 @@ impl McwApp {
                 ui.separator();
                 ui.add_space(6.0);
 
-                if self.manual_downloads_items.is_empty() {
+                if items.is_empty() {
                     ui.label(
                         RichText::new("All manual mods have been imported!")
                             .strong()
@@ -3872,10 +3732,10 @@ impl McwApp {
                     );
                 } else {
                     ScrollArea::vertical()
-                        .id_salt("manual_downloads_modal_scroll")
+                        .id_salt(("manual_downloads_modal_scroll", &inst_id))
                         .max_height(280.0)
                         .show(ui, |ui| {
-                            for item in &self.manual_downloads_items {
+                            for item in &items {
                                 Frame::new()
                                     .fill(p.elevated)
                                     .stroke(Stroke::new(1.0_f32, p.border))
@@ -3917,12 +3777,9 @@ impl McwApp {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("Close").clicked() {
-                        self.show_manual_downloads_modal = false;
+                        to_close.push(inst_id.clone());
                     }
-                    if !self.manual_downloads_items.is_empty()
-                        && self.active_account().is_some()
-                        && self.selected_instance_id.as_deref() == Some(inst_id.as_str())
-                    {
+                    if !items.is_empty() && self.active_account().is_some() {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
                                 .button(
@@ -3933,13 +3790,29 @@ impl McwApp {
                                 )
                                 .clicked()
                             {
-                                self.show_manual_downloads_modal = false;
-                                self.start_launch(ctx);
+                                launch_anyway_id = Some(inst_id.clone());
                             }
                         });
                     }
                 });
             });
+
+            if !win_open {
+                to_close.push(inst_id);
+            }
+        }
+
+        for id in to_scan {
+            self.run_manual_downloads_scan(&id, true);
+        }
+        for id in to_close {
+            self.open_manual_modals.retain(|open_id| open_id != &id);
+        }
+        if let Some(id) = launch_anyway_id {
+            self.open_manual_modals.retain(|open_id| open_id != &id);
+            self.selected_instance_id = Some(id);
+            self.load_selected_details();
+            self.start_launch(ctx);
         }
     }
 
@@ -4017,21 +3890,15 @@ impl eframe::App for McwApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_events();
 
-        // Auto-scan Downloads & mods/ every 2s while Manual Downloads screen is open
-        if self.show_manual_downloads_modal
-            && self.manual_auto_scan
-            && !self.manual_downloads_items.is_empty()
-        {
+        // Auto-scan Downloads & mods/ every 2s for all open Manual Downloads windows
+        if !self.open_manual_modals.is_empty() && self.manual_auto_scan {
             let due = self
                 .last_manual_scan_at
                 .map(|t| t.elapsed() >= Duration::from_secs(2))
                 .unwrap_or(true);
             if due {
-                if let Some(inst_id) = self
-                    .manual_downloads_instance_id
-                    .clone()
-                    .or_else(|| self.selected_instance_id.clone())
-                {
+                let ids = self.open_manual_modals.clone();
+                for inst_id in ids {
                     self.run_manual_downloads_scan(&inst_id, false);
                 }
             }
@@ -4044,6 +3911,53 @@ impl eframe::App for McwApp {
         self.render_detail_pane(ctx);
         self.render_modals(ctx);
     }
+}
+
+/// Paints a crisp 8-tooth vector gear icon button (cross-platform, never relies on emoji/symbol font glyphs).
+fn gear_icon_button(ui: &mut egui::Ui, p: ThemePalette, active: bool) -> egui::Response {
+    let size = Vec2::new(28.0, 26.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let bg = if active {
+            p.accent
+        } else if resp.hovered() {
+            p.elevated
+        } else {
+            p.surface
+        };
+        let border = if active || resp.hovered() {
+            p.accent
+        } else {
+            p.border
+        };
+        let icon_col = if active { p.accent_text } else { p.text };
+
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            CornerRadius::same(3),
+            bg,
+            Stroke::new(1.0_f32, border),
+            egui::StrokeKind::Inside,
+        );
+
+        let center = rect.center();
+        let outer_r = 7.2_f32;
+        let inner_r = 4.6_f32;
+        let hole_r = 2.2_f32;
+        let teeth = 8;
+
+        for i in 0..teeth {
+            let angle = (i as f32) * std::f32::consts::TAU / (teeth as f32);
+            let dir = Vec2::new(angle.cos(), angle.sin());
+            let p1 = center + dir * (inner_r - 0.5);
+            let p2 = center + dir * outer_r;
+            painter.line_segment([p1, p2], Stroke::new(2.2_f32, icon_col));
+        }
+        painter.circle_stroke(center, inner_r, Stroke::new(1.8_f32, icon_col));
+        painter.circle_filled(center, hole_r, bg);
+    }
+    resp
 }
 
 fn default_user_downloads_dir() -> Option<PathBuf> {
