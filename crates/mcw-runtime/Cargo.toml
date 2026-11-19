@@ -5,6 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+mcw-net.workspace = true
 regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -9,7 +9,10 @@ use mcw_models::instance::{Instance, InstanceSettings};
 use mcw_models::progress::{ProgressEvent, ProgressSink, ProgressStage};
 use mcw_models::{APP_VERSION, LAUNCHER_NAME};
 use mcw_net::{DownloadClient, DownloadRequest};
-use mcw_runtime::{JavaInstallation, JavaMajorPolicy, JavaResolver, LaunchSpec};
+use mcw_runtime::{
+    detect_mods_required_java, JavaInstallation, JavaMajorPolicy, JavaProvisioner, JavaResolver,
+    LaunchSpec,
+};
 use mcw_storage::LauncherPaths;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -92,22 +95,46 @@ impl<'a> VanillaLaunchPipeline<'a> {
             .ensure_assets(&metadata, Arc::clone(&progress))
             .await?;
 
-        // 5. Resolve Java runtime (allow higher Java for Vanilla per Lesson #2)
+        // 5. Resolve Java runtime (scan mods bytecode for Fabric/Quilt per Lesson #2,
+        //    allow higher Java for Vanilla/Fabric/Quilt, and auto-provision Temurin if missing)
         let metadata_java_major = metadata.java_version.as_ref().map(|j| j.major_version);
-        let required_java =
+        let mut required_java =
             JavaMajorPolicy::required_for_minecraft(&metadata.id, metadata_java_major)?;
+        let loader_name = instance.mod_loader.name.to_ascii_lowercase();
+        if loader_name == "fabric" || loader_name == "quilt" {
+            let mods_dir = self.paths.minecraft_dir(&instance.instance_id).join("mods");
+            if mods_dir.is_dir() {
+                required_java = required_java.max(detect_mods_required_java(&mods_dir));
+            }
+        }
+        let allow_higher = matches!(loader_name.as_str(), "vanilla" | "fabric" | "quilt");
+
         progress.on_progress(ProgressEvent {
             stage: ProgressStage::SelectingJava,
             message: format!("Selecting Java runtime (requires Java {required_java}+)..."),
             current: 0,
             total: 1,
         });
-        let java = JavaResolver::resolve(
+        let java = match JavaResolver::resolve(
             required_java,
             settings.java_path.as_deref(),
             Some(&self.paths.runtimes_root),
-            true,
-        )?;
+            allow_higher,
+        ) {
+            Ok(found) => found,
+            Err(_) if settings.java_path.is_none() => {
+                let managed_major = JavaMajorPolicy::resolve(required_java)?;
+                progress.on_progress(ProgressEvent {
+                    stage: ProgressStage::InstallingJava,
+                    message: format!("Downloading managed Eclipse Temurin Java {managed_major}..."),
+                    current: 0,
+                    total: 1,
+                });
+                JavaProvisioner::ensure_managed(&self.paths.runtimes_root, required_java, self.client)
+                    .await?
+            }
+            Err(err) => return Err(err.into()),
+        };
 
         // 6. Build classpath & launch arguments
         let libraries_dir = self.paths.libraries_dir();

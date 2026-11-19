@@ -84,3 +84,16 @@
   - Màn hình đăng nhập Microsoft nên cho phép chọn **Browser Sign-In (mặc định)** hoặc **Device Code** (hiện mã code to, rõ + nút Copy + link mở trình duyệt + trạng thái đang chờ + nút Cancel).
   - Nếu XSTS trả lỗi (ví dụ chưa tạo Xbox profile), hiển thị nguyên câu thông báo thân thiện từ `AuthError::Xsts` thay vì dump JSON thô.
   - Thanh tài khoản (Account Switcher) đọc `AccountStore::list()`, hiển thị avatar từ `skin_url` (hoặc `OfflineAuth::default_skin_variant` cho tài khoản Offline).
+
+### 8. Auto Java Provisioner (Adoptium/Temurin) & Quét Bytecode `.class` (`mcw-runtime`)
+- **Chức năng**: Tự động quét mod `.jar` để nâng phiên bản Java cần thiết (đặc biệt cho Fabric/Quilt), và tự tải + cài đặt Eclipse Temurin JDK (`8 / 17 / 21 / 25`) vào `runtimes/java-{major}/` kèm verify SHA-256.
+- **Cách hoạt động**:
+  - **Quét Bytecode (`detect_mods_required_java` / `detect_jar_required_java`)**:
+    - Đọc `fabric.mod.json` (`depends.java`) và `quilt.mod.json` (`quilt_loader.depends`).
+    - Đọc 8 byte header của tối đa 12 file `.class` trong mỗi mod `.jar` (bỏ qua `module-info.class` và `META-INF/versions/`), kiểm tra magic `0xCAFEBABE`, tính `java_major = class_major - 44` (ví dụ: mod WorldPreview biên dịch bằng Java 17 trên MC 1.16.1 sẽ tự nâng yêu cầu từ Java 8 → Java 17).
+  - **Adoptium Provisioner (`JavaProvisioner::ensure_managed`)**:
+    - Gọi Adoptium API v3 (`/v3/assets/latest/{major}/hotspot`) lấy bản JDK mới nhất đúng OS/Arch.
+    - Tải archive `.zip`, xác thực **SHA-256**, giải nén vào `runtimes/java-{major}/` (tự bóc thư mục gốc `jdk-*/`) và probe `bin/java(.exe)` để xác nhận hoạt động.
+- **Gợi ý cho GUI**:
+  - Khi Launch cần tải Java tự động, hiển thị rõ giai đoạn `InstallingJava` ("Đang tải Eclipse Temurin Java 17...").
+  - Khi hệ thống tự nâng Java do mod yêu cầu (ví dụ 1.16.1 + Fabric → Java 17), có thể hiển thị badge giải thích ngắn trong Instance Settings ("Auto-selected Java 17 — required by installed mods").

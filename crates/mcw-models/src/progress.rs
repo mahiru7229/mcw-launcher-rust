@@ -10,6 +10,7 @@ pub enum ProgressStage {
     ExtractingNatives,
     DownloadingAssets,
     SelectingJava,
+    InstallingJava,
     Launching,
     Completed,
 }

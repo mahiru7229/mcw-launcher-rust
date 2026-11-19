@@ -6,7 +6,7 @@ use mcw_models::account::AccountSource;
 use mcw_models::instance::ModLoader;
 use mcw_models::progress::{ProgressEvent, ProgressSink, ProgressStage};
 use mcw_net::DownloadClient;
-use mcw_runtime::{JavaDiscovery, ProcessLauncher};
+use mcw_runtime::{JavaDiscovery, JavaProvisioner, ProcessLauncher};
 use mcw_storage::{InstanceRunLock, InstanceStore, LauncherPaths};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,8 +43,11 @@ enum Commands {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
-    /// Discover installed Java runtimes on this machine
-    Java,
+    /// Discover or install managed Java runtimes
+    Java {
+        #[command(subcommand)]
+        action: Option<JavaCommands>,
+    },
     /// Manage Minecraft instances (list, create, show, rename, delete)
     Instance {
         #[command(subcommand)]
@@ -124,6 +127,17 @@ enum InstanceCommands {
     Delete {
         /// Instance name
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum JavaCommands {
+    /// List discovered Java runtimes
+    List,
+    /// Download and install a managed Eclipse Temurin JDK (8, 17, 21, 25)
+    Install {
+        /// Java major version (8, 17, 21, 25)
+        major: u32,
     },
 }
 
@@ -225,21 +239,35 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Java => {
-            let found = JavaDiscovery::discover(Some(&paths.runtimes_root));
-            if found.is_empty() {
-                println!("No Java runtimes discovered.");
-            } else {
-                for j in found {
-                    println!(
-                        "Java {:<2} ({:<12}) -> {}",
-                        j.major,
-                        j.version_string,
-                        j.path.display()
-                    );
+        Commands::Java { action } => match action.unwrap_or(JavaCommands::List) {
+            JavaCommands::List => {
+                let found = JavaDiscovery::discover(Some(&paths.runtimes_root));
+                if found.is_empty() {
+                    println!("No Java runtimes discovered.");
+                } else {
+                    for j in found {
+                        println!(
+                            "Java {:<2} ({:<12}) -> {}",
+                            j.major,
+                            j.version_string,
+                            j.path.display()
+                        );
+                    }
                 }
             }
-        }
+            JavaCommands::Install { major } => {
+                let client = DownloadClient::new()?;
+                println!("Installing managed Eclipse Temurin Java {major}...");
+                let installed =
+                    JavaProvisioner::ensure_managed(&paths.runtimes_root, major, &client).await?;
+                println!(
+                    "Installed Java {} ({}) -> {}",
+                    installed.major,
+                    installed.version_string,
+                    installed.path.display()
+                );
+            }
+        },
         Commands::Instance { action } => {
             let store = InstanceStore::new(&paths);
             match action {
