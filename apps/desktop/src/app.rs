@@ -1812,12 +1812,22 @@ impl McwApp {
                     ui.add_space(8.0);
 
                     ui.label(RichText::new("Microsoft Account").strong());
+                    ui.label(
+                        RichText::new(
+                            "Browser (PKCE) always asks which Microsoft account to use.",
+                        )
+                        .size(11.5)
+                        .color(p.text_muted),
+                    );
                     ui.horizontal(|ui| {
+                        let pkce_btn = Button::new(
+                            RichText::new("Sign in with Browser (PKCE)")
+                                .color(p.accent_text)
+                                .strong(),
+                        )
+                        .fill(p.accent);
                         if ui
-                            .add_enabled(
-                                !self.ms_login_in_progress,
-                                Button::new("Sign in with Browser (PKCE)"),
-                            )
+                            .add_enabled(!self.ms_login_in_progress, pkce_btn)
                             .clicked()
                         {
                             self.start_microsoft_login(true, ctx);
@@ -1853,12 +1863,22 @@ impl McwApp {
                                     if ui.small_button("Copy Code").clicked() {
                                         ui.ctx().copy_text(dc.user_code.clone());
                                     }
+                                    if ui.small_button("Copy URL (for InPrivate)").clicked() {
+                                        ui.ctx().copy_text(dc.verification_uri.clone());
+                                    }
                                 });
                                 ui.label(
                                     RichText::new(&dc.verification_uri)
                                         .monospace()
                                         .size(11.0)
                                         .color(p.text_muted),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        "Tip: Microsoft Device Login reuses your active browser session. To pick a different account, paste the URL into an InPrivate/Incognito window or use Browser (PKCE).",
+                                    )
+                                    .size(11.0)
+                                    .color(p.text_muted),
                                 );
                             });
                     }
@@ -1925,10 +1945,14 @@ fn format_duration(secs: u64) -> String {
 }
 
 fn open_external(target: &str) {
+    if target.starts_with("http://") || target.starts_with("https://") {
+        let _ = webbrowser::open(target);
+        return;
+    }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", target])
+        let _ = std::process::Command::new("explorer.exe")
+            .arg(target)
             .spawn();
     }
     #[cfg(target_os = "macos")]
