@@ -127,20 +127,14 @@ impl CurseForgeFile {
     }
 
     /// Resolve direct download URL, or return a structured `ManualDownloadRequired` error
-    /// when the author disabled third-party distribution (`downloadUrl == null`).
-    pub fn require_download_url(&self, project_slug: Option<&str>) -> Result<String> {
+    /// routing straight to CurseForge's countdown download page (`/download/{file_id}`).
+    pub fn require_download_url(&self, project_url_or_slug: Option<&str>) -> Result<String> {
         if let Some(ref url) = self.download_url {
             if !url.trim().is_empty() {
                 return Ok(url.clone());
             }
         }
-        let website_url = match project_slug {
-            Some(slug) if !slug.is_empty() => format!(
-                "https://www.curseforge.com/minecraft/mc-mods/{slug}/files/{}",
-                self.id
-            ),
-            _ => format!("https://www.curseforge.com/projects/{}/files/{}", self.mod_id, self.id),
-        };
+        let website_url = build_curseforge_countdown_url(project_url_or_slug, self.mod_id, self.id);
         Err(ProviderError::ManualDownloadRequired {
             mod_id: self.mod_id,
             file_id: self.id,
@@ -148,6 +142,31 @@ impl CurseForgeFile {
             website_url,
         })
     }
+}
+
+/// Build the direct CurseForge countdown download URL (`.../download/{file_id}`),
+/// matching `mcw-launcher` commit `1585bdf`. Never emits broken `/projects/<id>/files/<id>` URLs.
+pub fn build_curseforge_countdown_url(
+    project_url_or_slug: Option<&str>,
+    mod_id: u64,
+    file_id: u64,
+) -> String {
+    if let Some(raw) = project_url_or_slug.map(str::trim).filter(|s| !s.is_empty()) {
+        if raw.starts_with("https://") || raw.starts_with("http://") {
+            let base = raw.trim_end_matches('/');
+            if file_id > 0 {
+                return format!("{base}/download/{file_id}");
+            }
+            return base.to_string();
+        }
+        if !raw.chars().all(|c| c.is_ascii_digit()) {
+            if file_id > 0 {
+                return format!("https://www.curseforge.com/minecraft/mc-mods/{raw}/download/{file_id}");
+            }
+            return format!("https://www.curseforge.com/minecraft/mc-mods/{raw}");
+        }
+    }
+    format!("https://www.curseforge.com/minecraft/search?search={mod_id}")
 }
 
 pub struct CurseForgeClient {
@@ -316,6 +335,38 @@ impl CurseForgeClient {
         let val: serde_json::Value = serde_json::from_str(&raw)?;
         let data = val.get("data").cloned().unwrap_or_else(|| json!([]));
         Ok(serde_json::from_value(data)?)
+    }
+
+    /// Batch-resolve CurseForge mod metadata (including `slug` and `links.websiteUrl`)
+    /// in chunks of 50 IDs (`POST /v1/mods`) so manual download links route directly to
+    /// `https://www.curseforge.com/minecraft/.../{slug}/download/{file_id}`.
+    pub async fn get_mods_batch(&self, mod_ids: &[u64]) -> Result<Vec<CurseForgeMod>> {
+        let mut all = Vec::with_capacity(mod_ids.len());
+        let url = format!("{CURSEFORGE_API_BASE}/mods");
+
+        for chunk in mod_ids.chunks(BATCH_CHUNK_SIZE) {
+            let resp = self
+                .http
+                .post(&url)
+                .header("x-api-key", &self.api_key)
+                .json(&json!({ "modIds": chunk }))
+                .send()
+                .await?;
+
+            let status = resp.status();
+            let text = resp.text().await?;
+            if !status.is_success() {
+                return Err(ProviderError::ApiError {
+                    status: status.as_u16(),
+                    message: text,
+                });
+            }
+            let val: serde_json::Value = serde_json::from_str(&text)?;
+            let data = val.get("data").cloned().unwrap_or_else(|| json!([]));
+            let mut batch: Vec<CurseForgeMod> = serde_json::from_value(data)?;
+            all.append(&mut batch);
+        }
+        Ok(all)
     }
 
     /// Batch-resolve CurseForge file metadata in chunks of 50 IDs (for large modpacks).
@@ -489,6 +540,12 @@ mod tests {
         assert!(matches!(err, ProviderError::ManualDownloadRequired { .. }));
         assert!(err
             .to_string()
-            .contains("https://www.curseforge.com/minecraft/mc-mods/cool-mod/files/55555"));
+            .contains("https://www.curseforge.com/minecraft/mc-mods/cool-mod/download/55555"));
+
+        let fallback = build_curseforge_countdown_url(None, 12345, 55555);
+        assert_eq!(
+            fallback,
+            "https://www.curseforge.com/minecraft/search?search=12345"
+        );
     }
 }

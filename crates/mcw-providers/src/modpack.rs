@@ -233,10 +233,35 @@ impl ModpackInstaller {
         let file_ids: Vec<u64> = manifest.files.iter().map(|f| f.file_id).collect();
         let resolved = cf_client.get_files_batch(&file_ids).await?;
 
+        // Batch-resolve project websiteUrl/slug for any files with third-party distribution disabled
+        // so manual download links go directly to CurseForge's `/download/{file_id}` countdown page.
+        let opt_out_mod_ids: Vec<u64> = resolved
+            .iter()
+            .filter(|f| f.download_url.as_deref().map(str::trim).unwrap_or("").is_empty())
+            .map(|f| f.mod_id)
+            .collect();
+        let mut mod_urls: HashMap<u64, String> = HashMap::new();
+        if !opt_out_mod_ids.is_empty() {
+            if let Ok(mods_meta) = cf_client.get_mods_batch(&opt_out_mod_ids).await {
+                for m in mods_meta {
+                    let best = m
+                        .links
+                        .as_ref()
+                        .and_then(|l| l.website_url.clone())
+                        .filter(|u| !u.trim().is_empty())
+                        .unwrap_or_else(|| m.slug.clone());
+                    if !best.is_empty() {
+                        mod_urls.insert(m.id, best);
+                    }
+                }
+            }
+        }
+
         let mut requests = Vec::new();
         let mut manual_downloads = Vec::new();
         for cf_file in resolved {
-            match cf_file.require_download_url(None) {
+            let project_ref = mod_urls.get(&cf_file.mod_id).map(String::as_str);
+            match cf_file.require_download_url(project_ref) {
                 Ok(url) => {
                     let dest = mods_dir.join(&cf_file.file_name);
                     requests.push(
