@@ -112,7 +112,10 @@ fn parse_quilt_java_depends(raw: &str) -> u32 {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) else {
         return 8;
     };
-    let Some(depends) = val.pointer("/quilt_loader/depends").and_then(|v| v.as_array()) else {
+    let Some(depends) = val
+        .pointer("/quilt_loader/depends")
+        .and_then(|v| v.as_array())
+    else {
         return 8;
     };
     let mut best = 8u32;
@@ -129,11 +132,7 @@ fn parse_quilt_java_depends(raw: &str) -> u32 {
 fn extract_java_spec_major(spec: &serde_json::Value) -> u32 {
     match spec {
         serde_json::Value::Number(n) => n.as_u64().map(|v| (v as u32).max(8)).unwrap_or(8),
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .map(extract_java_spec_major)
-            .min()
-            .unwrap_or(8),
+        serde_json::Value::Array(arr) => arr.iter().map(extract_java_spec_major).min().unwrap_or(8),
         serde_json::Value::String(s) => {
             let re = Regex::new(r"(?:>=|>|=|~|\^)?\s*(?:1\.)?(\d+)").unwrap();
             re.captures_iter(s)
@@ -167,8 +166,11 @@ mod tests {
         class_header[4..6].copy_from_slice(&0u16.to_be_bytes());
         class_header[6..8].copy_from_slice(&61u16.to_be_bytes());
 
-        zip.start_file("me/voidxwalker/worldpreview/Main.class", SimpleFileOptions::default())
-            .unwrap();
+        zip.start_file(
+            "me/voidxwalker/worldpreview/Main.class",
+            SimpleFileOptions::default(),
+        )
+        .unwrap();
         zip.write_all(&class_header).unwrap();
         zip.finish().unwrap();
 

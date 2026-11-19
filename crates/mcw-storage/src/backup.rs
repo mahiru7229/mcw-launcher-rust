@@ -87,10 +87,7 @@ impl<'a> BackupManager<'a> {
                 Ok(r) if !r.as_os_str().is_empty() => r,
                 _ => continue,
             };
-            let rel_posix = format!(
-                ".minecraft/{}",
-                rel.to_string_lossy().replace('\\', "/")
-            );
+            let rel_posix = format!(".minecraft/{}", rel.to_string_lossy().replace('\\', "/"));
             if entry.file_type().is_dir() {
                 zip.add_directory(&rel_posix, options)
                     .map_err(|e| StorageError::Backup(e.to_string()))?;
@@ -367,10 +364,7 @@ fn move_dir_fallback(from: &Path, to: &Path) -> io::Result<()> {
 fn copy_dir_recursive(from: &Path, to: &Path) -> io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in WalkDir::new(from).into_iter().filter_map(|e| e.ok()) {
-        let rel = entry
-            .path()
-            .strip_prefix(from)
-            .map_err(io::Error::other)?;
+        let rel = entry.path().strip_prefix(from).map_err(io::Error::other)?;
         if rel.as_os_str().is_empty() {
             continue;
         }
@@ -425,7 +419,11 @@ mod tests {
         assert_eq!(list[0].note, "before nether");
 
         // Mutate live world
-        fs::write(mc_dir.join("saves").join("world1").join("level.dat"), b"corrupted").unwrap();
+        fs::write(
+            mc_dir.join("saves").join("world1").join("level.dat"),
+            b"corrupted",
+        )
+        .unwrap();
 
         // Restore backup
         let restored = mgr.restore_backup("survival", &info.id).unwrap();

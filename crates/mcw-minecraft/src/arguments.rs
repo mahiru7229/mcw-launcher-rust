@@ -151,10 +151,7 @@ impl ArgumentBuilder {
         ver == "1.16.4" || ver == "1.16.5" || ver.contains("1.16.4") || ver.contains("1.16.5")
     }
 
-    fn normalize_offline_identity_args(
-        args: Vec<String>,
-        auth: &Authentication,
-    ) -> Vec<String> {
+    fn normalize_offline_identity_args(args: Vec<String>, auth: &Authentication) -> Vec<String> {
         let mut canonical = HashMap::new();
         canonical.insert("--username", auth.player_name.clone());
         canonical.insert("--uuid", auth.uuid.replace('-', ""));
@@ -245,7 +242,10 @@ mod tests {
         values.insert("natives_directory".to_string(), "/natives".to_string());
         values.insert("classpath".to_string(), "/cp/client.jar".to_string());
         values.insert("auth_player_name".to_string(), "Player".to_string());
-        values.insert("auth_uuid".to_string(), "0123456789abcdef0123456789abcdef".to_string());
+        values.insert(
+            "auth_uuid".to_string(),
+            "0123456789abcdef0123456789abcdef".to_string(),
+        );
         values.insert("auth_access_token".to_string(), "0".to_string());
         values.insert("auth_xuid".to_string(), "".to_string());
         values.insert("version_name".to_string(), "1.21.4".to_string());

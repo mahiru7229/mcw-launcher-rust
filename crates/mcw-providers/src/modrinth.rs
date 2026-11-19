@@ -131,10 +131,8 @@ impl ModrinthClient {
     }
 
     pub async fn search(&self, params: &ModrinthSearchParams) -> Result<ModrinthSearchResult> {
-        let mut facets: Vec<Vec<String>> = vec![vec![format!(
-            "project_type:{}",
-            params.project_type
-        )]];
+        let mut facets: Vec<Vec<String>> =
+            vec![vec![format!("project_type:{}", params.project_type)]];
         if let Some(ref loader) = params.loader {
             if !loader.trim().is_empty() && !loader.eq_ignore_ascii_case("vanilla") {
                 facets.push(vec![format!("categories:{}", loader.to_ascii_lowercase())]);
@@ -155,9 +153,7 @@ impl ModrinthClient {
             .append_pair("limit", &params.limit.to_string())
             .append_pair("offset", &params.offset.to_string());
 
-        let raw = self
-            .cached_get(url.as_str(), SEARCH_TTL_SECS)
-            .await?;
+        let raw = self.cached_get(url.as_str(), SEARCH_TTL_SECS).await?;
         Ok(serde_json::from_str(&raw)?)
     }
 
@@ -185,9 +181,7 @@ impl ModrinthClient {
             }
         }
 
-        let raw = self
-            .cached_get(url.as_str(), VERSIONS_TTL_SECS)
-            .await?;
+        let raw = self.cached_get(url.as_str(), VERSIONS_TTL_SECS).await?;
         Ok(serde_json::from_str(&raw)?)
     }
 
@@ -218,13 +212,14 @@ impl ModrinthClient {
                 let versions = self
                     .list_versions(&proj, Some(loader), Some(game_version))
                     .await?;
-                versions.into_iter().next().ok_or_else(|| {
-                    ProviderError::NoCompatibleVersion {
+                versions
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| ProviderError::NoCompatibleVersion {
                         project: proj.clone(),
                         game_version: game_version.to_string(),
                         loader: loader.to_string(),
-                    }
-                })?
+                    })?
             };
 
             if !visited_projects.insert(version.project_id.clone()) {

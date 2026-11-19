@@ -220,12 +220,11 @@ impl JavaResolver {
                     reason: "file does not exist".to_string(),
                 });
             }
-            let info = JavaDiscovery::probe(preferred).ok_or_else(|| {
-                RuntimeError::InvalidJavaPath {
+            let info =
+                JavaDiscovery::probe(preferred).ok_or_else(|| RuntimeError::InvalidJavaPath {
                     path: preferred.display().to_string(),
                     reason: "could not determine Java version".to_string(),
-                }
-            })?;
+                })?;
             if info.major < required_major {
                 return Err(RuntimeError::InvalidJavaPath {
                     path: preferred.display().to_string(),

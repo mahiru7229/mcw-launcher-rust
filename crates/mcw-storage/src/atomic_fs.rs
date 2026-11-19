@@ -28,10 +28,12 @@ pub fn atomic_write_bytes(path: &Path, data: &[u8]) -> Result<()> {
         path: path.display().to_string(),
         source,
     })?;
-    temp.as_file().sync_all().map_err(|source| StorageError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|source| StorageError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
 
     let mut temp_path = temp.into_temp_path();
     for attempt in 0..=WINDOWS_RENAME_RETRIES {

@@ -150,9 +150,7 @@ impl<'a> ModLoaderService<'a> {
         base: &VersionMetadata,
         loader_version: &str,
     ) -> Result<VersionMetadata> {
-        let resolved_loader = self
-            .resolve_version(kind, &base.id, loader_version)
-            .await?;
+        let resolved_loader = self.resolve_version(kind, &base.id, loader_version).await?;
         let cache_id = format!("{}-{}-{}", kind.as_str(), resolved_loader, base.id);
         let cache_path = self.paths.version_json(&cache_id);
 
@@ -215,10 +213,7 @@ fn merge_loader_profile(
     merged
 }
 
-fn maven_library_to_entry(
-    lib: &MavenProfileLibrary,
-    default_maven: &str,
-) -> Option<LibraryEntry> {
+fn maven_library_to_entry(lib: &MavenProfileLibrary, default_maven: &str) -> Option<LibraryEntry> {
     let rel_path = maven_coordinate_to_path(&lib.name)?;
     let base_url = lib
         .url

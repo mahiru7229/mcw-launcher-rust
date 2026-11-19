@@ -59,10 +59,8 @@ impl ApiCache {
     pub fn prune_expired(&self) -> Result<usize> {
         let now = now_epoch_secs() as i64;
         if let Ok(guard) = self.conn.lock() {
-            let removed = guard.execute(
-                "DELETE FROM api_cache WHERE expires_at <= ?1",
-                params![now],
-            )?;
+            let removed =
+                guard.execute("DELETE FROM api_cache WHERE expires_at <= ?1", params![now])?;
             return Ok(removed);
         }
         Ok(0)

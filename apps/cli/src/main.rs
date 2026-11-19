@@ -461,9 +461,15 @@ async fn main() -> Result<()> {
                             &inst.last_launch_state
                         }
                     );
-                    println!("Memory   : {}M - {}M", settings.min_memory, settings.max_memory);
+                    println!(
+                        "Memory   : {}M - {}M",
+                        settings.min_memory, settings.max_memory
+                    );
                     println!("Window   : {}x{}", settings.width, settings.height);
-                    println!("Dir      : {}", paths.instance_dir(&inst.instance_id).display());
+                    println!(
+                        "Dir      : {}",
+                        paths.instance_dir(&inst.instance_id).display()
+                    );
                 }
                 InstanceCommands::Rename { old_name, new_name } => {
                     let updated = store.rename_instance(&old_name, &new_name)?;
@@ -492,11 +498,7 @@ async fn main() -> Result<()> {
                 let svc = ForgeLoaderService::new(&paths, &client);
                 let entries = svc.list_versions(family, &version).await?;
                 for entry in entries.into_iter().take(limit) {
-                    println!(
-                        "{:<24} ({})",
-                        entry.loader_version,
-                        entry.family.as_str()
-                    );
+                    println!("{:<24} ({})", entry.loader_version, entry.family.as_str());
                 }
             } else {
                 bail!(
@@ -658,10 +660,7 @@ async fn main() -> Result<()> {
                         println!("No backups for '{}'.", instance);
                     } else {
                         for b in list {
-                            println!(
-                                "{:<30} {:>10} bytes  {}",
-                                b.id, b.size_bytes, b.note
-                            );
+                            println!("{:<30} {:>10} bytes  {}", b.id, b.size_bytes, b.note);
                         }
                     }
                 }
@@ -846,7 +845,9 @@ async fn main() -> Result<()> {
             dry_run,
         } => {
             let (auth, account_source) = match (offline, account) {
-                (Some(player), None) => (OfflineAuth::authenticate(&player)?, AccountSource::Offline),
+                (Some(player), None) => {
+                    (OfflineAuth::authenticate(&player)?, AccountSource::Offline)
+                }
                 (None, Some(query)) => {
                     let acc_store = AccountStore::new(&paths);
                     let stored = acc_store.find(&query)?;

@@ -9,8 +9,8 @@ pub use java::{JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver};
 pub use launcher::{LaunchSpec, ProcessLauncher};
 pub use provisioner::{AdoptiumRelease, JavaProvisioner};
 pub use supervisor::{
-    detect_unsupported_class_version, ExitClassification, LogLine, LogSink, LogStream,
-    NoopLogSink, ProcessControl, ProcessExitReport, SupervisedProcess,
+    detect_unsupported_class_version, ExitClassification, LogLine, LogSink, LogStream, NoopLogSink,
+    ProcessControl, ProcessExitReport, SupervisedProcess,
 };
 
 use thiserror::Error;

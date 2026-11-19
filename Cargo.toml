@@ -57,3 +57,10 @@ mcw-minecraft = { path = "crates/mcw-minecraft" }
 mcw-mods = { path = "crates/mcw-mods" }
 mcw-providers = { path = "crates/mcw-providers" }
 mcw-updater = { path = "crates/mcw-updater" }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

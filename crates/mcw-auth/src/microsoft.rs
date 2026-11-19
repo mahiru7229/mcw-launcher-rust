@@ -194,8 +194,8 @@ impl MicrosoftAuthClient {
         F: FnOnce(&str),
     {
         let pkce = PkceChallenge::generate();
-        let mut auth_url = Url::parse(AUTHORIZE_URL)
-            .map_err(|e| AuthError::OAuthCallback(e.to_string()))?;
+        let mut auth_url =
+            Url::parse(AUTHORIZE_URL).map_err(|e| AuthError::OAuthCallback(e.to_string()))?;
         auth_url
             .query_pairs_mut()
             .append_pair("client_id", &self.client_id)
@@ -391,18 +391,12 @@ impl MicrosoftAuthClient {
             .to_string();
 
         if token.is_empty() {
-            return Err(AuthError::Xsts(
-                "XSTS returned an empty token".to_string(),
-            ));
+            return Err(AuthError::Xsts("XSTS returned an empty token".to_string()));
         }
         Ok((token, uhs))
     }
 
-    async fn authenticate_minecraft_services(
-        &self,
-        uhs: &str,
-        xsts_token: &str,
-    ) -> Result<String> {
+    async fn authenticate_minecraft_services(&self, uhs: &str, xsts_token: &str) -> Result<String> {
         let payload = json!({
             "identityToken": format!("XBL3.0 x={uhs};{xsts_token}")
         });

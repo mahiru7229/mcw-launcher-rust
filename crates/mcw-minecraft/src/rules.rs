@@ -89,10 +89,7 @@ impl LibraryRules {
         true
     }
 
-    fn matches_features(
-        required: &HashMap<String, bool>,
-        active: &HashMap<String, bool>,
-    ) -> bool {
+    fn matches_features(required: &HashMap<String, bool>, active: &HashMap<String, bool>) -> bool {
         for (key, expected) in required {
             let actual = active.get(key).copied().unwrap_or(false);
             if actual != *expected {

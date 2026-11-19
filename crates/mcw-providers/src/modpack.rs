@@ -220,11 +220,8 @@ impl ModpackInstaller {
         if let Some(ref cb) = on_progress {
             cb(1, 1, "Extracting overrides...".to_string());
         }
-        let extracted_overrides = extract_overrides(
-            archive_path,
-            &["overrides/", "client-overrides/"],
-            &mc_dir,
-        )?;
+        let extracted_overrides =
+            extract_overrides(archive_path, &["overrides/", "client-overrides/"], &mc_dir)?;
 
         Ok(ModpackInstallReport {
             instance_id: inst.instance_id,
@@ -283,7 +280,13 @@ impl ModpackInstaller {
         // so manual download links go directly to CurseForge's `/download/{file_id}` countdown page.
         let opt_out_mod_ids: Vec<u64> = resolved
             .iter()
-            .filter(|f| f.download_url.as_deref().map(str::trim).unwrap_or("").is_empty())
+            .filter(|f| {
+                f.download_url
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .is_empty()
+            })
             .map(|f| f.mod_id)
             .collect();
         let mut mod_urls: HashMap<u64, String> = HashMap::new();
@@ -357,7 +360,9 @@ impl ModpackInstaller {
         let extracted_overrides = extract_overrides(archive_path, &[&override_prefix], &mc_dir)?;
 
         // Persist pending manual downloads inside the instance folder so the user can resume later.
-        let pending_path = paths.instance_dir(&inst.instance_id).join("pending_manual_downloads.json");
+        let pending_path = paths
+            .instance_dir(&inst.instance_id)
+            .join("pending_manual_downloads.json");
         if !manual_downloads.is_empty() {
             if let Ok(json) = serde_json::to_string_pretty(&manual_downloads) {
                 let _ = mcw_storage::atomic_write_text(&pending_path, &json);
@@ -449,13 +454,12 @@ impl ModpackInstaller {
                 continue;
             }
             let exact = downloads_dir.join(&item.file_name);
-            let matched_src = if exact.is_file()
-                && exact.metadata().map(|m| m.len() > 0).unwrap_or(false)
-            {
-                Some(exact)
-            } else {
-                find_matching_download(&item.file_name, &download_entries)
-            };
+            let matched_src =
+                if exact.is_file() && exact.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                    Some(exact)
+                } else {
+                    find_matching_download(&item.file_name, &download_entries)
+                };
 
             if let Some(src) = matched_src {
                 fs::copy(&src, &target)?;
@@ -695,10 +699,9 @@ mod tests {
             },
         ];
 
-        let (resolved, remaining) = ModpackInstaller::scan_and_import_manual_downloads(
-            &paths, "rlcraft", &items, &dl_dir,
-        )
-        .unwrap();
+        let (resolved, remaining) =
+            ModpackInstaller::scan_and_import_manual_downloads(&paths, "rlcraft", &items, &dl_dir)
+                .unwrap();
         assert_eq!(resolved, 1);
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].file_name, "SecondMod-2.0.jar");
@@ -716,10 +719,7 @@ mod tests {
         // Now complete the second file
         fs::write(dl_dir.join("SecondMod-2.0.jar"), b"jar2").unwrap();
         let (resolved2, remaining2) = ModpackInstaller::scan_and_import_manual_downloads(
-            &paths,
-            "rlcraft",
-            &remaining,
-            &dl_dir,
+            &paths, "rlcraft", &remaining, &dl_dir,
         )
         .unwrap();
         assert_eq!(resolved2, 1);

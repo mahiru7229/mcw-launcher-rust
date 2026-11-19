@@ -161,7 +161,9 @@ pub fn build_curseforge_countdown_url(
         }
         if !raw.chars().all(|c| c.is_ascii_digit()) {
             if file_id > 0 {
-                return format!("https://www.curseforge.com/minecraft/mc-mods/{raw}/download/{file_id}");
+                return format!(
+                    "https://www.curseforge.com/minecraft/mc-mods/{raw}/download/{file_id}"
+                );
             }
             return format!("https://www.curseforge.com/minecraft/mc-mods/{raw}");
         }
@@ -341,8 +343,7 @@ impl CurseForgeClient {
         game_version: Option<&str>,
         loader: Option<&str>,
     ) -> Result<Vec<CurseForgeFile>> {
-        let mut url =
-            Url::parse(&format!("{CURSEFORGE_API_BASE}/mods/{mod_id}/files")).unwrap();
+        let mut url = Url::parse(&format!("{CURSEFORGE_API_BASE}/mods/{mod_id}/files")).unwrap();
         {
             let mut pairs = url.query_pairs_mut();
             pairs.append_pair("pageSize", "50");

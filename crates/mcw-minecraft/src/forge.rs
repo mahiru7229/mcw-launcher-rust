@@ -18,8 +18,7 @@ const FORGE_METADATA_URL: &str =
 const FORGE_MAVEN_BASE: &str = "https://maven.minecraftforge.net/";
 const MOJANG_LIBS_BASE: &str = "https://libraries.minecraft.net/";
 
-const NEOFORGE_MODERN_ROOT: &str =
-    "https://maven.neoforged.net/releases/net/neoforged/neoforge";
+const NEOFORGE_MODERN_ROOT: &str = "https://maven.neoforged.net/releases/net/neoforged/neoforge";
 const NEOFORGE_LEGACY_ROOT: &str = "https://maven.neoforged.net/releases/net/neoforged/forge";
 const NEOFORGE_MODERN_METADATA: &str =
     "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml";
@@ -109,9 +108,7 @@ impl<'a> ForgeLoaderService<'a> {
                     .into_iter()
                     .filter_map(|coord| {
                         let ver = coord.strip_prefix(&prefix)?;
-                        let url = format!(
-                            "{FORGE_MAVEN_ROOT}/{coord}/forge-{coord}-installer.jar"
-                        );
+                        let url = format!("{FORGE_MAVEN_ROOT}/{coord}/forge-{coord}-installer.jar");
                         Some(ForgeLoaderVersion {
                             family: ForgeFamily::Forge,
                             game_version: gv.to_string(),
@@ -329,10 +326,7 @@ impl<'a> ForgeLoaderService<'a> {
         }
         fs::create_dir_all(staging.join("versions").join(&base.id))?;
         fs::create_dir_all(staging.join("libraries"))?;
-        fs::write(
-            staging.join("launcher_profiles.json"),
-            r#"{"profiles":{}}"#,
-        )?;
+        fs::write(staging.join("launcher_profiles.json"), r#"{"profiles":{}}"#)?;
 
         // Copy base client.jar & version.json into staging so Forge/NeoForge processors find them.
         let base_jar = self.paths.client_jar(&base.id);

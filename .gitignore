@@ -1,14 +1,43 @@
+# Rust / Cargo build artifacts
 /target
+**/*.rs.bk
+*.pdb
 Cargo.lock
+
+# Secrets & local environment
 .env
-/cache
-/instances
+.env.local
+.env.*.local
+
+# Portable launcher runtime data
 /accounts
-/config
-/logs
 /backups
-/themes
+/cache
+/config
+/instances
+/logs
 /runtimes
+/themes
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Temporary / download / log files
 *.log
+*.tmp
+*.part
+*.crdownload
+
+# Release packaging artifacts
+/dist
+*.zip
+*.tar.gz
+
+# IDE & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
+desktop.ini

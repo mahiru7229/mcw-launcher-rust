@@ -147,11 +147,7 @@ impl<'a> LibraryManager<'a> {
         }))
     }
 
-    pub fn extract_native(
-        native_jar: &Path,
-        destination: &Path,
-        sha1_marker: &str,
-    ) -> Result<()> {
+    pub fn extract_native(native_jar: &Path, destination: &Path, sha1_marker: &str) -> Result<()> {
         let marker_dir = destination.join(".extracted");
         let marker_path = marker_dir.join(sha1_marker);
         if marker_path.is_file() {

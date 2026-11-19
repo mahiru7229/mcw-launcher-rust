@@ -371,7 +371,11 @@ mod tests {
 
         assert_eq!(report.classification, ExitClassification::Normal);
         assert_eq!(report.exit_code, Some(0));
-        assert!(captured.lock().unwrap().iter().any(|l| l.contains("mcw-supervisor-ok")));
+        assert!(captured
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("mcw-supervisor-ok")));
         assert!(fs::read_to_string(&log_path)
             .unwrap()
             .contains("mcw-supervisor-ok"));
@@ -380,7 +384,7 @@ mod tests {
     #[test]
     fn detects_unsupported_class_version_error() {
         let logs = vec![
-            "Exception in thread \"main\" java.lang.UnsupportedClassVersionError: ...".to_string()
+            "Exception in thread \"main\" java.lang.UnsupportedClassVersionError: ...".to_string(),
         ];
         assert!(detect_unsupported_class_version(&logs));
     }

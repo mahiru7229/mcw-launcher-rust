@@ -51,7 +51,9 @@ impl<'a> RepairService<'a> {
         });
 
         let manifest_svc = VersionManifestService::new(self.paths, self.client);
-        let entry = manifest_svc.find_version(&instance.version_id, true).await?;
+        let entry = manifest_svc
+            .find_version(&instance.version_id, true)
+            .await?;
         let base_meta = manifest_svc.load_version_metadata(&entry).await?;
         let base_id = base_meta.id.clone();
 

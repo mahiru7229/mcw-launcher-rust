@@ -217,7 +217,11 @@ fn parse_release_entries(items: &[serde_json::Value], source: &str) -> Vec<Relea
             .get("assets")
             .and_then(|a| a.as_array())
             .and_then(|arr| arr.first())
-            .and_then(|asset| asset.get("browser_download_url").or_else(|| asset.get("url")))
+            .and_then(|asset| {
+                asset
+                    .get("browser_download_url")
+                    .or_else(|| asset.get("url"))
+            })
             .and_then(|v| v.as_str())
             .map(String::from);
 

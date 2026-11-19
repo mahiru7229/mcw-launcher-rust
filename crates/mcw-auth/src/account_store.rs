@@ -90,9 +90,7 @@ impl<'a> AccountStore<'a> {
         let accounts = self.list()?;
         accounts
             .into_iter()
-            .find(|a| {
-                a.username.eq_ignore_ascii_case(query) || a.uuid.eq_ignore_ascii_case(query)
-            })
+            .find(|a| a.username.eq_ignore_ascii_case(query) || a.uuid.eq_ignore_ascii_case(query))
             .ok_or_else(|| AuthError::AccountNotFound(query.to_string()))
     }
 
@@ -164,8 +162,8 @@ impl<'a> AccountStore<'a> {
         #[cfg(windows)]
         {
             let path = self.token_file_path(uuid);
-            let encrypted = fs::read(&path)
-                .map_err(|_| AuthError::MissingRefreshToken(uuid.to_string()))?;
+            let encrypted =
+                fs::read(&path).map_err(|_| AuthError::MissingRefreshToken(uuid.to_string()))?;
             let decrypted = dpapi_unprotect(&encrypted)
                 .map_err(|_| AuthError::MissingRefreshToken(uuid.to_string()))?;
             String::from_utf8(decrypted)
@@ -201,10 +199,10 @@ impl<'a> AccountStore<'a> {
 #[cfg(windows)]
 fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>> {
     use std::ptr;
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    use windows_sys::Win32::Foundation::LocalFree;
 
     let input = CRYPT_INTEGER_BLOB {
         cbData: plaintext.len() as u32,
@@ -232,7 +230,8 @@ fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>> {
         ));
     }
 
-    let bytes = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    let bytes =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
     unsafe {
         LocalFree(output.pbData as *mut _);
     }
@@ -242,10 +241,10 @@ fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>> {
 #[cfg(windows)]
 fn dpapi_unprotect(ciphertext: &[u8]) -> Result<Vec<u8>> {
     use std::ptr;
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
         CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    use windows_sys::Win32::Foundation::LocalFree;
 
     let input = CRYPT_INTEGER_BLOB {
         cbData: ciphertext.len() as u32,
@@ -273,7 +272,8 @@ fn dpapi_unprotect(ciphertext: &[u8]) -> Result<Vec<u8>> {
         ));
     }
 
-    let bytes = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    let bytes =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
     unsafe {
         LocalFree(output.pbData as *mut _);
     }

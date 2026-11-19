@@ -9,11 +9,7 @@ pub struct ClasspathBuilder;
 impl ClasspathBuilder {
     /// Build platform-joined classpath, deduplicating libraries by Maven `(group, artifact, classifier)`
     /// (keeping the latest entry) and appending `client_jar` at the end.
-    pub fn build(
-        version: &VersionMetadata,
-        client_jar: &Path,
-        libraries_dir: &Path,
-    ) -> String {
+    pub fn build(version: &VersionMetadata, client_jar: &Path, libraries_dir: &Path) -> String {
         let mut entries: Vec<String> = Vec::new();
         let mut key_indices: HashMap<(String, String, String), usize> = HashMap::new();
 

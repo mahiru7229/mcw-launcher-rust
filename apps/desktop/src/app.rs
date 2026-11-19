@@ -4,9 +4,7 @@ use eframe::egui::{
     self, Align, Button, Color32, CornerRadius, Frame, Layout, RichText, ScrollArea, Stroke,
     TextEdit, Vec2,
 };
-use mcw_auth::{
-    AccountStore, DeviceCodeResponse, MicrosoftAuthClient, OfflineAuth, StoredAccount,
-};
+use mcw_auth::{AccountStore, DeviceCodeResponse, MicrosoftAuthClient, OfflineAuth, StoredAccount};
 use mcw_minecraft::{RepairService, VanillaLaunchPipeline, VersionManifestService};
 use mcw_models::account::AccountSource;
 use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
@@ -315,7 +313,9 @@ impl McwApp {
             .get(inst_id)
             .cloned()
             .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| ModpackInstaller::load_pending_manual_downloads(&self.paths, inst_id));
+            .unwrap_or_else(|| {
+                ModpackInstaller::load_pending_manual_downloads(&self.paths, inst_id)
+            });
         if current_items.is_empty() {
             self.pending_manual_counts.remove(inst_id);
             self.manual_downloads_cache.remove(inst_id);
@@ -595,8 +595,8 @@ impl McwApp {
 
         self.runtime.spawn(async move {
             let result = async {
-                let lock =
-                    InstanceRunLock::acquire(&paths, &inst.instance_id).map_err(|e| e.to_string())?;
+                let lock = InstanceRunLock::acquire(&paths, &inst.instance_id)
+                    .map_err(|e| e.to_string())?;
 
                 let (auth, source) = match account.account_type {
                     AccountSource::Offline => (
@@ -744,7 +744,9 @@ impl McwApp {
                 let uuid = login.authentication.uuid.clone();
                 let store = AccountStore::new(&paths);
                 if let Some(ref rt) = login.refresh_token {
-                    store.store_refresh_token(&uuid, rt).map_err(|e| e.to_string())?;
+                    store
+                        .store_refresh_token(&uuid, rt)
+                        .map_err(|e| e.to_string())?;
                 }
                 let stored = StoredAccount {
                     uuid,
@@ -852,12 +854,7 @@ impl McwApp {
         });
     }
 
-    fn start_curseforge_mod_install(
-        &mut self,
-        mod_id: u64,
-        slug: String,
-        ctx: &egui::Context,
-    ) {
+    fn start_curseforge_mod_install(&mut self, mod_id: u64, slug: String, ctx: &egui::Context) {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
         };
@@ -1273,7 +1270,10 @@ impl McwApp {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
                 let ftb = FtbClient::new(cache).map_err(|e| e.to_string())?;
-                let ids = ftb.search_ids(&query, 10).await.map_err(|e| e.to_string())?;
+                let ids = ftb
+                    .search_ids(&query, 10)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let mut packs = Vec::new();
                 for id in ids.into_iter().take(10) {
                     if let Ok(p) = ftb.get_pack(id).await {
@@ -1398,10 +1398,7 @@ impl McwApp {
                                     " Inspect the Logs tab for details."
                                 };
                                 self.notice_banner = Some((
-                                    format!(
-                                        "Game crashed (exit code {:?}).{hint}",
-                                        rep.exit_code
-                                    ),
+                                    format!("Game crashed (exit code {:?}).{hint}", rep.exit_code),
                                     true,
                                 ));
                             }
@@ -1479,10 +1476,8 @@ impl McwApp {
                             {
                                 self.load_mods_async(&instance_id, ctx, true);
                             }
-                            self.notice_banner = Some((
-                                format!("Installed CurseForge mod '{file_name}'."),
-                                false,
-                            ));
+                            self.notice_banner =
+                                Some((format!("Installed CurseForge mod '{file_name}'."), false));
                         }
                         Err(err) => {
                             self.notice_banner =
@@ -1512,8 +1507,7 @@ impl McwApp {
                             ));
                         }
                         Err(err) => {
-                            self.notice_banner =
-                                Some((format!("Mod install failed: {err}"), true));
+                            self.notice_banner = Some((format!("Mod install failed: {err}"), true));
                         }
                     }
                 }
@@ -1818,11 +1812,9 @@ impl McwApp {
                                 Some(LaunchState::Preparing(_)) => {
                                     ("Preparing".to_string(), p.warning, true)
                                 }
-                                _ if missing_manual > 0 => (
-                                    format!("Incomplete ({missing_manual})"),
-                                    p.warning,
-                                    false,
-                                ),
+                                _ if missing_manual > 0 => {
+                                    (format!("Incomplete ({missing_manual})"), p.warning, false)
+                                }
                                 _ => match inst.last_launch_state.as_str() {
                                     "crashed" => ("Crashed".to_string(), p.danger, false),
                                     "finished" => ("Finished".to_string(), p.text_muted, false),
@@ -2363,10 +2355,7 @@ impl McwApp {
                                     {
                                         delete_id = Some(b.id.clone());
                                     }
-                                    if ui
-                                        .add_enabled(!disabled, Button::new("Restore"))
-                                        .clicked()
-                                    {
+                                    if ui.add_enabled(!disabled, Button::new("Restore")).clicked() {
                                         self.pending_restore_backup_id = Some(b.id.clone());
                                     }
                                 });
@@ -2408,7 +2397,9 @@ impl McwApp {
             );
             let hint = match self.mod_provider_tab {
                 ModProviderTab::Modrinth => "Search Modrinth mods (e.g. sodium, fabric-api)...",
-                ModProviderTab::CurseForge => "Search CurseForge mods (requires CURSEFORGE_API_KEY)...",
+                ModProviderTab::CurseForge => {
+                    "Search CurseForge mods (requires CURSEFORGE_API_KEY)..."
+                }
             };
             let te = ui.add(
                 TextEdit::singleline(&mut self.mod_search_query)
@@ -2430,7 +2421,8 @@ impl McwApp {
             }
         });
 
-        if self.mod_provider_tab == ModProviderTab::CurseForge && !self.curseforge_results.is_empty()
+        if self.mod_provider_tab == ModProviderTab::CurseForge
+            && !self.curseforge_results.is_empty()
         {
             ui.add_space(6.0);
             Frame::new()
@@ -2469,41 +2461,35 @@ impl McwApp {
                                         .size(11.0)
                                         .color(p.text_muted),
                                     );
-                                    ui.with_layout(
-                                        Layout::right_to_left(Align::Center),
-                                        |ui| {
-                                            let is_this_installing =
-                                                self.installing_cf_mods.contains(&cf_mod.id);
-                                            let can_install = !is_this_installing
-                                                && !inst.mod_loader.is_vanilla();
-                                            let btn_label = if is_this_installing {
-                                                "Installing..."
-                                            } else {
-                                                "Install"
-                                            };
-                                            let resp = ui.add_enabled(
-                                                can_install,
-                                                Button::new(btn_label),
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let is_this_installing =
+                                            self.installing_cf_mods.contains(&cf_mod.id);
+                                        let can_install =
+                                            !is_this_installing && !inst.mod_loader.is_vanilla();
+                                        let btn_label = if is_this_installing {
+                                            "Installing..."
+                                        } else {
+                                            "Install"
+                                        };
+                                        let resp =
+                                            ui.add_enabled(can_install, Button::new(btn_label));
+                                        if inst.mod_loader.is_vanilla() {
+                                            resp.on_disabled_hover_text(
+                                                "Vanilla instances cannot install mods",
                                             );
-                                            if inst.mod_loader.is_vanilla() {
-                                                resp.on_disabled_hover_text(
-                                                    "Vanilla instances cannot install mods",
-                                                );
-                                            } else if resp.clicked() {
-                                                cf_install =
-                                                    Some((cf_mod.id, cf_mod.slug.clone()));
+                                        } else if resp.clicked() {
+                                            cf_install = Some((cf_mod.id, cf_mod.slug.clone()));
+                                        }
+                                        if let Some(url) = cf_mod
+                                            .links
+                                            .as_ref()
+                                            .and_then(|l| l.website_url.as_ref())
+                                        {
+                                            if ui.button("Web").clicked() {
+                                                open_external(url);
                                             }
-                                            if let Some(url) = cf_mod
-                                                .links
-                                                .as_ref()
-                                                .and_then(|l| l.website_url.as_ref())
-                                            {
-                                                if ui.button("Web").clicked() {
-                                                    open_external(url);
-                                                }
-                                            }
-                                        },
-                                    );
+                                        }
+                                    });
                                 });
                             }
                             if let Some((mid, slug)) = cf_install {
@@ -2650,9 +2636,7 @@ impl McwApp {
                                     );
                                 });
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui
-                                        .button(RichText::new("Remove").color(p.danger))
-                                        .clicked()
+                                    if ui.button(RichText::new("Remove").color(p.danger)).clicked()
                                     {
                                         delete_action = Some(m.file_name.clone());
                                     }
@@ -2699,7 +2683,8 @@ impl McwApp {
                 }
             }
             if ui.button("Clear").clicked() {
-                self.instance_logs.insert(inst.instance_id.clone(), Vec::new());
+                self.instance_logs
+                    .insert(inst.instance_id.clone(), Vec::new());
             }
             if log_file.is_file() && ui.button("Open Log File").clicked() {
                 open_external(&log_file.display().to_string());
@@ -2736,7 +2721,12 @@ impl McwApp {
                                 continue;
                             }
                             let color = if is_err { p.danger } else { p.text };
-                            ui.label(RichText::new(&line.text).monospace().size(11.5).color(color));
+                            ui.label(
+                                RichText::new(&line.text)
+                                    .monospace()
+                                    .size(11.5)
+                                    .color(color),
+                            );
                         }
                     });
             });
@@ -2793,7 +2783,11 @@ impl McwApp {
                     .selected_text(current_java_label)
                     .width(420.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut settings.java_path, None, "Automatic (recommended)");
+                        ui.selectable_value(
+                            &mut settings.java_path,
+                            None,
+                            "Automatic (recommended)",
+                        );
                         for j in &self.java_installations {
                             let label = format!(
                                 "Java {} ({}) — {}",
@@ -2842,9 +2836,10 @@ impl McwApp {
                 });
 
                 ui.add_space(12.0);
-                let save_btn = Button::new(RichText::new("Save Settings").color(p.accent_text).strong())
-                    .fill(p.accent)
-                    .corner_radius(CornerRadius::same(3));
+                let save_btn =
+                    Button::new(RichText::new("Save Settings").color(p.accent_text).strong())
+                        .fill(p.accent)
+                        .corner_radius(CornerRadius::same(3));
                 if ui.add(save_btn).clicked() {
                     save_clicked = true;
                 }
@@ -3649,74 +3644,66 @@ impl McwApp {
                         ui.add_space(10.0);
 
                         // Right content panel
-                        ui.vertical(|ui| {
-                            match self.launcher_settings_tab {
-                                LauncherSettingsTab::Appearance => {
-                                    ui.label(
-                                        RichText::new("Appearance")
-                                            .strong()
-                                            .size(15.0)
-                                            .color(p.text),
-                                    );
-                                    ui.label(
-                                        RichText::new(
-                                            "Select the launcher color theme (Default: Dark).",
-                                        )
-                                        .size(12.0)
-                                        .color(p.text_muted),
-                                    );
-                                    ui.add_space(12.0);
+                        ui.vertical(|ui| match self.launcher_settings_tab {
+                            LauncherSettingsTab::Appearance => {
+                                ui.label(
+                                    RichText::new("Appearance")
+                                        .strong()
+                                        .size(15.0)
+                                        .color(p.text),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        "Select the launcher color theme (Default: Dark).",
+                                    )
+                                    .size(12.0)
+                                    .color(p.text_muted),
+                                );
+                                ui.add_space(12.0);
 
-                                    ui.horizontal(|ui| {
-                                        let dark_selected = self.theme_mode == ThemeMode::Dark;
-                                        let dark_btn = Button::new(
-                                            RichText::new("Dark (Default)")
-                                                .strong()
-                                                .size(13.0)
-                                                .color(if dark_selected {
-                                                    p.accent_text
-                                                } else {
-                                                    p.text
-                                                }),
-                                        )
-                                        .fill(if dark_selected { p.accent } else { p.elevated })
-                                        .stroke(Stroke::new(
-                                            1.0_f32,
-                                            if dark_selected { p.accent } else { p.border },
-                                        ))
-                                        .min_size(Vec2::new(145.0, 42.0))
-                                        .corner_radius(CornerRadius::same(3));
-                                        if ui.add(dark_btn).clicked() && !dark_selected {
-                                            self.theme_mode = ThemeMode::Dark;
-                                            self.palette = apply_theme(ctx, self.theme_mode);
-                                        }
+                                ui.horizontal(|ui| {
+                                    let dark_selected = self.theme_mode == ThemeMode::Dark;
+                                    let dark_btn = Button::new(
+                                        RichText::new("Dark (Default)").strong().size(13.0).color(
+                                            if dark_selected { p.accent_text } else { p.text },
+                                        ),
+                                    )
+                                    .fill(if dark_selected { p.accent } else { p.elevated })
+                                    .stroke(Stroke::new(
+                                        1.0_f32,
+                                        if dark_selected { p.accent } else { p.border },
+                                    ))
+                                    .min_size(Vec2::new(145.0, 42.0))
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui.add(dark_btn).clicked() && !dark_selected {
+                                        self.theme_mode = ThemeMode::Dark;
+                                        self.palette = apply_theme(ctx, self.theme_mode);
+                                    }
 
-                                        ui.add_space(8.0);
+                                    ui.add_space(8.0);
 
-                                        let light_selected = self.theme_mode == ThemeMode::Light;
-                                        let light_btn = Button::new(
-                                            RichText::new("Light")
-                                                .strong()
-                                                .size(13.0)
-                                                .color(if light_selected {
-                                                    p.accent_text
-                                                } else {
-                                                    p.text
-                                                }),
-                                        )
-                                        .fill(if light_selected { p.accent } else { p.elevated })
-                                        .stroke(Stroke::new(
-                                            1.0_f32,
-                                            if light_selected { p.accent } else { p.border },
-                                        ))
-                                        .min_size(Vec2::new(145.0, 42.0))
-                                        .corner_radius(CornerRadius::same(3));
-                                        if ui.add(light_btn).clicked() && !light_selected {
-                                            self.theme_mode = ThemeMode::Light;
-                                            self.palette = apply_theme(ctx, self.theme_mode);
-                                        }
-                                    });
-                                }
+                                    let light_selected = self.theme_mode == ThemeMode::Light;
+                                    let light_btn = Button::new(
+                                        RichText::new("Light").strong().size(13.0).color(
+                                            if light_selected {
+                                                p.accent_text
+                                            } else {
+                                                p.text
+                                            },
+                                        ),
+                                    )
+                                    .fill(if light_selected { p.accent } else { p.elevated })
+                                    .stroke(Stroke::new(
+                                        1.0_f32,
+                                        if light_selected { p.accent } else { p.border },
+                                    ))
+                                    .min_size(Vec2::new(145.0, 42.0))
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui.add(light_btn).clicked() && !light_selected {
+                                        self.theme_mode = ThemeMode::Light;
+                                        self.palette = apply_theme(ctx, self.theme_mode);
+                                    }
+                                });
                             }
                         });
                     });
@@ -3962,18 +3949,19 @@ impl McwApp {
                     .show(ui, |ui| {
                         for task in &self.active_tasks {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(&task.label).strong().size(12.0).color(p.text));
                                 ui.label(
-                                    RichText::new(&task.message)
-                                        .size(11.5)
-                                        .color(p.text_muted),
+                                    RichText::new(&task.label).strong().size(12.0).color(p.text),
+                                );
+                                ui.label(
+                                    RichText::new(&task.message).size(11.5).color(p.text_muted),
                                 );
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     let right_text = if task.total > 0 {
                                         let pct = ((task.current.min(task.total) as f64
                                             / task.total as f64)
                                             * 100.0)
-                                            .round() as u64;
+                                            .round()
+                                            as u64;
                                         format!("{}/{} ({pct}%)", task.current, task.total)
                                     } else {
                                         "Working...".to_string()

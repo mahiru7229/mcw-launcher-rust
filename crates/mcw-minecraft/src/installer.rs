@@ -52,7 +52,9 @@ impl<'a> VanillaLaunchPipeline<'a> {
             total: 1,
         });
         let manifest_svc = VersionManifestService::new(self.paths, self.client);
-        let entry = manifest_svc.find_version(&instance.version_id, false).await?;
+        let entry = manifest_svc
+            .find_version(&instance.version_id, false)
+            .await?;
 
         progress.on_progress(ProgressEvent {
             stage: ProgressStage::DownloadingMetadata,
@@ -121,8 +123,12 @@ impl<'a> VanillaLaunchPipeline<'a> {
                     current: 0,
                     total: 1,
                 });
-                JavaProvisioner::ensure_managed(&self.paths.runtimes_root, required_java, self.client)
-                    .await?
+                JavaProvisioner::ensure_managed(
+                    &self.paths.runtimes_root,
+                    required_java,
+                    self.client,
+                )
+                .await?
             }
             Err(err) => return Err(err.into()),
         };

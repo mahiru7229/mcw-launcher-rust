@@ -141,7 +141,10 @@ pub fn is_loader_compatible(mod_loader: ModLoaderTag, instance_loader: &str) -> 
     )
 }
 
-fn read_zip_text<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>, name: &str) -> Option<String> {
+fn read_zip_text<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    name: &str,
+) -> Option<String> {
     let mut entry = archive.by_name(name).ok()?;
     let mut buf = String::new();
     entry.read_to_string(&mut buf).ok()?;
@@ -254,10 +257,11 @@ fn apply_mcmod_info(info: &mut ModInfo, raw: &str) {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) else {
         return;
     };
-    let entry = val
-        .as_array()
-        .and_then(|a| a.first())
-        .or_else(|| val.get("modList").and_then(|m| m.as_array()).and_then(|a| a.first()));
+    let entry = val.as_array().and_then(|a| a.first()).or_else(|| {
+        val.get("modList")
+            .and_then(|m| m.as_array())
+            .and_then(|a| a.first())
+    });
     let Some(first) = entry else {
         return;
     };

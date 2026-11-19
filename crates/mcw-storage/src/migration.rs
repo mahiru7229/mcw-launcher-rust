@@ -121,7 +121,11 @@ fn parse_legacy_instance(v: &serde_json::Value) -> Option<Instance> {
         .and_then(|x| x.as_str())?
         .trim();
     let instance_id = InstanceStore::validate_instance_name(raw_name).ok()?;
-    let version_id = v.get("version_id").and_then(|x| x.as_str())?.trim().to_string();
+    let version_id = v
+        .get("version_id")
+        .and_then(|x| x.as_str())?
+        .trim()
+        .to_string();
 
     let mod_loader = match v.get("mod_loader").and_then(|x| x.as_array()) {
         Some(arr) if arr.len() >= 2 => ModLoader {
@@ -214,7 +218,11 @@ mod tests {
             r#"{"min_memory":2048,"max_memory":4096,"width":1280,"height":720}"#,
         )
         .unwrap();
-        fs::write(py_inst.join(".minecraft").join("options.txt"), b"lang:vi_vn\n").unwrap();
+        fs::write(
+            py_inst.join(".minecraft").join("options.txt"),
+            b"lang:vi_vn\n",
+        )
+        .unwrap();
 
         let dest_paths = LauncherPaths::portable(dst.path());
         dest_paths.initialize().unwrap();

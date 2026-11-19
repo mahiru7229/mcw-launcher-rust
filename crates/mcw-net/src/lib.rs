@@ -151,7 +151,12 @@ impl DownloadClient {
 
     pub async fn download_file(&self, req: &DownloadRequest) -> Result<DownloadOutcome> {
         if req.destination.is_file()
-            && verify_file(&req.destination, req.expected_sha1.as_deref(), req.expected_size).is_ok()
+            && verify_file(
+                &req.destination,
+                req.expected_sha1.as_deref(),
+                req.expected_size,
+            )
+            .is_ok()
         {
             return Ok(DownloadOutcome {
                 destination: req.destination.clone(),
@@ -231,14 +236,13 @@ impl DownloadClient {
             .get(url)
             .header(USER_AGENT, mcw_models::user_agent());
 
-        let resume_from = if existing_len > 0
-            && (req.expected_size == 0 || existing_len < req.expected_size)
-        {
-            request_builder = request_builder.header(RANGE, format!("bytes={existing_len}-"));
-            existing_len
-        } else {
-            0
-        };
+        let resume_from =
+            if existing_len > 0 && (req.expected_size == 0 || existing_len < req.expected_size) {
+                request_builder = request_builder.header(RANGE, format!("bytes={existing_len}-"));
+                existing_len
+            } else {
+                0
+            };
 
         let response = request_builder
             .send()

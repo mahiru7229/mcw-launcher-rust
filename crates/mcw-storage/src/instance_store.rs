@@ -64,10 +64,11 @@ impl<'a> InstanceStore<'a> {
         if !self.paths.instances_root.is_dir() {
             return Ok(Vec::new());
         }
-        let entries = fs::read_dir(&self.paths.instances_root).map_err(|source| StorageError::Io {
-            path: self.paths.instances_root.display().to_string(),
-            source,
-        })?;
+        let entries =
+            fs::read_dir(&self.paths.instances_root).map_err(|source| StorageError::Io {
+                path: self.paths.instances_root.display().to_string(),
+                source,
+            })?;
 
         let mut instances = Vec::new();
         for entry in entries.flatten() {
@@ -202,9 +203,7 @@ impl<'a> InstanceStore<'a> {
         for attempt in 0..=5 {
             match fs::rename(&old_dir, &new_dir) {
                 Ok(()) => break,
-                Err(err)
-                    if attempt < 5 && err.kind() == std::io::ErrorKind::PermissionDenied =>
-                {
+                Err(err) if attempt < 5 && err.kind() == std::io::ErrorKind::PermissionDenied => {
                     thread::sleep(Duration::from_millis(50 * (attempt as u64 + 1)));
                 }
                 Err(source) => {
