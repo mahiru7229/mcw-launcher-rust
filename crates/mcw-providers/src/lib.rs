@@ -1,12 +1,18 @@
+pub mod atlauncher;
 pub mod cache;
 pub mod curseforge;
+pub mod ftb;
+pub mod modpack;
 pub mod modrinth;
 
+pub use atlauncher::{AtLauncherClient, AtLauncherPack};
 pub use cache::ApiCache;
 pub use curseforge::{
     CurseForgeClient, CurseForgeFile, CurseForgeMod, CurseForgeSearchParams,
     CurseForgeSearchResult,
 };
+pub use ftb::{FtbClient, FtbPackSummary};
+pub use modpack::{ManualDownloadItem, ModpackInstallReport, ModpackInstaller};
 pub use modrinth::{
     InstalledModFile, ModrinthClient, ModrinthDependency, ModrinthFile, ModrinthSearchHit,
     ModrinthSearchParams, ModrinthSearchResult, ModrinthVersion,

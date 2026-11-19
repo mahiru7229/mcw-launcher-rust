@@ -178,3 +178,39 @@
     - **Top utility bar**: Account Switcher (Offline + Microsoft OAuth), kiểm tra cập nhật (`mcw-updater`), công tắc Dark/Light.
     - **Sidebar trái**: Danh sách Instance kèm viền nhấn trái Emerald cho Instance đang chọn/chạy + modal `+ New Instance`.
     - **Panel phải**: Header + nút `Launch`/`Stop` + dải trạng thái tiến trình thật (`ProgressStage`) + 4 tab (**Overview** với Open Folder / Rename / Delete có xác nhận, **Mods** với quét `rayon` + Modrinth v2 search & install, **Logs** với stream live stdout/stderr, **Settings** với RAM / độ phân giải / Java selector & Temurin installer).
+
+---
+
+## Mốc `v0.5.0-beta.1` — Backup/Restore, Repair, Forge/NeoForge & Modpacks
+
+### 15. Instance Backup & Safe Rollback Restore (`mcw-storage::backup`, `mcw-cli backup`)
+- **Chức năng**: Tạo bản sao lưu nén `.zip` toàn bộ `.minecraft/` của Instance, liệt kê/xóa backup, và khôi phục an toàn có cơ chế rollback.
+- **Cách hoạt động**:
+  - Lưu trữ tại `backups/<instance_id>/backup-<epoch>-<short_id>.zip`, kèm file `mcw-backup.json` chứa metadata (`instance_id`, `created_at_epoch`, `note`, `file_count`).
+  - Chặn tạo/khôi phục backup khi Instance đang chạy (`InstanceRunLock::is_running`).
+  - **Khôi phục an toàn (Bài học #6)**: Giải nén & kiểm tra zip-slip vào thư mục `cache/backups/staging/stage-<uuid>` trước → chuyển `.minecraft/` hiện tại sang `.mcw-rollback-<uuid>` → swap thư mục staged vào chỗ live. Nếu bước swap lỗi, tự rollback lại bản gốc và **tuyệt đối không xóa thư mục rollback** khi khôi phục thất bại.
+- **Gợi ý cho GUI**:
+  - Tab **Backups** (hoặc khu vực Maintenance trong Overview): nút "Create Backup" (có ô nhập ghi chú ngắn), danh sách backup kèm dung lượng & thời gian, nút **Restore** (có hộp thoại xác nhận) và **Delete**. Khóa khi Instance đang chạy.
+
+### 16. Instance Repair (`mcw-minecraft::repair`, `mcw-cli repair`)
+- **Chức năng**: Kiểm tra toàn vẹn và tự động tải sửa toàn bộ thành phần của một Instance (`<version>.json`, `client.jar`, libraries, natives, assets).
+- **Cách hoạt động**:
+  - Chặn chạy khi Instance đang mở (`InstanceRunLock::is_running`).
+  - Làm mới metadata Mojang + Mod Loader, đối chiếu SHA-1 của `client.jar` (xóa và tải lại nếu hỏng), xóa cờ `.extracted/` để giải nén sạch lại toàn bộ `natives`, đồng thời chạy verify SHA-1 + tải bù mọi library & asset thiếu/lỗi.
+  - Phát `ProgressEvent` thật xuyên suốt và trả về `RepairReport`.
+- **Gợi ý cho GUI**:
+  - Đặt nút **Repair Files** trong tab Overview (khu vực Maintenance), khóa khi Instance đang chạy, hiển thị thanh tiến trình thật và tóm tắt kết quả sau khi hoàn tất.
+
+### 17. Modpack Installer (`.mrpack` & CurseForge `.zip`) (`mcw-providers::modpack`)
+- **Chức năng**: Cài đặt Modpack trực tiếp từ file `.mrpack` (Modrinth) hoặc `.zip` (CurseForge `manifest.json`), tự tạo Instance đúng phiên bản MC & Loader, tải song song toàn bộ mod kèm verify SHA-1 và giải nén `overrides/` an toàn.
+- **Cách hoạt động**:
+  - Tự nhận diện định dạng qua `modrinth.index.json` hoặc `manifest.json`.
+  - Với `.mrpack`: bỏ qua file `client: unsupported`, tải song song tối đa 20 luồng qua `mcw-net` (hỗ trợ mirror URL), giải nén `overrides/` và `client-overrides/` có chặn zip-slip.
+  - Với CurseForge `.zip`: resolve danh sách `fileID` theo lô 50 file/request; nếu có mod tắt phân phối bên thứ ba sẽ gom vào `manual_downloads` thay vì làm hỏng cả quá trình cài đặt.
+- **Gợi ý cho GUI**:
+  - Thêm nút **Import Modpack** cạnh `+ New Instance` trong Sidebar; nếu `report.manual_downloads` không rỗng, hiện hộp thoại danh sách file cần tải tay kèm nút mở link trình duyệt.
+
+### 18. FTB & ATLauncher Provider Clients (`mcw-providers::ftb`, `mcw-providers::atlauncher`)
+- **Chức năng**: Tra cứu danh mục modpack từ **FTB (`api.modpacks.ch`)** và **ATLauncher (`packsnew.json`)**, dùng chung bộ nhớ đệm SQLite WAL (`ApiCache`).
+- **Gợi ý cho GUI**:
+  - Cho phép thêm tab/bộ lọc nguồn **FTB** và **ATLauncher** trong trình duyệt Modpack ở các bản GUI tiếp theo.

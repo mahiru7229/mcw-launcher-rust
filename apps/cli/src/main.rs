@@ -1,18 +1,22 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use mcw_auth::{AccountStore, MicrosoftAuthClient, OfflineAuth, StoredAccount};
-use mcw_minecraft::{LoaderKind, ModLoaderService, VanillaLaunchPipeline, VersionManifestService};
+use mcw_minecraft::{
+    LoaderKind, ModLoaderService, RepairService, VanillaLaunchPipeline, VersionManifestService,
+};
 use mcw_models::account::AccountSource;
 use mcw_models::instance::ModLoader;
 use mcw_models::progress::{ProgressEvent, ProgressSink, ProgressStage};
 use mcw_mods::{is_loader_compatible, ModManager};
 use mcw_net::DownloadClient;
-use mcw_providers::{ApiCache, ModrinthClient, ModrinthSearchParams};
+use mcw_providers::{
+    ApiCache, CurseForgeClient, ModpackInstaller, ModrinthClient, ModrinthSearchParams,
+};
 use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaProvisioner, LogLine, LogSink, LogStream,
     SupervisedProcess,
 };
-use mcw_storage::{InstanceRunLock, InstanceStore, LauncherPaths};
+use mcw_storage::{BackupManager, InstanceRunLock, InstanceStore, LauncherPaths};
 use mcw_updater::{UpdateChannel, UpdateChecker};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,6 +88,24 @@ enum Commands {
         /// Update channel: stable or beta
         #[arg(long, default_value = "stable")]
         channel: String,
+    },
+    /// Create, list, restore, or delete instance backups (with safe rollback)
+    Backup {
+        #[command(subcommand)]
+        action: BackupCommands,
+    },
+    /// Verify and repair an instance's Minecraft files, libraries, natives, and assets
+    Repair {
+        /// Instance name
+        instance: String,
+    },
+    /// Install a Modrinth (.mrpack) or CurseForge (.zip) modpack archive
+    Modpack {
+        /// Path to .mrpack or CurseForge .zip file
+        archive: PathBuf,
+        /// Optional instance name override
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Manage Minecraft accounts (Microsoft OAuth & Offline)
     Auth {
@@ -217,6 +239,22 @@ enum ModrinthCommands {
         /// Modrinth project slug or ID (e.g. sodium, fabric-api)
         slug: String,
     },
+}
+
+#[derive(Subcommand)]
+enum BackupCommands {
+    /// Create a compressed zip backup of an instance's .minecraft directory
+    Create {
+        instance: String,
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// List backups for an instance
+    List { instance: String },
+    /// Restore a backup with atomic staging + rollback safety
+    Restore { instance: String, backup_id: String },
+    /// Delete a backup archive
+    Delete { instance: String, backup_id: String },
 }
 
 #[derive(Subcommand)]
@@ -574,6 +612,101 @@ async fn main() -> Result<()> {
                 );
                 if !latest.html_url.is_empty() {
                     println!("URL    : {}", latest.html_url);
+                }
+            }
+        }
+        Commands::Backup { action } => {
+            let mgr = BackupManager::new(&paths);
+            match action {
+                BackupCommands::Create { instance, note } => {
+                    let info = mgr.create_backup(&instance, note)?;
+                    println!(
+                        "Created backup '{}' ({} bytes) -> {}",
+                        info.id,
+                        info.size_bytes,
+                        info.path.display()
+                    );
+                }
+                BackupCommands::List { instance } => {
+                    let list = mgr.list_backups(&instance)?;
+                    if list.is_empty() {
+                        println!("No backups for '{}'.", instance);
+                    } else {
+                        for b in list {
+                            println!(
+                                "{:<30} {:>10} bytes  {}",
+                                b.id, b.size_bytes, b.note
+                            );
+                        }
+                    }
+                }
+                BackupCommands::Restore {
+                    instance,
+                    backup_id,
+                } => {
+                    let res = mgr.restore_backup(&instance, &backup_id)?;
+                    println!(
+                        "Restored {} files to '{}' from {}",
+                        res.restored_files,
+                        res.instance_id,
+                        res.backup_path.display()
+                    );
+                }
+                BackupCommands::Delete {
+                    instance,
+                    backup_id,
+                } => {
+                    mgr.delete_backup(&instance, &backup_id)?;
+                    println!("Deleted backup '{}'", backup_id);
+                }
+            }
+        }
+        Commands::Repair { instance } => {
+            let store = InstanceStore::new(&paths);
+            let (inst, _) = store.get_instance(&instance)?;
+            let client = DownloadClient::new()?;
+            let svc = RepairService::new(&paths, &client);
+            let report = svc
+                .repair_instance(&inst, Arc::new(CliProgressSink::new()))
+                .await?;
+            println!(
+                "Repair finished for '{}' ({}): client_repaired={}, libraries_verified={}, assets_verified={}",
+                report.instance_id,
+                report.version_id,
+                report.client_repaired,
+                report.libraries_verified,
+                report.assets_verified
+            );
+        }
+        Commands::Modpack { archive, name } => {
+            let downloader = DownloadClient::new()?;
+            let cache_path = paths.cache_root.join("providers").join("api_cache.sqlite");
+            let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+            let cf = CurseForgeClient::from_env(cache).ok();
+            let report = ModpackInstaller::install_from_archive(
+                &paths,
+                &archive,
+                name.as_deref(),
+                &downloader,
+                cf.as_ref(),
+            )
+            .await?;
+            println!(
+                "Installed modpack '{}' (MC {}, loader: {} {}) — {} files downloaded, {} overrides extracted",
+                report.instance_id,
+                report.game_version,
+                report.loader.name,
+                report.loader.version,
+                report.downloaded_files,
+                report.extracted_overrides
+            );
+            if !report.manual_downloads.is_empty() {
+                println!(
+                    "Manual downloads required ({} files):",
+                    report.manual_downloads.len()
+                );
+                for m in report.manual_downloads {
+                    println!("  - {} -> {}", m.file_name, m.website_url);
                 }
             }
         }
