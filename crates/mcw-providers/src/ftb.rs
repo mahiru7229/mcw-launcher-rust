@@ -11,19 +11,41 @@ use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 
-const FTB_API_BASE: &str = "https://api.modpacks.ch/public";
+const FTB_API_BASE: &str = "https://api.feed-the-beast.com/v1/modpacks/public";
 const FTB_TTL_SECS: u64 = 300;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FtbArtEntry {
+    #[serde(default)]
+    pub url: String,
+    #[serde(rename = "type", default)]
+    pub art_type: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FtbPackSummary {
     pub id: u64,
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub synopsis: String,
     #[serde(default)]
     pub installs: u64,
+    #[serde(default)]
+    pub art: Vec<FtbArtEntry>,
 }
 
+impl FtbPackSummary {
+    pub fn icon_url(&self) -> Option<&str> {
+        self.art
+            .iter()
+            .find(|a| a.art_type.eq_ignore_ascii_case("square") && !a.url.is_empty())
+            .or_else(|| self.art.iter().find(|a| !a.url.is_empty()))
+            .map(|a| a.url.as_str())
+    }
+}
+
+#[derive(Clone)]
 pub struct FtbClient {
     http: reqwest::Client,
     cache: Option<Arc<ApiCache>>,
@@ -39,10 +61,15 @@ impl FtbClient {
     }
 
     pub async fn search_ids(&self, term: &str, limit: u32) -> Result<Vec<u64>> {
-        let mut url =
-            Url::parse(&format!("{FTB_API_BASE}/modpack/search/{}", limit.min(50))).unwrap();
-        url.query_pairs_mut().append_pair("term", term.trim());
-        let raw = self.cached_get(url.as_str()).await?;
+        let lim = limit.clamp(1, 50);
+        let url_str = if term.trim().is_empty() {
+            format!("{FTB_API_BASE}/modpack/popular/installs/{lim}")
+        } else {
+            let mut url = Url::parse(&format!("{FTB_API_BASE}/modpack/search/{lim}")).unwrap();
+            url.query_pairs_mut().append_pair("term", term.trim());
+            url.to_string()
+        };
+        let raw = self.cached_get(&url_str).await?;
         let val: serde_json::Value = serde_json::from_str(&raw)?;
         let ids = val
             .get("packs")
@@ -56,6 +83,26 @@ impl FtbClient {
         let url = format!("{FTB_API_BASE}/modpack/{pack_id}");
         let raw = self.cached_get(&url).await?;
         Ok(serde_json::from_str(&raw)?)
+    }
+
+    /// Search FTB packs and fetch their metadata concurrently (matching Python FTBClient).
+    pub async fn search_packs(&self, term: &str, limit: usize) -> Result<Vec<FtbPackSummary>> {
+        let ids = self.search_ids(term, limit.min(50) as u32).await?;
+        let mut join_set = tokio::task::JoinSet::new();
+        for id in ids.into_iter().take(limit) {
+            let client = self.clone();
+            join_set.spawn(async move { client.get_pack(id).await.ok() });
+        }
+        let mut packs = Vec::new();
+        while let Some(res) = join_set.join_next().await {
+            if let Ok(Some(pack)) = res {
+                if !pack.name.is_empty() {
+                    packs.push(pack);
+                }
+            }
+        }
+        packs.sort_by_key(|p| std::cmp::Reverse(p.installs));
+        Ok(packs)
     }
 
     /// Download and install the latest version of an FTB modpack directly into a new Instance.

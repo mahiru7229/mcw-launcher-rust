@@ -4,7 +4,7 @@ use crate::{ProviderError, Result};
 use mcw_models::instance::ModLoader;
 use mcw_net::{DownloadClient, DownloadRequest};
 use mcw_storage::{InstanceStore, LauncherPaths};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,22 +14,34 @@ const ATLAUNCHER_PACKS_URL: &str =
 const ATLAUNCHER_CDN_BASE: &str = "https://download.nodecdn.net/containers/atl/";
 const ATL_TTL_SECS: u64 = 600;
 
+fn null_to_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    T: Default + Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    let opt = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AtLauncherVersionEntry {
+    #[serde(default, deserialize_with = "null_to_default")]
     pub version: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub minecraft: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AtLauncherPack {
+    #[serde(default, deserialize_with = "null_to_default")]
     pub id: u64,
+    #[serde(default, deserialize_with = "null_to_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub description: String,
-    #[serde(rename = "safeName", default)]
+    #[serde(rename = "safeName", default, deserialize_with = "null_to_default")]
     pub safe_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub versions: Vec<AtLauncherVersionEntry>,
 }
 
@@ -245,5 +257,37 @@ impl AtLauncherClient {
             extracted_overrides: 0,
             manual_downloads: Vec::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_atlauncher_packs_with_null_string_fields() {
+        let json = r#"[
+            {
+                "id": 101,
+                "name": "Demo Pack",
+                "description": null,
+                "safeName": null,
+                "versions": [
+                    { "version": "1.0.0", "minecraft": null }
+                ]
+            },
+            {
+                "id": 102,
+                "name": "Empty Versions",
+                "description": "Valid desc",
+                "safeName": "EmptyVersions",
+                "versions": null
+            }
+        ]"#;
+        let packs: Vec<AtLauncherPack> = serde_json::from_str(json).unwrap();
+        assert_eq!(packs.len(), 2);
+        assert_eq!(packs[0].description, "");
+        assert_eq!(packs[0].versions[0].minecraft, "");
+        assert!(packs[1].versions.is_empty());
     }
 }

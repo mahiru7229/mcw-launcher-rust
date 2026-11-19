@@ -22,7 +22,8 @@ pub struct ActiveTask {
 }
 
 pub enum AppEvent {
-    VersionsLoaded(Result<Vec<String>, String>),
+    VersionsLoaded(Result<Vec<(String, String)>, String>),
+    ModrinthModpacksSearchFinished(Result<Vec<ModrinthSearchHit>, String>),
     ModsLoaded {
         instance_id: String,
         mods: Vec<ModInfo>,

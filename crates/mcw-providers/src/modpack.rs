@@ -87,6 +87,31 @@ struct CfManifestFile {
     file_id: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModpackExportMode {
+    /// Modrinth `.mrpack` format (`modrinth.index.json` + `overrides/`).
+    Mrpack,
+    /// Lightweight provider profile `.zip` (`manifest.json` + `mcw_profile.json` + `overrides/config`).
+    ProviderProfile,
+    /// MCW Portable package `.mcwpack` (`mcw_package.json` + instance settings + mods/configs/packs).
+    Portable { full: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModpackExportOptions {
+    pub mode: ModpackExportMode,
+    pub include_saves: bool,
+}
+
+impl Default for ModpackExportOptions {
+    fn default() -> Self {
+        Self {
+            mode: ModpackExportMode::Mrpack,
+            include_saves: false,
+        }
+    }
+}
+
 pub struct ModpackInstaller;
 
 impl ModpackInstaller {
@@ -585,6 +610,200 @@ impl ModpackInstaller {
             let mut src = File::open(&options_txt)?;
             io::copy(&mut src, &mut zip)?;
             exported_files += 1;
+        }
+
+        zip.finish()
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        Ok(exported_files)
+    }
+
+    /// Exports an instance using one of MCW Launcher's 3 standard modes:
+    /// 1. `Mrpack` (`.mrpack`): `modrinth.index.json` + `overrides/` (+ optional `saves/`)
+    /// 2. `ProviderProfile` (`-MCW-Profile.zip`): CurseForge-compatible `manifest.json` + `mcw_profile.json` + `overrides/config`
+    /// 3. `Portable` (`.mcwpack`): `mcw_package.json` + `instance.json` + `settings.json` + `overrides/` (Smart or Full + optional `saves/`)
+    pub fn export_instance(
+        paths: &LauncherPaths,
+        instance_id: &str,
+        output_path: &Path,
+        options: &ModpackExportOptions,
+    ) -> Result<usize> {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
+
+        let store = InstanceStore::new(paths);
+        let (inst, settings) = store
+            .get_instance(instance_id)
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = File::create(output_path)?;
+        let mut zip = ZipWriter::new(file);
+        let zopts =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        let mc_dir = paths.minecraft_dir(instance_id);
+        let mut exported_files = 0usize;
+
+        let add_dir = |zip: &mut ZipWriter<File>, sub: &str, prefix: &str| -> Result<usize> {
+            let dir = mc_dir.join(sub);
+            if !dir.is_dir() {
+                return Ok(0);
+            }
+            let mut count = 0usize;
+            for entry in walkdir::WalkDir::new(&dir).into_iter().flatten() {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let Ok(rel) = entry.path().strip_prefix(&mc_dir) else {
+                    continue;
+                };
+                let zip_path = format!("{prefix}{}", rel.to_string_lossy().replace('\\', "/"));
+                zip.start_file(&zip_path, zopts)
+                    .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+                let mut src = File::open(entry.path())?;
+                io::copy(&mut src, zip)?;
+                count += 1;
+            }
+            Ok(count)
+        };
+
+        match options.mode {
+            ModpackExportMode::Mrpack => {
+                let mut deps = serde_json::Map::new();
+                deps.insert(
+                    "minecraft".to_string(),
+                    serde_json::Value::String(inst.version_id.clone()),
+                );
+                let loader_key = match inst.mod_loader.name.to_ascii_lowercase().as_str() {
+                    "fabric" => Some("fabric-loader"),
+                    "quilt" => Some("quilt-loader"),
+                    "forge" => Some("forge"),
+                    "neoforge" => Some("neoforge"),
+                    _ => None,
+                };
+                if let Some(k) = loader_key {
+                    if !inst.mod_loader.version.is_empty() && inst.mod_loader.version != "-1" {
+                        deps.insert(
+                            k.to_string(),
+                            serde_json::Value::String(inst.mod_loader.version.clone()),
+                        );
+                    }
+                }
+                let index_json = serde_json::json!({
+                    "formatVersion": 1,
+                    "game": "minecraft",
+                    "versionId": "1.0.0",
+                    "name": inst.name,
+                    "summary": format!("Exported from MCW Launcher: Rust Edition ({})", inst.version_id),
+                    "files": [],
+                    "dependencies": deps,
+                });
+                zip.start_file("modrinth.index.json", zopts)
+                    .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+                zip.write_all(serde_json::to_string_pretty(&index_json)?.as_bytes())?;
+
+                for sub in ["mods", "config", "resourcepacks", "shaderpacks"] {
+                    exported_files += add_dir(&mut zip, sub, "overrides/")?;
+                }
+                if options.include_saves {
+                    exported_files += add_dir(&mut zip, "saves", "overrides/")?;
+                }
+                let options_txt = mc_dir.join("options.txt");
+                if options_txt.is_file() {
+                    zip.start_file("overrides/options.txt", zopts)
+                        .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+                    let mut src = File::open(&options_txt)?;
+                    io::copy(&mut src, &mut zip)?;
+                    exported_files += 1;
+                }
+            }
+            ModpackExportMode::ProviderProfile => {
+                let mut mod_loaders = Vec::new();
+                if !inst.mod_loader.is_vanilla() && !inst.mod_loader.version.is_empty() {
+                    mod_loaders.push(serde_json::json!({
+                        "id": format!("{}-{}", inst.mod_loader.name, inst.mod_loader.version),
+                        "primary": true,
+                    }));
+                }
+                let manifest = serde_json::json!({
+                    "minecraft": {
+                        "version": inst.version_id,
+                        "modLoaders": mod_loaders,
+                    },
+                    "manifestType": "minecraftModpack",
+                    "manifestVersion": 1,
+                    "name": inst.name,
+                    "version": "1.0.0",
+                    "author": "MCW Launcher",
+                    "files": [],
+                    "overrides": "overrides",
+                });
+                zip.start_file("manifest.json", zopts)
+                    .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+                zip.write_all(serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+
+                let profile_meta = serde_json::json!({
+                    "format": "mcw-provider-profile",
+                    "version": 1,
+                    "instance": inst,
+                });
+                zip.start_file("mcw_profile.json", zopts)
+                    .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+                zip.write_all(serde_json::to_string_pretty(&profile_meta)?.as_bytes())?;
+
+                exported_files += add_dir(&mut zip, "config", "overrides/")?;
+                let options_txt = mc_dir.join("options.txt");
+                if options_txt.is_file() {
+                    zip.start_file("overrides/options.txt", zopts)
+                        .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+                    let mut src = File::open(&options_txt)?;
+                    io::copy(&mut src, &mut zip)?;
+                    exported_files += 1;
+                }
+            }
+            ModpackExportMode::Portable { full } => {
+                let pkg_meta = serde_json::json!({
+                    "format": "mcwpack",
+                    "version": 2,
+                    "portable_mode": if full { "full" } else { "smart" },
+                    "include_saves": options.include_saves,
+                    "instance": inst,
+                    "settings": settings,
+                });
+                zip.start_file("mcw_package.json", zopts)
+                    .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+                zip.write_all(serde_json::to_string_pretty(&pkg_meta)?.as_bytes())?;
+
+                let dirs: &[&str] = if full {
+                    &[
+                        "mods",
+                        "config",
+                        "resourcepacks",
+                        "shaderpacks",
+                        "datapacks",
+                        "screenshots",
+                    ]
+                } else {
+                    &["mods", "config", "resourcepacks", "shaderpacks"]
+                };
+                for sub in dirs {
+                    exported_files += add_dir(&mut zip, sub, "overrides/")?;
+                }
+                if options.include_saves {
+                    exported_files += add_dir(&mut zip, "saves", "overrides/")?;
+                }
+                let options_txt = mc_dir.join("options.txt");
+                if options_txt.is_file() {
+                    zip.start_file("overrides/options.txt", zopts)
+                        .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+                    let mut src = File::open(&options_txt)?;
+                    io::copy(&mut src, &mut zip)?;
+                    exported_files += 1;
+                }
+            }
         }
 
         zip.finish()
