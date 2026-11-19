@@ -5,11 +5,16 @@ use mcw_net::{DownloadClient, DownloadRequest};
 use mcw_storage::{atomic_write_text, LauncherPaths};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
+
+include!(concat!(env!("OUT_DIR"), "/embedded_cf_key.rs"));
+
+const KEYSTREAM_DOMAIN: &[u8] = b"mcw-launcher-cf-keystream-v1";
 
 const CURSEFORGE_API_BASE: &str = "https://api.curseforge.com/v1";
 const MINECRAFT_GAME_ID: u32 = 432;
@@ -490,7 +495,33 @@ pub fn load_curseforge_api_key(project_root: Option<&Path>) -> Option<String> {
             }
         }
     }
-    None
+    decrypt_embedded_key(&EMBEDDED_CF_SALT, EMBEDDED_CF_CIPHERTEXT)
+}
+
+/// Decrypts the compile-time encrypted CurseForge API key using a SHA-256 CTR keystream.
+/// Zero plaintext bytes of the embedded key are stored in the binary.
+fn decrypt_embedded_key(salt: &[u8; 32], ciphertext: &[u8]) -> Option<String> {
+    if ciphertext.is_empty() {
+        return None;
+    }
+    let mut plain = Vec::with_capacity(ciphertext.len());
+    for (block_idx, chunk) in ciphertext.chunks(32).enumerate() {
+        let mut hasher = Sha256::new();
+        hasher.update(KEYSTREAM_DOMAIN);
+        hasher.update(salt);
+        hasher.update((block_idx as u32).to_le_bytes());
+        let keystream = hasher.finalize();
+        for (b, k) in chunk.iter().zip(keystream.iter()) {
+            plain.push(b ^ k);
+        }
+    }
+    let s = String::from_utf8(plain).ok()?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Update or append `CURSEFORGE_API_KEY=...` in `<project_root>/.env` atomically.
@@ -544,6 +575,30 @@ fn parse_dotenv_key(content: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_key_sha256_ctr_roundtrips_without_plaintext_leak() {
+        let secret = "$2a$10$TestCurseForgeKeyExample9876543210";
+        let salt = [0x5Au8; 32];
+        // Encrypt using identical SHA-256 CTR XOR keystream
+        let mut ciphertext = Vec::with_capacity(secret.len());
+        for (block_idx, chunk) in secret.as_bytes().chunks(32).enumerate() {
+            let mut hasher = Sha256::new();
+            hasher.update(KEYSTREAM_DOMAIN);
+            hasher.update(salt);
+            hasher.update((block_idx as u32).to_le_bytes());
+            let ks = hasher.finalize();
+            for (b, k) in chunk.iter().zip(ks.iter()) {
+                ciphertext.push(b ^ k);
+            }
+        }
+        assert_ne!(ciphertext.as_slice(), secret.as_bytes());
+        assert_eq!(
+            decrypt_embedded_key(&salt, &ciphertext).as_deref(),
+            Some(secret)
+        );
+        assert_eq!(decrypt_embedded_key(&salt, &[]), None);
+    }
 
     #[test]
     fn parses_dotenv_key_ignoring_comments_and_quotes() {

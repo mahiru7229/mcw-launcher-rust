@@ -85,6 +85,8 @@ CURSEFORGE_API_KEY=your_curseforge_api_key_here
 ```
 
 > `.env` is gitignored and never committed.
+>
+> **Encrypted Embedded Key in Release Binaries**: At compile time, `crates/mcw-providers/build.rs` encrypts `CURSEFORGE_API_KEY` (from the build environment or `.env`) with a fresh per-build SHA-256 CTR keystream so **zero plaintext key bytes** are stored in the compiled `.exe` / Linux binary. For GitHub Actions releases, add `CURSEFORGE_API_KEY` under **Repository Settings -> Secrets and variables -> Actions**.
 
 ### Run in Development
 

@@ -52,6 +52,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build size-optimized release binaries
+        env:
+          CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
         run: cargo build --release -p mcw-desktop -p mcw-cli
 
       - name: Package Windows release archive
