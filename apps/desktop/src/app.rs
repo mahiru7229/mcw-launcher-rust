@@ -89,6 +89,8 @@ pub struct McwApp {
     show_account_modal: bool,
     offline_username_input: String,
     ms_login_in_progress: bool,
+    ms_login_mode: Option<&'static str>,
+    ms_login_task: Option<tokio::task::JoinHandle<()>>,
     ms_device_code: Option<DeviceCodeResponse>,
 
     // Modrinth search inside Mods tab
@@ -146,6 +148,8 @@ impl McwApp {
             show_account_modal: false,
             offline_username_input: String::new(),
             ms_login_in_progress: false,
+            ms_login_mode: None,
+            ms_login_task: None,
             ms_device_code: None,
             modrinth_query: String::new(),
             modrinth_results: Vec::new(),
@@ -377,17 +381,28 @@ impl McwApp {
         });
     }
 
+    fn cancel_microsoft_login(&mut self) {
+        if let Some(handle) = self.ms_login_task.take() {
+            handle.abort();
+        }
+        self.ms_login_in_progress = false;
+        self.ms_login_mode = None;
+        self.ms_device_code = None;
+        self.notice_banner = Some(("Microsoft sign-in cancelled.".to_string(), false));
+    }
+
     fn start_microsoft_login(&mut self, browser_pkce: bool, ctx: &egui::Context) {
         if self.ms_login_in_progress {
             return;
         }
         self.ms_login_in_progress = true;
+        self.ms_login_mode = Some(if browser_pkce { "pkce" } else { "device_code" });
         self.ms_device_code = None;
         let paths = self.paths.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
-        self.runtime.spawn(async move {
+        let handle = self.runtime.spawn(async move {
             let res = async {
                 let client = MicrosoftAuthClient::new().map_err(|e| e.to_string())?;
                 let oauth = if browser_pkce {
@@ -434,6 +449,7 @@ impl McwApp {
             let _ = tx.send(AppEvent::MicrosoftLoginFinished(res));
             ctx.request_repaint();
         });
+        self.ms_login_task = Some(handle);
     }
 
     fn start_modrinth_search(&mut self, ctx: &egui::Context) {
@@ -646,6 +662,8 @@ impl McwApp {
                 }
                 AppEvent::MicrosoftLoginFinished(res) => {
                     self.ms_login_in_progress = false;
+                    self.ms_login_mode = None;
+                    self.ms_login_task = None;
                     self.ms_device_code = None;
                     match res {
                         Ok(acc) => {
@@ -1832,6 +1850,14 @@ impl McwApp {
                         {
                             self.start_microsoft_login(true, ctx);
                         }
+                        if self.ms_login_in_progress && self.ms_login_mode == Some("pkce") {
+                            let cancel_btn = Button::new(RichText::new("Cancel").color(p.danger))
+                                .stroke(Stroke::new(1.0_f32, p.danger));
+                            if ui.add(cancel_btn).clicked() {
+                                self.cancel_microsoft_login();
+                            }
+                        }
+
                         if ui
                             .add_enabled(
                                 !self.ms_login_in_progress,
@@ -1841,7 +1867,25 @@ impl McwApp {
                         {
                             self.start_microsoft_login(false, ctx);
                         }
+                        if self.ms_login_in_progress && self.ms_login_mode == Some("device_code") {
+                            let cancel_btn = Button::new(RichText::new("Cancel").color(p.danger))
+                                .stroke(Stroke::new(1.0_f32, p.danger));
+                            if ui.add(cancel_btn).clicked() {
+                                self.cancel_microsoft_login();
+                            }
+                        }
                     });
+
+                    if self.ms_login_in_progress && self.ms_login_mode == Some("pkce") {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(
+                                "Waiting for Microsoft sign-in in your browser (listening on localhost:8400)...",
+                            )
+                            .size(11.5)
+                            .color(p.accent),
+                        );
+                    }
 
                     if let Some(ref dc) = self.ms_device_code {
                         ui.add_space(6.0);
@@ -1917,6 +1961,9 @@ impl McwApp {
 
                     ui.add_space(10.0);
                     if ui.button("Close").clicked() {
+                        if self.ms_login_in_progress {
+                            self.cancel_microsoft_login();
+                        }
                         self.show_account_modal = false;
                     }
                 });
