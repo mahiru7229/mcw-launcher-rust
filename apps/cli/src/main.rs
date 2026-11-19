@@ -7,6 +7,7 @@ use mcw_models::instance::ModLoader;
 use mcw_models::progress::{ProgressEvent, ProgressSink, ProgressStage};
 use mcw_mods::{is_loader_compatible, ModManager};
 use mcw_net::DownloadClient;
+use mcw_providers::{ApiCache, ModrinthClient, ModrinthSearchParams};
 use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaProvisioner, LogLine, LogSink, LogStream,
     SupervisedProcess,
@@ -71,6 +72,11 @@ enum Commands {
     Mods {
         #[command(subcommand)]
         action: ModCommands,
+    },
+    /// Search and install mods from Modrinth v2 (with SQLite WAL cache)
+    Modrinth {
+        #[command(subcommand)]
+        action: ModrinthCommands,
     },
     /// Manage Minecraft accounts (Microsoft OAuth & Offline)
     Auth {
@@ -176,6 +182,34 @@ enum ModCommands {
     Disable { instance: String, file_name: String },
     /// Delete a mod file permanently
     Delete { instance: String, file_name: String },
+}
+
+#[derive(Subcommand)]
+enum ModrinthCommands {
+    /// Search Modrinth projects
+    Search {
+        /// Search query (e.g. sodium)
+        query: String,
+        /// Filter by Minecraft version (e.g. 1.21.4)
+        #[arg(long)]
+        version: Option<String>,
+        /// Filter by loader (fabric, quilt, forge, neoforge)
+        #[arg(long)]
+        loader: Option<String>,
+        /// Project type (mod, modpack, resourcepack, shader)
+        #[arg(long, default_value = "mod")]
+        project_type: String,
+        /// Maximum results
+        #[arg(long, default_value_t = 10)]
+        limit: u32,
+    },
+    /// Install a Modrinth mod (and its required dependencies) into an instance
+    Install {
+        /// Target instance name
+        instance: String,
+        /// Modrinth project slug or ID (e.g. sodium, fabric-api)
+        slug: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -457,6 +491,64 @@ async fn main() -> Result<()> {
                     let mods_dir = paths.minecraft_dir(&inst.instance_id).join("mods");
                     ModManager::new(&mods_dir).delete(&file_name)?;
                     println!("Deleted mod '{}'", file_name);
+                }
+            }
+        }
+        Commands::Modrinth { action } => {
+            let cache_path = paths.cache_root.join("providers").join("api_cache.sqlite");
+            let cache = Arc::new(ApiCache::open(&cache_path)?);
+            let mr = ModrinthClient::new(Some(cache))?;
+            match action {
+                ModrinthCommands::Search {
+                    query,
+                    version,
+                    loader,
+                    project_type,
+                    limit,
+                } => {
+                    let res = mr
+                        .search(&ModrinthSearchParams {
+                            query,
+                            project_type,
+                            loader,
+                            game_version: version,
+                            limit,
+                            ..Default::default()
+                        })
+                        .await?;
+                    println!("Found {} total hits:", res.total_hits);
+                    for hit in res.hits {
+                        println!(
+                            "{:<24} {:<10} {} ({} downloads)",
+                            hit.slug, hit.project_type, hit.title, hit.downloads
+                        );
+                    }
+                }
+                ModrinthCommands::Install { instance, slug } => {
+                    let store = InstanceStore::new(&paths);
+                    let (inst, _) = store.get_instance(&instance)?;
+                    let mods_dir = paths.minecraft_dir(&inst.instance_id).join("mods");
+                    std::fs::create_dir_all(&mods_dir)?;
+                    let downloader = DownloadClient::new()?;
+                    let installed = mr
+                        .install_with_dependencies(
+                            &slug,
+                            &inst.version_id,
+                            &inst.mod_loader.name,
+                            &mods_dir,
+                            &downloader,
+                        )
+                        .await?;
+                    for item in installed {
+                        let tag = if item.is_dependency { "dep" } else { "mod" };
+                        println!(
+                            "Installed [{}] {} ({}) -> {}",
+                            tag,
+                            item.project_id,
+                            item.version_number,
+                            item.file_path.display()
+                        );
+                    }
                 }
             }
         }

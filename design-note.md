@@ -141,3 +141,17 @@
 - **Gợi ý cho GUI**:
   - Tab **Mods** trong Instance Detail có thể hiển thị hàng trăm mod tức thì không khựng UI nhờ `rayon`.
   - Mỗi dòng mod hiển thị: Toggle bật/tắt, Tên + Phiên bản + Tác giả, Badge Loader, cảnh báo nhẹ nếu `!is_loader_compatible`, và nút xóa có xác nhận.
+
+### 12. Content Providers: SQLite WAL Cache, Modrinth v2 & CurseForge API v1 (`mcw-providers`, `mcw-cli modrinth`)
+- **Chức năng**: Tìm kiếm & cài đặt Mod/Modpack/Resource Pack/Shader từ **Modrinth v2** và **CurseForge API v1**, kèm bộ nhớ đệm SQLite chế độ WAL tốc độ cao.
+- **Cách hoạt động**:
+  - **SQLite WAL Cache (`ApiCache`)**: Mở DB tại `cache/providers/api_cache.sqlite` với `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`. Đọc cache hit hoàn toàn không `fsync` (bài học #5), hỗ trợ TTL tự hết hạn (120s cho tìm kiếm, 300s cho danh sách phiên bản).
+  - **Modrinth v2 (`ModrinthClient`)**:
+    - `search` hỗ trợ lọc theo `project_type` (`mod`, `modpack`, `resourcepack`, `shader`), `loader`, `game_version`, phân trang (`limit`/`offset`).
+    - `install_with_dependencies`: tự chọn file chính tương thích, tải kèm verify SHA-1, và **đệ quy tải toàn bộ dependency có `dependency_type == "required"`** (chống vòng lặp bằng `visited_projects`).
+  - **CurseForge API v1 (`CurseForgeClient`)**:
+    - Hỗ trợ `search` (map đúng `classId`, `sortField`, `modLoaderType`), `get_mod_files` truyền trực tiếp `gameVersion` + `modLoaderType` (tránh sót file với mod >50 phiên bản), và `get_files_batch` tự chia lô 50 file/request.
+    - Xử lý file bị tác giả tắt phân phối bên thứ ba (`downloadUrl == null`) bằng lỗi có cấu trúc `ProviderError::ManualDownloadRequired { mod_id, file_id, file_name, website_url }`.
+- **Gợi ý cho GUI**:
+  - Trình duyệt **Content Browser** (Mods / Resource Packs / Shaders / Modpacks) có thể chuyển mượt giữa nguồn Modrinth & CurseForge, kết quả tìm kiếm phản hồi tức thì nhờ SQLite WAL cache.
+  - Khi cài từ CurseForge mà gặp `ProviderError::ManualDownloadRequired`, GUI mở **Hộp thoại tải thủ công (Manual Download Dialog)** hiển thị tên file + nút mở `website_url` trên trình duyệt.

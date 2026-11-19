@@ -16,6 +16,7 @@ mcw-minecraft.workspace = true
 mcw-models.workspace = true
 mcw-mods.workspace = true
 mcw-net.workspace = true
+mcw-providers.workspace = true
 mcw-runtime.workspace = true
 mcw-storage.workspace = true
 tokio.workspace = true

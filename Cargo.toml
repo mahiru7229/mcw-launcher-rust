@@ -8,6 +8,7 @@ members = [
     "crates/mcw-runtime",
     "crates/mcw-minecraft",
     "crates/mcw-mods",
+    "crates/mcw-providers",
     "apps/cli",
 ]
 
@@ -27,6 +28,7 @@ rand = "0.8"
 rayon = "1.10"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip", "deflate"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
@@ -49,3 +51,4 @@ mcw-auth = { path = "crates/mcw-auth" }
 mcw-runtime = { path = "crates/mcw-runtime" }
 mcw-minecraft = { path = "crates/mcw-minecraft" }
 mcw-mods = { path = "crates/mcw-mods" }
+mcw-providers = { path = "crates/mcw-providers" }
