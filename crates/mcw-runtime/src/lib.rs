@@ -1,5 +1,6 @@
 pub mod bytecode;
 pub mod java;
+pub mod lan_agent;
 pub mod launcher;
 pub mod mclogs;
 pub mod provisioner;
@@ -7,6 +8,7 @@ pub mod supervisor;
 
 pub use bytecode::{detect_jar_required_java, detect_mods_required_java};
 pub use java::{JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver};
+pub use lan_agent::LanAgentManager;
 pub use launcher::{LaunchSpec, ProcessLauncher};
 pub use mclogs::{sanitize_log_text, McLogsClient, McLogsUploadResult};
 pub use provisioner::{AdoptiumRelease, JavaProvisioner};

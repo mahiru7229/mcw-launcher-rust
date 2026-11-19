@@ -7,7 +7,7 @@ use eframe::egui::{
 };
 use mcw_auth::{AccountStore, DeviceCodeResponse, MicrosoftAuthClient, OfflineAuth, StoredAccount};
 use mcw_minecraft::{
-    is_quick_play_supported, RepairService, ScreenshotInfo, ScreenshotManager,
+    is_quick_play_supported, OptiFineManager, RepairService, ScreenshotInfo, ScreenshotManager,
     VanillaLaunchPipeline, VersionManifestService, WorldInfo, WorldManager,
 };
 use mcw_models::account::AccountSource;
@@ -24,8 +24,8 @@ use mcw_providers::{
     ModrinthSearchParams,
 };
 use mcw_runtime::{
-    ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, LogLine, LogStream,
-    McLogsClient, ProcessControl, SupervisedProcess,
+    ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, LanAgentManager, LogLine,
+    LogStream, McLogsClient, ProcessControl, SupervisedProcess,
 };
 use mcw_storage::{BackupInfo, BackupManager, InstanceRunLock, InstanceStore, LauncherPaths};
 use std::collections::{HashMap, HashSet};
@@ -191,6 +191,9 @@ pub struct McwApp {
     modrinth_results: Vec<ModrinthSearchHit>,
     curseforge_results: Vec<CurseForgeMod>,
     mod_searching: bool,
+
+    // OptiFine JAR path input inside Instance Settings tab
+    optifine_jar_input: String,
 }
 
 impl McwApp {
@@ -307,6 +310,7 @@ impl McwApp {
             modrinth_results: Vec::new(),
             curseforge_results: Vec::new(),
             mod_searching: false,
+            optifine_jar_input: String::new(),
         };
 
         app.reload_instances();
@@ -986,6 +990,24 @@ impl McwApp {
                     .prepare(&inst, &settings, &auth, source, progress_sink)
                     .await
                     .map_err(|e| e.to_string())?;
+
+                prepared.spec.jvm_args =
+                    LanAgentManager::sanitize_user_jvm_args(&prepared.spec.jvm_args);
+                if LanAgentManager::is_enabled(
+                    settings.offline_multiplayer_enabled,
+                    &settings.lan_auth_mode,
+                ) {
+                    let agent_args = LanAgentManager::build_jvm_args(
+                        &paths.cache_root.join("lan_agent"),
+                        &paths.instance_dir(&inst.instance_id),
+                        &inst.mod_loader.name,
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let mut combined = agent_args;
+                    combined.extend(prepared.spec.jvm_args);
+                    prepared.spec.jvm_args = combined;
+                }
 
                 if let Some(world_folder) = quick_play_world {
                     if is_quick_play_supported(&inst.version_id) {
@@ -4000,110 +4022,246 @@ impl McwApp {
 
         let mut save_clicked = false;
         let mut install_java_major: Option<u32> = None;
+        let mut optifine_install_mods = false;
+        let mut optifine_launch_installer = false;
 
-        Frame::new()
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::same(12))
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let is_forge_family = matches!(
+            inst.mod_loader.name.to_ascii_lowercase().as_str(),
+            "forge" | "neoforge"
+        );
+
+        ScrollArea::vertical()
+            .id_salt("instance_settings_scroll")
             .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new("Memory & Window").strong());
-                ui.add_space(6.0);
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0_f32, p.border))
+                    .corner_radius(CornerRadius::same(3))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("Memory & Window").strong());
+                        ui.add_space(6.0);
 
-                ui.horizontal(|ui| {
-                    ui.label("Min RAM (MB):");
-                    ui.add(egui::DragValue::new(&mut settings.min_memory).range(256..=32768));
-                    ui.label("Max RAM (MB):");
-                    ui.add(egui::DragValue::new(&mut settings.max_memory).range(512..=65536));
-                });
+                        ui.horizontal(|ui| {
+                            ui.label("Min RAM (MB):");
+                            ui.add(egui::DragValue::new(&mut settings.min_memory).range(256..=32768));
+                            ui.label("Max RAM (MB):");
+                            ui.add(egui::DragValue::new(&mut settings.max_memory).range(512..=65536));
+                        });
 
-                ui.horizontal(|ui| {
-                    ui.label("Width:");
-                    ui.add(egui::DragValue::new(&mut settings.width).range(320..=7680));
-                    ui.label("Height:");
-                    ui.add(egui::DragValue::new(&mut settings.height).range(240..=4320));
-                    ui.checkbox(&mut settings.fullscreen, "Fullscreen");
-                });
+                        ui.horizontal(|ui| {
+                            ui.label("Width:");
+                            ui.add(egui::DragValue::new(&mut settings.width).range(320..=7680));
+                            ui.label("Height:");
+                            ui.add(egui::DragValue::new(&mut settings.height).range(240..=4320));
+                            ui.checkbox(&mut settings.fullscreen, "Fullscreen");
+                        });
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
 
-                ui.label(RichText::new("Java Runtime").strong());
-                ui.add_space(6.0);
+                        ui.label(RichText::new("Java Runtime").strong());
+                        ui.add_space(6.0);
 
-                let current_java_label = settings
-                    .java_path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "Automatic (recommended)".to_string());
+                        let current_java_label = settings
+                            .java_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "Automatic (recommended)".to_string());
 
-                egui::ComboBox::from_label("Java Executable")
-                    .selected_text(current_java_label)
-                    .width(420.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut settings.java_path,
-                            None,
-                            "Automatic (recommended)",
+                        egui::ComboBox::from_label("Java Executable")
+                            .selected_text(current_java_label)
+                            .width(420.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut settings.java_path,
+                                    None,
+                                    "Automatic (recommended)",
+                                );
+                                for j in &self.java_installations {
+                                    let label = format!(
+                                        "Java {} ({}) — {}",
+                                        j.major,
+                                        j.version_string,
+                                        j.path.display()
+                                    );
+                                    ui.selectable_value(
+                                        &mut settings.java_path,
+                                        Some(j.path.clone()),
+                                        label,
+                                    );
+                                }
+                            });
+
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let installing_21 = self.installing_java_majors.contains(&21);
+                            if ui
+                                .add_enabled(
+                                    !installing_21,
+                                    Button::new(if installing_21 {
+                                        "Installing Java 21..."
+                                    } else {
+                                        "Install Temurin Java 21"
+                                    }),
+                                )
+                                .clicked()
+                            {
+                                install_java_major = Some(21);
+                            }
+                            let installing_17 = self.installing_java_majors.contains(&17);
+                            if ui
+                                .add_enabled(
+                                    !installing_17,
+                                    Button::new(if installing_17 {
+                                        "Installing Java 17..."
+                                    } else {
+                                        "Install Temurin Java 17"
+                                    }),
+                                )
+                                .clicked()
+                            {
+                                install_java_major = Some(17);
+                            }
+                        });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        ui.label(RichText::new("MCW LAN Agent (Offline LAN Hosting)").strong());
+                        ui.add_space(4.0);
+                        let mut lan_on = LanAgentManager::is_enabled(
+                            settings.offline_multiplayer_enabled,
+                            &settings.lan_auth_mode,
                         );
-                        for j in &self.java_installations {
-                            let label = format!(
-                                "Java {} ({}) — {}",
-                                j.major,
-                                j.version_string,
-                                j.path.display()
+                        if ui
+                            .checkbox(
+                                &mut lan_on,
+                                "Enable MCW LAN Agent (allow offline players to join your LAN worlds)",
+                            )
+                            .changed()
+                        {
+                            settings.offline_multiplayer_enabled = lan_on;
+                            settings.lan_auth_mode = if lan_on {
+                                "private_offline".to_string()
+                            } else {
+                                "mojang".to_string()
+                            };
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(
+                                    "Attaches the verified embedded mcw-lan-agent.jar (-javaagent) on launch.",
+                                )
+                                .size(11.5)
+                                .color(p.text_muted),
                             );
-                            ui.selectable_value(
-                                &mut settings.java_path,
-                                Some(j.path.clone()),
-                                label,
+                            if ui.button("Open LAN Agent Log").clicked() {
+                                let log_file = LanAgentManager::log_path(&inst_dir);
+                                if log_file.is_file() {
+                                    open_external(&log_file.display().to_string());
+                                } else if let Some(parent) = log_file.parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                    open_external(&parent.display().to_string());
+                                }
+                            }
+                        });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        ui.label(RichText::new("OptiFine").strong());
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "Paste path to an official OptiFine_{}_*.jar file to validate and install.",
+                                inst.version_id
+                            ))
+                            .size(11.5)
+                            .color(p.text_muted),
+                        );
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                TextEdit::singleline(&mut self.optifine_jar_input)
+                                    .hint_text("C:\\Users\\...\\Downloads\\OptiFine_1.20.4_HD_U_I7.jar")
+                                    .desired_width(360.0),
                             );
+                            if is_forge_family {
+                                if ui.button("Install to mods/").clicked() {
+                                    optifine_install_mods = true;
+                                }
+                            } else if ui.button("Run OptiFine Installer").clicked() {
+                                optifine_launch_installer = true;
+                            }
+                            if ui.button("optifine.net").clicked() {
+                                open_external("https://optifine.net/downloads");
+                            }
+                        });
+
+                        ui.add_space(12.0);
+                        let save_btn =
+                            Button::new(RichText::new("Save Settings").color(p.accent_text).strong())
+                                .fill(p.accent)
+                                .corner_radius(CornerRadius::same(3));
+                        if ui.add(save_btn).clicked() {
+                            save_clicked = true;
                         }
                     });
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    let installing_21 = self.installing_java_majors.contains(&21);
-                    if ui
-                        .add_enabled(
-                            !installing_21,
-                            Button::new(if installing_21 {
-                                "Installing Java 21..."
-                            } else {
-                                "Install Temurin Java 21"
-                            }),
-                        )
-                        .clicked()
-                    {
-                        install_java_major = Some(21);
-                    }
-                    let installing_17 = self.installing_java_majors.contains(&17);
-                    if ui
-                        .add_enabled(
-                            !installing_17,
-                            Button::new(if installing_17 {
-                                "Installing Java 17..."
-                            } else {
-                                "Install Temurin Java 17"
-                            }),
-                        )
-                        .clicked()
-                    {
-                        install_java_major = Some(17);
-                    }
-                });
-
-                ui.add_space(12.0);
-                let save_btn =
-                    Button::new(RichText::new("Save Settings").color(p.accent_text).strong())
-                        .fill(p.accent)
-                        .corner_radius(CornerRadius::same(3));
-                if ui.add(save_btn).clicked() {
-                    save_clicked = true;
-                }
             });
+
+        if optifine_install_mods {
+            let jar_path = PathBuf::from(self.optifine_jar_input.trim().trim_matches('"'));
+            match OptiFineManager::install_into_mods(&jar_path, &mc_dir, Some(&inst.version_id)) {
+                Ok(dest) => {
+                    self.mods_cache.remove(&inst.instance_id);
+                    self.optifine_jar_input.clear();
+                    self.notice_banner =
+                        Some((format!("Installed OptiFine into {}", dest.display()), false));
+                }
+                Err(e) => {
+                    self.notice_banner = Some((format!("OptiFine install failed: {e}"), true));
+                }
+            }
+        }
+        if optifine_launch_installer {
+            let jar_path = PathBuf::from(self.optifine_jar_input.trim().trim_matches('"'));
+            let java_exe = self
+                .selected_settings
+                .as_ref()
+                .and_then(|s| s.java_path.clone())
+                .or_else(|| self.java_installations.first().map(|j| j.path.clone()));
+            match java_exe {
+                Some(java) => match OptiFineManager::launch_official_installer(
+                    &jar_path,
+                    &java,
+                    Some(&inst.version_id),
+                ) {
+                    Ok(()) => {
+                        self.notice_banner = Some((
+                            "Launched official OptiFine installer window.".to_string(),
+                            false,
+                        ));
+                    }
+                    Err(e) => {
+                        self.notice_banner =
+                            Some((format!("OptiFine installer failed: {e}"), true));
+                    }
+                },
+                None => {
+                    self.notice_banner = Some((
+                        "No Java runtime found. Install Java 17 or 21 first.".to_string(),
+                        true,
+                    ));
+                }
+            }
+        }
 
         if save_clicked {
             if let Some(ref s) = self.selected_settings {
