@@ -14,6 +14,7 @@ clap.workspace = true
 mcw-auth.workspace = true
 mcw-minecraft.workspace = true
 mcw-models.workspace = true
+mcw-mods.workspace = true
 mcw-net.workspace = true
 mcw-runtime.workspace = true
 mcw-storage.workspace = true

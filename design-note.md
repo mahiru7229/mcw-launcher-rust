@@ -124,3 +124,20 @@
   - Tab **Logs** lắng nghe `LogSink` theo thời gian thực (tô màu nhẹ phân biệt `Stderr` vs `Stdout`, có nút Copy / Open log file).
   - Nút **Stop** gọi `ProcessControl::request_stop()` — khi nhận `ExitClassification::StoppedByUser` thì trả trạng thái Instance về `Ready/Finished`, **không** bật popup Crash Report.
   - Khi nhận `ExitClassification::Crashed`: nếu `unsupported_class_version == true`, gợi ý trực tiếp cho người dùng nâng phiên bản Java.
+
+---
+
+## Mốc `v0.3.0-alpha.1` — Core Mods, Providers (Modrinth/CurseForge + SQLite WAL) & Auto-Updater
+
+### 11. Parallel Mod Scanner & Jar-in-Jar Inspector (`mcw-mods`, `mcw-cli mods`)
+- **Chức năng**: Quét toàn bộ file `.jar` / `.jar.disabled` trong thư mục `mods/` song song đa luồng (`rayon`), đọc metadata của cả 4 hệ sinh thái mod loader, phát hiện Jar-in-Jar, kiểm tra tương thích loader và bật/tắt/xóa mod.
+- **Cách hoạt động**:
+  - `ModScanner::scan_dir(mods_dir)` dùng `rayon::par_iter` đọc đồng thời:
+    - `quilt.mod.json` (Quilt), `fabric.mod.json` (Fabric), `META-INF/neoforge.mods.toml` (NeoForge), `META-INF/mods.toml` (Forge), và `mcmod.info` (Forge legacy 1.12.2).
+    - Quét Jar-in-Jar trong `META-INF/jars/*.jar` và `META-INF/jarjar/*.jar` để liệt kê `embedded_mod_ids` (tránh báo thiếu dependency giả khi mod đã nhúng sẵn thư viện như Cloth Config / Fabric API modules).
+    - Gọi `detect_jar_required_java` để biết từng mod yêu cầu Java tối thiểu bao nhiêu.
+  - `is_loader_compatible(mod_loader, instance_loader)` hiểu rõ quy tắc tương thích (kể cả **Fabric-on-Quilt**).
+  - `ModManager` hỗ trợ `set_enabled` (đổi đuôi `.jar` ↔ `.jar.disabled`) và `delete` với kiểm tra chống path traversal.
+- **Gợi ý cho GUI**:
+  - Tab **Mods** trong Instance Detail có thể hiển thị hàng trăm mod tức thì không khựng UI nhờ `rayon`.
+  - Mỗi dòng mod hiển thị: Toggle bật/tắt, Tên + Phiên bản + Tác giả, Badge Loader, cảnh báo nhẹ nếu `!is_loader_compatible`, và nút xóa có xác nhận.

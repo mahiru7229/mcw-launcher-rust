@@ -5,6 +5,7 @@ use mcw_minecraft::{LoaderKind, ModLoaderService, VanillaLaunchPipeline, Version
 use mcw_models::account::AccountSource;
 use mcw_models::instance::ModLoader;
 use mcw_models::progress::{ProgressEvent, ProgressSink, ProgressStage};
+use mcw_mods::{is_loader_compatible, ModManager};
 use mcw_net::DownloadClient;
 use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaProvisioner, LogLine, LogSink, LogStream,
@@ -65,6 +66,11 @@ enum Commands {
         /// Maximum number of entries to print
         #[arg(long, default_value_t = 15)]
         limit: usize,
+    },
+    /// Manage mods inside an instance (parallel .jar scanner)
+    Mods {
+        #[command(subcommand)]
+        action: ModCommands,
     },
     /// Manage Minecraft accounts (Microsoft OAuth & Offline)
     Auth {
@@ -158,6 +164,18 @@ enum JavaCommands {
         /// Java major version (8, 17, 21, 25)
         major: u32,
     },
+}
+
+#[derive(Subcommand)]
+enum ModCommands {
+    /// List installed mods in an instance
+    List { instance: String },
+    /// Enable a disabled mod (.jar.disabled -> .jar)
+    Enable { instance: String, file_name: String },
+    /// Disable a mod (.jar -> .jar.disabled)
+    Disable { instance: String, file_name: String },
+    /// Delete a mod file permanently
+    Delete { instance: String, file_name: String },
 }
 
 #[derive(Subcommand)]
@@ -380,6 +398,66 @@ async fn main() -> Result<()> {
             for entry in entries.into_iter().take(limit) {
                 let tag = if entry.stable { "stable" } else { "beta" };
                 println!("{:<20} [{}]", entry.version, tag);
+            }
+        }
+        Commands::Mods { action } => {
+            let store = InstanceStore::new(&paths);
+            match action {
+                ModCommands::List { instance } => {
+                    let (inst, _) = store.get_instance(&instance)?;
+                    let mods_dir = paths.minecraft_dir(&inst.instance_id).join("mods");
+                    let mgr = ModManager::new(&mods_dir);
+                    let mods = mgr.list();
+                    if mods.is_empty() {
+                        println!("No mods installed in '{}'.", inst.name);
+                    } else {
+                        for m in mods {
+                            let state = if m.enabled { "ON " } else { "OFF" };
+                            let compat = if is_loader_compatible(m.loader, &inst.mod_loader.name) {
+                                ""
+                            } else {
+                                " [INCOMPATIBLE]"
+                            };
+                            println!(
+                                "[{}] {:<28} {:<14} {:?} Java {}+ ({}){}",
+                                state,
+                                m.name,
+                                m.version,
+                                m.loader,
+                                m.required_java_major,
+                                m.file_name,
+                                compat
+                            );
+                        }
+                    }
+                }
+                ModCommands::Enable {
+                    instance,
+                    file_name,
+                } => {
+                    let (inst, _) = store.get_instance(&instance)?;
+                    let mods_dir = paths.minecraft_dir(&inst.instance_id).join("mods");
+                    let updated = ModManager::new(&mods_dir).set_enabled(&file_name, true)?;
+                    println!("Enabled: {}", updated.display());
+                }
+                ModCommands::Disable {
+                    instance,
+                    file_name,
+                } => {
+                    let (inst, _) = store.get_instance(&instance)?;
+                    let mods_dir = paths.minecraft_dir(&inst.instance_id).join("mods");
+                    let updated = ModManager::new(&mods_dir).set_enabled(&file_name, false)?;
+                    println!("Disabled: {}", updated.display());
+                }
+                ModCommands::Delete {
+                    instance,
+                    file_name,
+                } => {
+                    let (inst, _) = store.get_instance(&instance)?;
+                    let mods_dir = paths.minecraft_dir(&inst.instance_id).join("mods");
+                    ModManager::new(&mods_dir).delete(&file_name)?;
+                    println!("Deleted mod '{}'", file_name);
+                }
             }
         }
         Commands::Auth { action } => {
