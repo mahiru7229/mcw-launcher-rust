@@ -7,18 +7,24 @@ use eframe::egui::{
 use mcw_auth::{
     AccountStore, DeviceCodeResponse, MicrosoftAuthClient, OfflineAuth, StoredAccount,
 };
-use mcw_minecraft::{VanillaLaunchPipeline, VersionManifestService};
+use mcw_minecraft::{RepairService, VanillaLaunchPipeline, VersionManifestService};
 use mcw_models::account::AccountSource;
 use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
 use mcw_models::progress::ProgressEvent;
 use mcw_mods::{is_loader_compatible, ModInfo, ModManager};
 use mcw_net::DownloadClient;
-use mcw_providers::{ApiCache, ModrinthClient, ModrinthSearchHit, ModrinthSearchParams};
+use mcw_providers::{
+    ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient, FtbClient, FtbPackSummary,
+    ManualDownloadItem, ModpackInstaller, ModrinthClient, ModrinthSearchHit, ModrinthSearchParams,
+};
 use mcw_runtime::{
     ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, LogLine, LogStream,
     ProcessControl, SupervisedProcess,
 };
-use mcw_storage::{InstanceRunLock, InstanceStore, LauncherPaths};
+use mcw_storage::{
+    migrate_from_python_1_8, BackupInfo, BackupManager, InstanceRunLock, InstanceStore,
+    LauncherPaths, MigrationReport,
+};
 use mcw_updater::{UpdateChannel, UpdateCheckResult, UpdateChecker};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,8 +38,16 @@ const MAX_LOG_LINES_PER_INSTANCE: usize = 1500;
 enum DetailTab {
     Overview,
     Mods,
+    Backups,
     Logs,
     Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContentProviderTab {
+    Modrinth,
+    Ftb,
+    AtLauncher,
 }
 
 enum LaunchState {
@@ -56,6 +70,7 @@ pub struct McwApp {
     selected_instance_id: Option<String>,
     selected_settings: Option<InstanceSettings>,
     selected_mods: Vec<ModInfo>,
+    selected_backups: Vec<BackupInfo>,
     accounts: Vec<StoredAccount>,
     java_installations: Vec<JavaInstallation>,
     available_versions: Vec<String>,
@@ -72,6 +87,9 @@ pub struct McwApp {
     update_status: Option<UpdateCheckResult>,
     checking_update: bool,
     installing_java: bool,
+    backup_busy: bool,
+    backup_note_input: String,
+    pending_restore_backup_id: Option<String>,
 
     // Create instance modal
     show_create_modal: bool,
@@ -79,6 +97,19 @@ pub struct McwApp {
     create_version: String,
     create_loader: String,
     create_error: Option<String>,
+
+    // Import modpack modal
+    show_modpack_modal: bool,
+    modpack_path_input: String,
+    modpack_name_input: String,
+    modpack_installing: bool,
+    modpack_manual_downloads: Vec<ManualDownloadItem>,
+
+    // Migration 1.8.x modal
+    show_migrate_modal: bool,
+    migrate_source_input: String,
+    migrate_running: bool,
+    migrate_report: Option<(bool, MigrationReport)>,
 
     // Rename & Delete modals
     show_rename_modal: bool,
@@ -93,9 +124,12 @@ pub struct McwApp {
     ms_login_task: Option<tokio::task::JoinHandle<()>>,
     ms_device_code: Option<DeviceCodeResponse>,
 
-    // Modrinth search inside Mods tab
+    // Content browser inside Mods tab
+    provider_tab: ContentProviderTab,
     modrinth_query: String,
     modrinth_results: Vec<ModrinthSearchHit>,
+    ftb_results: Vec<FtbPackSummary>,
+    atl_results: Vec<AtLauncherPack>,
     modrinth_searching: bool,
     modrinth_installing: bool,
 }
@@ -125,6 +159,7 @@ impl McwApp {
             selected_instance_id: None,
             selected_settings: None,
             selected_mods: Vec::new(),
+            selected_backups: Vec::new(),
             accounts: Vec::new(),
             java_installations: Vec::new(),
             available_versions: Vec::new(),
@@ -137,11 +172,23 @@ impl McwApp {
             update_status: None,
             checking_update: false,
             installing_java: false,
+            backup_busy: false,
+            backup_note_input: String::new(),
+            pending_restore_backup_id: None,
             show_create_modal: false,
             create_name: String::new(),
             create_version: "1.21.4".to_string(),
             create_loader: "vanilla".to_string(),
             create_error: None,
+            show_modpack_modal: false,
+            modpack_path_input: String::new(),
+            modpack_name_input: String::new(),
+            modpack_installing: false,
+            modpack_manual_downloads: Vec::new(),
+            show_migrate_modal: false,
+            migrate_source_input: String::new(),
+            migrate_running: false,
+            migrate_report: None,
             show_rename_modal: false,
             rename_input: String::new(),
             show_delete_modal: false,
@@ -151,8 +198,11 @@ impl McwApp {
             ms_login_mode: None,
             ms_login_task: None,
             ms_device_code: None,
+            provider_tab: ContentProviderTab::Modrinth,
             modrinth_query: String::new(),
             modrinth_results: Vec::new(),
+            ftb_results: Vec::new(),
+            atl_results: Vec::new(),
             modrinth_searching: false,
             modrinth_installing: false,
         };
@@ -182,12 +232,16 @@ impl McwApp {
         let Some(ref id) = self.selected_instance_id else {
             self.selected_settings = None;
             self.selected_mods.clear();
+            self.selected_backups.clear();
             return;
         };
         let store = InstanceStore::new(&self.paths);
         self.selected_settings = store.get_instance(id).ok().map(|(_, s)| s);
         let mods_dir = self.paths.minecraft_dir(id).join("mods");
         self.selected_mods = ModManager::new(&mods_dir).list();
+        self.selected_backups = BackupManager::new(&self.paths)
+            .list_backups(id)
+            .unwrap_or_default();
     }
 
     fn reload_accounts(&mut self) {
@@ -566,6 +620,231 @@ impl McwApp {
         });
     }
 
+    fn start_repair(&mut self, ctx: &egui::Context) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        if self.is_instance_busy(&inst.instance_id) {
+            return;
+        }
+        self.notice_banner = None;
+        self.launch_states.insert(
+            inst.instance_id.clone(),
+            LaunchState::Preparing(ProgressEvent {
+                stage: mcw_models::progress::ProgressStage::FetchingManifest,
+                message: "Starting repair...".to_string(),
+                current: 0,
+                total: 1,
+            }),
+        );
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let client = DownloadClient::new().map_err(|e| e.to_string())?;
+                let svc = RepairService::new(&paths, &client);
+                let sink = Arc::new(ChannelProgressSink {
+                    instance_id: inst.instance_id.clone(),
+                    tx: tx.clone(),
+                    ctx: ctx.clone(),
+                });
+                svc.repair_instance(&inst, sink)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+            let _ = tx.send(AppEvent::RepairFinished {
+                instance_id: inst.instance_id,
+                report: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_backup_create(&mut self, ctx: &egui::Context) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        if self.backup_busy || self.is_instance_busy(&inst.instance_id) {
+            return;
+        }
+        self.backup_busy = true;
+        let note = self.backup_note_input.trim().to_string();
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let id = inst.instance_id.clone();
+            let res = tokio::task::spawn_blocking(move || {
+                BackupManager::new(&paths)
+                    .create_backup(&inst.instance_id, note)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(AppEvent::BackupCreated {
+                instance_id: id,
+                result: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_backup_restore(&mut self, backup_id: String, ctx: &egui::Context) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        if self.backup_busy || self.is_instance_busy(&inst.instance_id) {
+            return;
+        }
+        self.backup_busy = true;
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let id = inst.instance_id.clone();
+            let res = tokio::task::spawn_blocking(move || {
+                BackupManager::new(&paths)
+                    .restore_backup(&inst.instance_id, &backup_id)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(AppEvent::BackupRestored {
+                instance_id: id,
+                result: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_modpack_install(&mut self, ctx: &egui::Context) {
+        if self.modpack_installing {
+            return;
+        }
+        let archive = PathBuf::from(self.modpack_path_input.trim());
+        if !archive.is_file() {
+            self.notice_banner = Some((
+                "Select a valid .mrpack or CurseForge .zip file path.".to_string(),
+                true,
+            ));
+            return;
+        }
+        self.modpack_installing = true;
+        self.modpack_manual_downloads.clear();
+        let name_override = self.modpack_name_input.trim().to_string();
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
+                let cache_path = paths.cache_root.join("providers").join("api_cache.sqlite");
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let cf = CurseForgeClient::from_env(cache).ok();
+                let opt_name = if name_override.is_empty() {
+                    None
+                } else {
+                    Some(name_override.as_str())
+                };
+                ModpackInstaller::install_from_archive(
+                    &paths,
+                    &archive,
+                    opt_name,
+                    &downloader,
+                    cf.as_ref(),
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            .await;
+            let _ = tx.send(AppEvent::ModpackInstalled(res));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_migration(&mut self, dry_run: bool, ctx: &egui::Context) {
+        if self.migrate_running {
+            return;
+        }
+        let source = PathBuf::from(self.migrate_source_input.trim());
+        self.migrate_running = true;
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                migrate_from_python_1_8(&source, &paths, dry_run).map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(AppEvent::MigrationFinished {
+                dry_run,
+                result: res,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_ftb_search(&mut self, ctx: &egui::Context) {
+        self.modrinth_searching = true;
+        let query = self.modrinth_query.clone();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let ftb = FtbClient::new(cache).map_err(|e| e.to_string())?;
+                let ids = ftb.search_ids(&query, 8).await.map_err(|e| e.to_string())?;
+                let mut packs = Vec::new();
+                for id in ids.into_iter().take(8) {
+                    if let Ok(p) = ftb.get_pack(id).await {
+                        packs.push(p);
+                    }
+                }
+                Ok::<Vec<FtbPackSummary>, String>(packs)
+            }
+            .await;
+            let _ = tx.send(AppEvent::FtbSearchFinished(res));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_atlauncher_search(&mut self, ctx: &egui::Context) {
+        self.modrinth_searching = true;
+        let query = self.modrinth_query.clone();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let atl = AtLauncherClient::new(cache).map_err(|e| e.to_string())?;
+                atl.search(&query, 15).await.map_err(|e| e.to_string())
+            }
+            .await;
+            let _ = tx.send(AppEvent::AtLauncherSearchFinished(res));
+            ctx.request_repaint();
+        });
+    }
+
     fn start_update_check(&mut self, ctx: &egui::Context) {
         if self.checking_update {
             return;
@@ -731,6 +1010,135 @@ impl McwApp {
                         }
                     }
                 }
+                AppEvent::RepairFinished {
+                    instance_id,
+                    report,
+                } => {
+                    self.launch_states.insert(instance_id, LaunchState::Idle);
+                    match report {
+                        Ok(rep) => {
+                            self.notice_banner = Some((
+                                format!(
+                                    "Repair complete for '{}' ({}). Client repaired: {}.",
+                                    rep.instance_id, rep.version_id, rep.client_repaired
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner = Some((format!("Repair failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::BackupCreated {
+                    instance_id,
+                    result,
+                } => {
+                    self.backup_busy = false;
+                    match result {
+                        Ok(info) => {
+                            self.backup_note_input.clear();
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                                self.load_selected_details();
+                            }
+                            self.notice_banner = Some((
+                                format!(
+                                    "Backup '{}' created ({}).",
+                                    info.id,
+                                    format_bytes(info.size_bytes)
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner = Some((format!("Backup failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::BackupRestored {
+                    instance_id,
+                    result,
+                } => {
+                    self.backup_busy = false;
+                    match result {
+                        Ok(outcome) => {
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                                self.load_selected_details();
+                            }
+                            self.notice_banner = Some((
+                                format!(
+                                    "Restored {} files to '{}'.",
+                                    outcome.restored_files, outcome.instance_id
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner = Some((format!("Restore failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::ModpackInstalled(res) => {
+                    self.modpack_installing = false;
+                    match res {
+                        Ok(rep) => {
+                            self.selected_instance_id = Some(rep.instance_id.clone());
+                            self.reload_instances();
+                            self.modpack_manual_downloads = rep.manual_downloads;
+                            if self.modpack_manual_downloads.is_empty() {
+                                self.show_modpack_modal = false;
+                            }
+                            self.notice_banner = Some((
+                                format!(
+                                    "Installed modpack '{}' (MC {}, {} — {} files, {} overrides).",
+                                    rep.instance_id,
+                                    rep.game_version,
+                                    rep.loader.name,
+                                    rep.downloaded_files,
+                                    rep.extracted_overrides
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Modpack install failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::MigrationFinished { dry_run, result } => {
+                    self.migrate_running = false;
+                    match result {
+                        Ok(rep) => {
+                            if !dry_run {
+                                self.reload_instances();
+                            }
+                            self.migrate_report = Some((dry_run, rep));
+                        }
+                        Err(err) => {
+                            self.notice_banner = Some((format!("Migration failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::FtbSearchFinished(res) => {
+                    self.modrinth_searching = false;
+                    match res {
+                        Ok(packs) => self.ftb_results = packs,
+                        Err(err) => {
+                            self.notice_banner = Some((format!("FTB search failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::AtLauncherSearchFinished(res) => {
+                    self.modrinth_searching = false;
+                    match res {
+                        Ok(packs) => self.atl_results = packs,
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("ATLauncher search failed: {err}"), true));
+                        }
+                    }
+                }
                 AppEvent::UpdateCheckFinished(res) => {
                     self.checking_update = false;
                     match res {
@@ -811,6 +1219,11 @@ impl McwApp {
                             self.start_update_check(ctx);
                         }
 
+                        if ui.button("Import 1.8.x").clicked() {
+                            self.migrate_report = None;
+                            self.show_migrate_modal = true;
+                        }
+
                         ui.separator();
 
                         // Account switcher button
@@ -871,6 +1284,10 @@ impl McwApp {
                                     .unwrap_or_else(|| "1.21.4".to_string());
                             }
                             self.show_create_modal = true;
+                        }
+                        if ui.button("Import Pack").clicked() {
+                            self.modpack_manual_downloads.clear();
+                            self.show_modpack_modal = true;
                         }
                     });
                 });
@@ -1158,6 +1575,7 @@ impl McwApp {
                     for (tab, label) in [
                         (DetailTab::Overview, "Overview"),
                         (DetailTab::Mods, "Mods"),
+                        (DetailTab::Backups, "Backups"),
                         (DetailTab::Logs, "Logs"),
                         (DetailTab::Settings, "Settings"),
                     ] {
@@ -1177,7 +1595,7 @@ impl McwApp {
                         .corner_radius(CornerRadius::same(3));
                         if ui.add(btn).clicked() {
                             self.active_tab = tab;
-                            if tab == DetailTab::Mods {
+                            if matches!(tab, DetailTab::Mods | DetailTab::Backups) {
                                 self.load_selected_details();
                             }
                         }
@@ -1189,17 +1607,25 @@ impl McwApp {
                 ui.add_space(8.0);
 
                 match self.active_tab {
-                    DetailTab::Overview => self.render_overview_tab(ui, &inst, busy),
+                    DetailTab::Overview => self.render_overview_tab(ui, ctx, &inst, busy),
                     DetailTab::Mods => self.render_mods_tab(ui, ctx, &inst),
+                    DetailTab::Backups => self.render_backups_tab(ui, ctx, &inst, busy),
                     DetailTab::Logs => self.render_logs_tab(ui, &inst),
                     DetailTab::Settings => self.render_settings_tab(ui, ctx, &inst),
                 }
             });
     }
 
-    fn render_overview_tab(&mut self, ui: &mut egui::Ui, inst: &Instance, busy: bool) {
+    fn render_overview_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        inst: &Instance,
+        busy: bool,
+    ) {
         let p = self.palette;
         let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let mut trigger_repair = false;
 
         Frame::new()
             .fill(p.surface)
@@ -1229,6 +1655,13 @@ impl McwApp {
                         open_external(&mc_dir.display().to_string());
                     }
 
+                    let repair_resp = ui.add_enabled(!busy, Button::new("Repair Files"));
+                    if busy {
+                        repair_resp.on_disabled_hover_text("Stop the instance before repairing");
+                    } else if repair_resp.clicked() {
+                        trigger_repair = true;
+                    }
+
                     let rename_resp = ui.add_enabled(!busy, Button::new("Rename Instance"));
                     if busy {
                         rename_resp.on_disabled_hover_text("Stop the instance before renaming");
@@ -1247,31 +1680,227 @@ impl McwApp {
                     }
                 });
             });
+
+        if trigger_repair {
+            self.start_repair(ctx);
+        }
+    }
+
+    fn render_backups_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        inst: &Instance,
+        busy: bool,
+    ) {
+        let p = self.palette;
+        let disabled = busy || self.backup_busy;
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Backup Note:").strong());
+            ui.add(
+                TextEdit::singleline(&mut self.backup_note_input)
+                    .hint_text("Optional note (e.g. before installing mods)...")
+                    .desired_width(260.0),
+            );
+            let create_btn = Button::new(
+                RichText::new(if self.backup_busy {
+                    "Working..."
+                } else {
+                    "Create Backup"
+                })
+                .color(p.accent_text)
+                .strong(),
+            )
+            .fill(p.accent);
+            let resp = ui.add_enabled(!disabled, create_btn);
+            if busy {
+                resp.on_disabled_hover_text("Stop the instance before creating a backup");
+            } else if resp.clicked() {
+                self.start_backup_create(ctx);
+            }
+            if ui.button("Refresh").clicked() {
+                self.load_selected_details();
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(format!("Saved Backups ({})", self.selected_backups.len()))
+                .strong()
+                .color(p.text),
+        );
+        ui.add_space(4.0);
+
+        if self.selected_backups.is_empty() {
+            ui.label(
+                RichText::new("No backups created for this instance yet.").color(p.text_muted),
+            );
+            return;
+        }
+
+        let mut delete_id: Option<String> = None;
+        ScrollArea::vertical()
+            .id_salt("backups_list_scroll")
+            .show(ui, |ui| {
+                for b in &self.selected_backups {
+                    Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .corner_radius(CornerRadius::same(3))
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(&b.id).monospace().strong());
+                                    let note_str = if b.note.is_empty() {
+                                        "No note".to_string()
+                                    } else {
+                                        b.note.clone()
+                                    };
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{}  ·  {}",
+                                            format_bytes(b.size_bytes),
+                                            note_str
+                                        ))
+                                        .size(11.5)
+                                        .color(p.text_muted),
+                                    );
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !disabled,
+                                            Button::new(RichText::new("Delete").color(p.danger))
+                                                .small(),
+                                        )
+                                        .clicked()
+                                    {
+                                        delete_id = Some(b.id.clone());
+                                    }
+                                    if ui
+                                        .add_enabled(!disabled, Button::new("Restore").small())
+                                        .clicked()
+                                    {
+                                        self.pending_restore_backup_id = Some(b.id.clone());
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            });
+
+        if let Some(id) = delete_id {
+            match BackupManager::new(&self.paths).delete_backup(&inst.instance_id, &id) {
+                Ok(()) => {
+                    self.load_selected_details();
+                    self.notice_banner = Some((format!("Deleted backup '{id}'."), false));
+                }
+                Err(e) => {
+                    self.notice_banner = Some((format!("Failed to delete backup: {e}"), true));
+                }
+            }
+        }
     }
 
     fn render_mods_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, inst: &Instance) {
         let p = self.palette;
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
 
-        // Modrinth Search Bar
+        // Multi-provider Content Search Bar (Modrinth | FTB | ATLauncher)
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Modrinth:").strong());
+            ui.selectable_value(&mut self.provider_tab, ContentProviderTab::Modrinth, "Modrinth");
+            ui.selectable_value(&mut self.provider_tab, ContentProviderTab::Ftb, "FTB Packs");
+            ui.selectable_value(
+                &mut self.provider_tab,
+                ContentProviderTab::AtLauncher,
+                "ATLauncher",
+            );
+            let hint = match self.provider_tab {
+                ContentProviderTab::Modrinth => "Search Modrinth mods (e.g. sodium, fabric-api)...",
+                ContentProviderTab::Ftb => "Search FTB modpacks (e.g. stoneblock, skies)...",
+                ContentProviderTab::AtLauncher => "Search ATLauncher packs...",
+            };
             let te = ui.add(
                 TextEdit::singleline(&mut self.modrinth_query)
-                    .hint_text("Search mods (e.g. sodium, lithium, fabric-api)...")
-                    .desired_width(280.0),
+                    .hint_text(hint)
+                    .desired_width(250.0),
             );
             let search_clicked = ui
                 .add_enabled(!self.modrinth_searching, Button::new("Search"))
                 .clicked();
             if search_clicked || (te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
             {
-                self.start_modrinth_search(ctx);
+                match self.provider_tab {
+                    ContentProviderTab::Modrinth => self.start_modrinth_search(ctx),
+                    ContentProviderTab::Ftb => self.start_ftb_search(ctx),
+                    ContentProviderTab::AtLauncher => self.start_atlauncher_search(ctx),
+                }
             }
             if ui.button("Refresh Local").clicked() {
                 self.load_selected_details();
             }
         });
+
+        if self.provider_tab == ContentProviderTab::Ftb && !self.ftb_results.is_empty() {
+            ui.add_space(6.0);
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(3))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("FTB Pack Catalog").strong().size(12.0).color(p.text_muted));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button("Close").clicked() {
+                                self.ftb_results.clear();
+                            }
+                        });
+                    });
+                    ScrollArea::vertical().id_salt("ftb_results_scroll").max_height(160.0).show(ui, |ui| {
+                        for pack in &self.ftb_results {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&pack.name).strong());
+                                ui.label(RichText::new(format!("#{} · {} installs", pack.id, pack.installs)).monospace().size(11.0).color(p.text_muted));
+                            });
+                            if !pack.synopsis.is_empty() {
+                                ui.label(RichText::new(&pack.synopsis).size(11.5).color(p.text_muted));
+                            }
+                        }
+                    });
+                });
+        }
+
+        if self.provider_tab == ContentProviderTab::AtLauncher && !self.atl_results.is_empty() {
+            ui.add_space(6.0);
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(3))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("ATLauncher Pack Catalog").strong().size(12.0).color(p.text_muted));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button("Close").clicked() {
+                                self.atl_results.clear();
+                            }
+                        });
+                    });
+                    ScrollArea::vertical().id_salt("atl_results_scroll").max_height(160.0).show(ui, |ui| {
+                        for pack in &self.atl_results {
+                            ui.label(RichText::new(&pack.name).strong());
+                            if !pack.description.is_empty() {
+                                ui.label(RichText::new(&pack.description).size(11.5).color(p.text_muted));
+                            }
+                        }
+                    });
+                });
+        }
 
         if !self.modrinth_results.is_empty() {
             ui.add_space(6.0);
@@ -1635,7 +2264,7 @@ impl McwApp {
 
                     ui.label("Mod Loader:");
                     ui.horizontal(|ui| {
-                        for loader in ["vanilla", "fabric", "quilt"] {
+                        for loader in ["vanilla", "fabric", "quilt", "forge", "neoforge"] {
                             ui.selectable_value(&mut self.create_loader, loader.to_string(), loader);
                         }
                     });
@@ -1970,6 +2599,196 @@ impl McwApp {
                     }
                 });
         }
+
+        // 5. Restore Backup Confirmation Modal
+        if let Some(backup_id) = self.pending_restore_backup_id.clone() {
+            egui::Window::new("Restore Backup")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(380.0);
+                    ui.label(
+                        RichText::new(format!("Restore backup '{backup_id}'?"))
+                            .strong()
+                            .color(p.warning),
+                    );
+                    ui.label(
+                        "Current .minecraft/ contents will be replaced using a safe staging & rollback swap (original data is preserved on rollback if restore fails).",
+                    );
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let btn = Button::new(
+                            RichText::new("Confirm Restore").color(p.accent_text).strong(),
+                        )
+                        .fill(p.accent);
+                        if ui.add(btn).clicked() {
+                            self.pending_restore_backup_id = None;
+                            self.start_backup_restore(backup_id, ctx);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.pending_restore_backup_id = None;
+                        }
+                    });
+                });
+        }
+
+        // 6. Import Modpack Modal (.mrpack / CurseForge .zip)
+        if self.show_modpack_modal {
+            egui::Window::new("Import Modpack (.mrpack / CurseForge .zip)")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(420.0);
+                    ui.label("Archive File Path (.mrpack or .zip):");
+                    ui.add(
+                        TextEdit::singleline(&mut self.modpack_path_input)
+                            .hint_text(r"C:\Users\...\Downloads\modpack.mrpack")
+                            .desired_width(400.0),
+                    );
+                    ui.add_space(6.0);
+                    ui.label("Instance Name Override (optional):");
+                    ui.add(
+                        TextEdit::singleline(&mut self.modpack_name_input)
+                            .hint_text("Leave blank to use modpack name")
+                            .desired_width(300.0),
+                    );
+
+                    if !self.modpack_manual_downloads.is_empty() {
+                        ui.add_space(8.0);
+                        Frame::new()
+                            .fill(p.elevated)
+                            .stroke(Stroke::new(1.0_f32, p.warning))
+                            .corner_radius(CornerRadius::same(3))
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Manual downloads required ({} files — third-party distribution disabled):",
+                                        self.modpack_manual_downloads.len()
+                                    ))
+                                    .strong()
+                                    .color(p.warning),
+                                );
+                                ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                                    for item in &self.modpack_manual_downloads {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(&item.file_name).monospace().size(11.0));
+                                            if ui.small_button("Open URL").clicked() {
+                                                open_external(&item.website_url);
+                                            }
+                                        });
+                                    }
+                                });
+                            });
+                    }
+
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let import_btn = Button::new(
+                            RichText::new(if self.modpack_installing {
+                                "Installing..."
+                            } else {
+                                "Import Modpack"
+                            })
+                            .color(p.accent_text)
+                            .strong(),
+                        )
+                        .fill(p.accent);
+                        if ui
+                            .add_enabled(!self.modpack_installing, import_btn)
+                            .clicked()
+                        {
+                            self.start_modpack_install(ctx);
+                        }
+                        if ui.button("Close").clicked() {
+                            self.show_modpack_modal = false;
+                        }
+                    });
+                });
+        }
+
+        // 7. Import from MCW Python 1.8.x Modal
+        if self.show_migrate_modal {
+            egui::Window::new("Import from MCW Launcher 1.8.x")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(420.0);
+                    ui.label("Python 1.8.x Root Directory (read-only, source is never modified):");
+                    ui.add(
+                        TextEdit::singleline(&mut self.migrate_source_input)
+                            .hint_text(r"d:\WORKBASE\mcw-launcher")
+                            .desired_width(400.0),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!self.migrate_running, Button::new("Preview (Dry Run)"))
+                            .clicked()
+                        {
+                            self.start_migration(true, ctx);
+                        }
+                        let run_btn = Button::new(
+                            RichText::new("Migrate Instances")
+                                .color(p.accent_text)
+                                .strong(),
+                        )
+                        .fill(p.accent);
+                        if ui
+                            .add_enabled(!self.migrate_running, run_btn)
+                            .clicked()
+                        {
+                            self.start_migration(false, ctx);
+                        }
+                        if ui.button("Close").clicked() {
+                            self.show_migrate_modal = false;
+                        }
+                    });
+
+                    if let Some((dry_run, ref rep)) = self.migrate_report {
+                        ui.add_space(8.0);
+                        Frame::new()
+                            .fill(p.elevated)
+                            .stroke(Stroke::new(1.0_f32, p.border))
+                            .corner_radius(CornerRadius::same(3))
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(if dry_run {
+                                        "Dry-Run Preview"
+                                    } else {
+                                        "Migration Result"
+                                    })
+                                    .strong(),
+                                );
+                                ui.label(format!(
+                                    "To migrate / migrated ({}): {}",
+                                    rep.migrated_instances.len(),
+                                    rep.migrated_instances.join(", ")
+                                ));
+                                if !rep.skipped_existing.is_empty() {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Skipped existing ({}): {}",
+                                            rep.skipped_existing.len(),
+                                            rep.skipped_existing.join(", ")
+                                        ))
+                                        .color(p.text_muted),
+                                    );
+                                }
+                                if !rep.errors.is_empty() {
+                                    ui.label(
+                                        RichText::new(format!("Errors: {}", rep.errors.join("; ")))
+                                            .color(p.danger),
+                                    );
+                                }
+                            });
+                    }
+                });
+        }
     }
 }
 
@@ -1980,6 +2799,16 @@ impl eframe::App for McwApp {
         self.render_sidebar(ctx);
         self.render_detail_pane(ctx);
         self.render_modals(ctx);
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 

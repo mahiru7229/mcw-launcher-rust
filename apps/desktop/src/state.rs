@@ -1,8 +1,10 @@
 use eframe::egui::Context;
 use mcw_auth::{DeviceCodeResponse, StoredAccount};
+use mcw_minecraft::RepairReport;
 use mcw_models::progress::{ProgressEvent, ProgressSink};
-use mcw_providers::ModrinthSearchHit;
+use mcw_providers::{AtLauncherPack, FtbPackSummary, ModpackInstallReport, ModrinthSearchHit};
 use mcw_runtime::{JavaInstallation, LogLine, LogSink, ProcessControl, ProcessExitReport};
+use mcw_storage::{BackupInfo, MigrationReport, RestoreOutcome};
 use mcw_updater::UpdateCheckResult;
 use std::sync::mpsc::Sender;
 
@@ -25,9 +27,28 @@ pub enum AppEvent {
         instance_id: String,
         report: Result<ProcessExitReport, String>,
     },
+    RepairFinished {
+        instance_id: String,
+        report: Result<RepairReport, String>,
+    },
+    BackupCreated {
+        instance_id: String,
+        result: Result<BackupInfo, String>,
+    },
+    BackupRestored {
+        instance_id: String,
+        result: Result<RestoreOutcome, String>,
+    },
+    ModpackInstalled(Result<ModpackInstallReport, String>),
+    MigrationFinished {
+        dry_run: bool,
+        result: Result<MigrationReport, String>,
+    },
     DeviceCodeReady(DeviceCodeResponse),
     MicrosoftLoginFinished(Result<StoredAccount, String>),
     ModrinthSearchFinished(Result<Vec<ModrinthSearchHit>, String>),
+    FtbSearchFinished(Result<Vec<FtbPackSummary>, String>),
+    AtLauncherSearchFinished(Result<Vec<AtLauncherPack>, String>),
     ModrinthInstallFinished {
         instance_id: String,
         result: Result<usize, String>,
