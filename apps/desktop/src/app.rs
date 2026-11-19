@@ -3342,12 +3342,61 @@ impl McwApp {
                                 }
                             }
                             Some(LaunchState::Preparing(_)) => {
-                                let prep_btn = Button::new(
-                                    RichText::new(self.t("Preparing...")).color(p.text_muted),
+                                let launch_ctrl = self
+                                    .launch_task_ids
+                                    .get(&inst.instance_id)
+                                    .and_then(|tid| {
+                                        self.active_tasks
+                                            .iter()
+                                            .find(|t| t.id == *tid)
+                                            .map(|t| Arc::clone(&t.control))
+                                    });
+                                let is_paused = launch_ctrl
+                                    .as_ref()
+                                    .map(|c| c.is_paused())
+                                    .unwrap_or(false);
+                                let is_cancelling = launch_ctrl
+                                    .as_ref()
+                                    .map(|c| c.is_cancelled())
+                                    .unwrap_or(false);
+
+                                let cancel_text = if is_cancelling {
+                                    self.t("launch.cancelling_badge").to_string()
+                                } else {
+                                    self.t("launch.cancel_button").to_string()
+                                };
+                                let cancel_btn = Button::new(
+                                    RichText::new(cancel_text)
+                                        .color(Color32::WHITE)
+                                        .strong(),
                                 )
-                                .min_size(Vec2::new(120.0, 34.0))
+                                .fill(p.danger)
+                                .min_size(Vec2::new(110.0, 34.0))
                                 .corner_radius(CornerRadius::same(3));
-                                ui.add_enabled(false, prep_btn);
+                                if ui.add_enabled(!is_cancelling, cancel_btn).clicked() {
+                                    if let Some(ref ctrl) = launch_ctrl {
+                                        ctrl.cancel();
+                                    }
+                                }
+
+                                let pause_text = if is_paused {
+                                    self.t("launch.resume_button").to_string()
+                                } else {
+                                    self.t("launch.pause_button").to_string()
+                                };
+                                let pause_btn = Button::new(
+                                    RichText::new(pause_text)
+                                        .color(if is_paused { p.accent_text } else { p.text })
+                                        .strong(),
+                                )
+                                .fill(if is_paused { p.accent } else { p.elevated })
+                                .min_size(Vec2::new(96.0, 34.0))
+                                .corner_radius(CornerRadius::same(3));
+                                if ui.add_enabled(!is_cancelling, pause_btn).clicked() {
+                                    if let Some(ref ctrl) = launch_ctrl {
+                                        ctrl.toggle_pause();
+                                    }
+                                }
                             }
                             _ => {
                                 let missing_manual = self

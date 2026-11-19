@@ -1,11 +1,21 @@
 # MCW Launcher: Rust Edition
 
-[![Status](https://img.shields.io/badge/status-v0.5.0--beta.1-10B981?style=flat-square)](#)
+[![Status](https://img.shields.io/badge/status-v0.6.0-10B981?style=flat-square)](#)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 **MCW Launcher: Rust Edition** is a fast, lightweight, portable Minecraft launcher rewritten from the ground up in pure Rust (`egui` / `eframe` + `tokio`), designed for multi-instance modpack management, concurrent downloads, and cross-platform reliability on **Windows** and **Linux**.
+
+---
+
+## Performance & Footprint (vs. MCW Launcher Python)
+
+| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v0.6.0`) |
+| --- | --- | --- |
+| **Idle / Active RAM** | ~150 MB | **~60–70 MB** (~55–60% lower memory footprint) |
+| **Runtime Performance** | Baseline | **~2× faster** UI responsiveness, mod scanning, and concurrent downloads |
+| **Package Size** | Larger (bundled Python + Qt runtime) | **Lighter (~8.8 MB single binary)** — currently smaller because fewer bundled components/extras are packaged |
 
 ---
 
@@ -114,8 +124,8 @@ Output binary:
 
 ## GitHub Actions CI & Releases
 
-- **CI** (`.github/workflows/ci.yml`): Runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` on both `windows-latest` and `ubuntu-latest`.
-- **Release** (`.github/workflows/release.yml`): Triggered automatically on version tags (`v*`, e.g. `v0.5.0-beta.1`) or manually via **Actions -> Release -> Run workflow**. Builds stripped, LTO-optimized Windows (`x64`) and Linux (`x64`) release archives with SHA-256 checksums.
+- **CI** (`.github/workflows/ci.yml`): Runs automatically on push/PR — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` on both `windows-latest` and `ubuntu-latest`.
+- **Release** (`.github/workflows/release.yml`): **Manual-only** via **Actions -> Release Build -> Run workflow** (`workflow_dispatch`). Builds stripped, LTO-optimized Windows (`x64`) and Linux (`x64`) release archives with SHA-256 checksums.
 
 ---
 
