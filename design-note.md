@@ -155,3 +155,12 @@
 - **Gợi ý cho GUI**:
   - Trình duyệt **Content Browser** (Mods / Resource Packs / Shaders / Modpacks) có thể chuyển mượt giữa nguồn Modrinth & CurseForge, kết quả tìm kiếm phản hồi tức thì nhờ SQLite WAL cache.
   - Khi cài từ CurseForge mà gặp `ProviderError::ManualDownloadRequired`, GUI mở **Hộp thoại tải thủ công (Manual Download Dialog)** hiển thị tên file + nút mở `website_url` trên trình duyệt.
+
+### 13. Auto-Updater: Cloudflare CDN + GitHub Releases Failover (`mcw-updater`, `mcw-cli update`)
+- **Chức năng**: Kiểm tra phiên bản mới của MCW Launcher trên kênh `stable` hoặc `beta`, so sánh SemVer/Pre-release (`alpha < beta < rc < final`) và tự động chuyển dự phòng sang GitHub Releases khi Cloudflare CDN chưa đồng bộ hoặc gặp lỗi.
+- **Cách hoạt động**:
+  - `UpdateChecker::check(current_version, channel)` ưu tiên tải `https://mcw-download.pages.dev/releases/manifest.json` để tránh giới hạn rate-limit GitHub API.
+  - **Bài học #3**: Nếu Cloudflare CDN lỗi, trả về rỗng, hoặc không có bản phù hợp cho kênh được chọn, **cả hai kênh `stable` lẫn `beta`** đều tự động fallback sang `https://api.github.com/repos/mahiru7229/mcw-launcher/releases`.
+  - Trả về `UpdateCheckResult { current_version, channel, update_available, latest: Option<ReleaseInfo> }` (có sẵn `source`, `notes`, `html_url`, `download_url`).
+- **Gợi ý cho GUI**:
+  - Trang Settings → Updates cho chọn kênh `Stable` / `Beta`, nút "Check for updates", hiển thị changelog (`notes`) khi `update_available == true`.

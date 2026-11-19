@@ -13,6 +13,7 @@ use mcw_runtime::{
     SupervisedProcess,
 };
 use mcw_storage::{InstanceRunLock, InstanceStore, LauncherPaths};
+use mcw_updater::{UpdateChannel, UpdateChecker};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -77,6 +78,12 @@ enum Commands {
     Modrinth {
         #[command(subcommand)]
         action: ModrinthCommands,
+    },
+    /// Check for launcher updates (Cloudflare CDN + GitHub Releases failover)
+    Update {
+        /// Update channel: stable or beta
+        #[arg(long, default_value = "stable")]
+        channel: String,
     },
     /// Manage Minecraft accounts (Microsoft OAuth & Offline)
     Auth {
@@ -549,6 +556,24 @@ async fn main() -> Result<()> {
                             item.file_path.display()
                         );
                     }
+                }
+            }
+        }
+        Commands::Update { channel } => {
+            let checker = UpdateChecker::new()?;
+            let ch = UpdateChannel::parse(&channel);
+            let res = checker.check(mcw_models::APP_VERSION, ch).await?;
+            println!(
+                "Current: {} | Channel: {:?} | Update available: {}",
+                res.current_version, res.channel, res.update_available
+            );
+            if let Some(latest) = res.latest {
+                println!(
+                    "Latest : {} (source: {}, prerelease: {})",
+                    latest.tag_name, latest.source, latest.prerelease
+                );
+                if !latest.html_url.is_empty() {
+                    println!("URL    : {}", latest.html_url);
                 }
             }
         }

@@ -19,6 +19,7 @@ mcw-net.workspace = true
 mcw-providers.workspace = true
 mcw-runtime.workspace = true
 mcw-storage.workspace = true
+mcw-updater.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

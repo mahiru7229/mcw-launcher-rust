@@ -9,6 +9,7 @@ members = [
     "crates/mcw-minecraft",
     "crates/mcw-mods",
     "crates/mcw-providers",
+    "crates/mcw-updater",
     "apps/cli",
 ]
 
@@ -52,3 +53,4 @@ mcw-runtime = { path = "crates/mcw-runtime" }
 mcw-minecraft = { path = "crates/mcw-minecraft" }
 mcw-mods = { path = "crates/mcw-mods" }
 mcw-providers = { path = "crates/mcw-providers" }
+mcw-updater = { path = "crates/mcw-updater" }
