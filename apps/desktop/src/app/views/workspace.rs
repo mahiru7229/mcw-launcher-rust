@@ -385,79 +385,231 @@ impl McwApp {
     ) {
         let p = self.palette;
         let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let export_label = self.t("modpack_package.export.title").to_string();
+        let clone_lbl = self.t("workspace.action.clone").to_string();
+        let chg_icon_lbl = self.t("workspace.action.change_icon").to_string();
+        let rst_icon_lbl = self.t("workspace.action.reset_icon").to_string();
+
         let mut trigger_repair = false;
+        let mut open_export = false;
+        let mut change_icon_clicked = false;
+        let mut reset_icon_clicked = false;
 
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
             .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::same(12))
+            .inner_margin(egui::Margin::same(14))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new("Instance Details").strong().color(p.text));
-                ui.add_space(6.0);
+
+                // Header Row: Title + Compact Action Menu (`⋮ Actions ▾`)
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Game Directory:").color(p.text_muted));
-                    ui.label(RichText::new(mc_dir.display().to_string()).monospace());
+                    ui.label(
+                        RichText::new("Instance Details")
+                            .size(14.5)
+                            .strong()
+                            .color(p.text),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.menu_button(
+                            RichText::new("⋮ Actions ▾").strong().color(p.text),
+                            |ui| {
+                                ui.set_min_width(210.0);
+                                if ui.button("Open .minecraft Folder").clicked() {
+                                    let _ = std::fs::create_dir_all(&mc_dir);
+                                    open_external(&mc_dir.display().to_string());
+                                    ui.close_menu();
+                                }
+                                if ui
+                                    .add_enabled(!busy, Button::new(&export_label))
+                                    .on_disabled_hover_text("Stop the instance before exporting")
+                                    .clicked()
+                                {
+                                    open_export = true;
+                                    ui.close_menu();
+                                }
+                                if ui
+                                    .add_enabled(!busy, Button::new("Repair Files"))
+                                    .on_disabled_hover_text("Stop the instance before repairing")
+                                    .clicked()
+                                {
+                                    trigger_repair = true;
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if ui
+                                    .add_enabled(!busy, Button::new("Rename Instance..."))
+                                    .on_disabled_hover_text("Stop the instance before renaming")
+                                    .clicked()
+                                {
+                                    self.rename_input = inst.name.clone();
+                                    self.show_rename_modal = true;
+                                    ui.close_menu();
+                                }
+                                if ui.button(&clone_lbl).clicked() {
+                                    self.clone_name_input = format!("{} (Copy)", inst.name);
+                                    self.clone_include_saves = false;
+                                    self.show_clone_modal = true;
+                                    ui.close_menu();
+                                }
+                                if ui.button(&chg_icon_lbl).clicked() {
+                                    change_icon_clicked = true;
+                                    ui.close_menu();
+                                }
+                                if !inst.icon.is_empty()
+                                    && !inst.icon.eq_ignore_ascii_case("grass_block")
+                                    && ui.button(&rst_icon_lbl).clicked()
+                                {
+                                    reset_icon_clicked = true;
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                let del_btn = Button::new(
+                                    RichText::new("Delete Instance...").color(p.danger),
+                                );
+                                if ui
+                                    .add_enabled(!busy, del_btn)
+                                    .on_disabled_hover_text("Stop the instance before deleting")
+                                    .clicked()
+                                {
+                                    self.show_delete_modal = true;
+                                    ui.close_menu();
+                                }
+                            },
+                        );
+                    });
                 });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Last Status:").color(p.text_muted));
-                    ui.label(format!(
-                        "{} (exit code: {:?})",
-                        inst.last_launch_state, inst.last_exit_code
-                    ));
-                });
-                ui.add_space(10.0);
 
-                let export_label = self.t("modpack_package.export.title").to_string();
-                let mut open_export = false;
-                ui.horizontal(|ui| {
-                    if ui.button("Open .minecraft Folder").clicked() {
-                        let _ = std::fs::create_dir_all(&mc_dir);
-                        open_external(&mc_dir.display().to_string());
-                    }
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
 
-                    let export_resp = ui.add_enabled(!busy, Button::new(&export_label));
-                    if busy {
-                        export_resp.on_disabled_hover_text("Stop the instance before exporting");
-                    } else if export_resp.clicked() {
-                        open_export = true;
-                    }
+                // Comprehensive Instance Metadata Grid
+                let loader_text = if inst.mod_loader.version.trim().is_empty() {
+                    inst.mod_loader.name.clone()
+                } else {
+                    format!("{} ({})", inst.mod_loader.name, inst.mod_loader.version)
+                };
+                let (mem_text, res_text, java_text, lan_text) =
+                    if let Some(ref s) = self.selected_settings {
+                        let mem = format!("{} MB – {} MB", s.min_memory, s.max_memory);
+                        let res = if s.fullscreen {
+                            format!("{} × {} (Fullscreen)", s.width, s.height)
+                        } else {
+                            format!("{} × {} (Windowed)", s.width, s.height)
+                        };
+                        let jv = s
+                            .java_path
+                            .as_ref()
+                            .map(|jp| jp.display().to_string())
+                            .unwrap_or_else(|| "Automatic (recommended)".to_string());
+                        let lan = format!(
+                            "Auth: {}  ·  Tunnel: {}",
+                            s.lan_auth_mode, s.lan_connection_provider
+                        );
+                        (mem, res, jv, lan)
+                    } else {
+                        (
+                            "Default".to_string(),
+                            "Default".to_string(),
+                            "Automatic (recommended)".to_string(),
+                            "Default".to_string(),
+                        )
+                    };
+                let last_played_text = if inst.last_played.trim().is_empty() {
+                    "Never"
+                } else {
+                    inst.last_played.as_str()
+                };
+                let exit_text = match inst.last_exit_code {
+                    Some(code) => format!("{} (exit code: {code})", inst.last_launch_state),
+                    None => inst.last_launch_state.clone(),
+                };
+                let mods_count = self
+                    .mods_cache
+                    .get(&inst.instance_id)
+                    .map(|v| v.len())
+                    .unwrap_or(self.selected_mods.len());
+                let worlds_count = self
+                    .worlds_cache
+                    .get(&inst.instance_id)
+                    .map(|v| v.len())
+                    .unwrap_or(self.selected_worlds.len());
+                let shots_count = self
+                    .screenshots_cache
+                    .get(&inst.instance_id)
+                    .map(|v| v.len())
+                    .unwrap_or(self.selected_screenshots.len());
+                let backups_count = self
+                    .backups_cache
+                    .get(&inst.instance_id)
+                    .map(|v| v.len())
+                    .unwrap_or(self.selected_backups.len());
 
-                    let repair_resp = ui.add_enabled(!busy, Button::new("Repair Files"));
-                    if busy {
-                        repair_resp.on_disabled_hover_text("Stop the instance before repairing");
-                    } else if repair_resp.clicked() {
-                        trigger_repair = true;
-                    }
+                egui::Grid::new("overview_instance_details_grid")
+                    .num_columns(2)
+                    .spacing([24.0, 6.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Instance Name / ID:").color(p.text_muted));
+                        ui.label(
+                            RichText::new(format!("{}  ({})", inst.name, inst.instance_id))
+                                .monospace(),
+                        );
+                        ui.end_row();
 
-                    let rename_resp = ui.add_enabled(!busy, Button::new("Rename Instance"));
-                    if busy {
-                        rename_resp.on_disabled_hover_text("Stop the instance before renaming");
-                    } else if rename_resp.clicked() {
-                        self.rename_input = inst.name.clone();
-                        self.show_rename_modal = true;
-                    }
+                        ui.label(RichText::new("Minecraft Version:").color(p.text_muted));
+                        ui.label(RichText::new(&inst.version_id).monospace().strong());
+                        ui.end_row();
 
-                    let clone_lbl = self.t("workspace.action.clone").to_string();
-                    if ui.button(clone_lbl).clicked() {
-                        self.clone_name_input = format!("{} (Copy)", inst.name);
-                        self.clone_include_saves = false;
-                        self.show_clone_modal = true;
-                    }
+                        ui.label(RichText::new("Mod Loader:").color(p.text_muted));
+                        ui.label(RichText::new(loader_text).monospace());
+                        ui.end_row();
 
-                    let del_btn = Button::new(RichText::new("Delete Instance").color(p.danger))
-                        .stroke(Stroke::new(1.0_f32, p.danger));
-                    let del_resp = ui.add_enabled(!busy, del_btn);
-                    if busy {
-                        del_resp.on_disabled_hover_text("Stop the instance before deleting");
-                    } else if del_resp.clicked() {
-                        self.show_delete_modal = true;
-                    }
-                });
-                if open_export {
-                    self.show_export_modal = true;
-                }
+                        ui.label(RichText::new("Game Directory:").color(p.text_muted));
+                        ui.label(RichText::new(mc_dir.display().to_string()).monospace());
+                        ui.end_row();
+
+                        ui.label(RichText::new("Memory Allocation:").color(p.text_muted));
+                        ui.label(RichText::new(mem_text).monospace());
+                        ui.end_row();
+
+                        ui.label(RichText::new("Window Resolution:").color(p.text_muted));
+                        ui.label(RichText::new(res_text).monospace());
+                        ui.end_row();
+
+                        ui.label(RichText::new("Java Runtime:").color(p.text_muted));
+                        ui.label(RichText::new(java_text).monospace());
+                        ui.end_row();
+
+                        ui.label(RichText::new("LAN Hosting:").color(p.text_muted));
+                        ui.label(RichText::new(lan_text).monospace());
+                        ui.end_row();
+
+                        ui.label(RichText::new("Total Playtime:").color(p.text_muted));
+                        ui.label(
+                            RichText::new(format_duration(inst.total_playtime_seconds)).monospace(),
+                        );
+                        ui.end_row();
+
+                        ui.label(RichText::new("Last Played:").color(p.text_muted));
+                        ui.label(RichText::new(last_played_text).monospace());
+                        ui.end_row();
+
+                        ui.label(RichText::new("Last Status:").color(p.text_muted));
+                        ui.label(RichText::new(exit_text).monospace());
+                        ui.end_row();
+
+                        ui.label(RichText::new("Installed Content:").color(p.text_muted));
+                        ui.label(
+                            RichText::new(format!(
+                                "Mods: {mods_count}  ·  Worlds: {worlds_count}  ·  Screenshots: {shots_count}  ·  Backups: {backups_count}"
+                            ))
+                            .monospace(),
+                        );
+                        ui.end_row();
+                    });
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -498,8 +650,35 @@ impl McwApp {
                 });
             });
 
+        if open_export {
+            self.show_export_modal = true;
+        }
         if trigger_repair {
             self.start_repair(ctx);
+        }
+        if change_icon_clicked {
+            if let Some(chosen) = pick_file_dialog(
+                self.t("workspace.icon.choose_title"),
+                "Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.ico)|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.ico",
+            ) {
+                let store = InstanceStore::new(&self.paths);
+                match store.set_instance_icon(&inst.instance_id, &chosen) {
+                    Ok(_) => {
+                        self.instance_icon_textures.clear();
+                        self.reload_instances();
+                    }
+                    Err(err) => {
+                        self.notice_banner = Some((format!("Failed to set icon: {err}"), true));
+                    }
+                }
+            }
+        }
+        if reset_icon_clicked {
+            let store = InstanceStore::new(&self.paths);
+            if store.reset_instance_icon(&inst.instance_id).is_ok() {
+                self.instance_icon_textures.clear();
+                self.reload_instances();
+            }
         }
     }
 
@@ -562,6 +741,7 @@ impl McwApp {
         let mut delete_id: Option<String> = None;
         ScrollArea::vertical()
             .id_salt("backups_list_scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for b in &self.selected_backups {
                     Frame::new()
@@ -631,288 +811,6 @@ impl McwApp {
     ) {
         let p = self.palette;
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
-
-        // Mod Provider Search Bar (Modrinth | CurseForge) + Loader Filter
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .selectable_value(
-                    &mut self.mod_provider_tab,
-                    ModProviderTab::Modrinth,
-                    "Modrinth",
-                )
-                .clicked()
-            {
-                self.mod_loader_filter = "fabric".to_string();
-            }
-            if ui
-                .selectable_value(
-                    &mut self.mod_provider_tab,
-                    ModProviderTab::CurseForge,
-                    "CurseForge",
-                )
-                .clicked()
-            {
-                self.mod_loader_filter = "forge".to_string();
-            }
-            egui::ComboBox::from_id_salt("mod_browser_loader_filter")
-                .selected_text(&self.mod_loader_filter)
-                .width(88.0)
-                .show_ui(ui, |ui| {
-                    for l in ["fabric", "forge", "neoforge", "quilt", "all"] {
-                        ui.selectable_value(&mut self.mod_loader_filter, l.to_string(), l);
-                    }
-                });
-            let hint = match self.mod_provider_tab {
-                ModProviderTab::Modrinth => "Search Modrinth mods (e.g. sodium, fabric-api)...",
-                ModProviderTab::CurseForge => "Search CurseForge mods (e.g. jei, create)...",
-            };
-            let te = ui.add(
-                TextEdit::singleline(&mut self.mod_search_query)
-                    .hint_text(hint)
-                    .desired_width(240.0),
-            );
-            let search_clicked = ui
-                .add_enabled(!self.mod_searching, Button::new("Search"))
-                .clicked();
-            if search_clicked || (te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-            {
-                match self.mod_provider_tab {
-                    ModProviderTab::Modrinth => self.start_modrinth_search(ctx),
-                    ModProviderTab::CurseForge => self.start_curseforge_search(ctx),
-                }
-            }
-            if ui.button("Refresh Local").clicked() {
-                self.load_mods_async(&inst.instance_id, ctx, true);
-            }
-        });
-
-        if self.mod_provider_tab == ModProviderTab::CurseForge
-            && !self.curseforge_results.is_empty()
-        {
-            let urls: Vec<String> = self
-                .curseforge_results
-                .iter()
-                .filter_map(|m| m.icon_url().map(str::to_string))
-                .collect();
-            for u in urls {
-                self.ensure_thumbnail(&u, ctx);
-            }
-            ui.add_space(6.0);
-            let mut cf_pick: Option<(u64, String, Option<String>)> = None;
-            Frame::new()
-                .fill(p.surface)
-                .stroke(Stroke::new(1.0_f32, p.border))
-                .corner_radius(CornerRadius::same(3))
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("CurseForge Results")
-                                .strong()
-                                .size(12.0)
-                                .color(p.text_muted),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Close results").clicked() {
-                                self.curseforge_results.clear();
-                            }
-                        });
-                    });
-                    ui.add_space(4.0);
-                    ScrollArea::vertical()
-                        .id_salt("curseforge_results_scroll")
-                        .max_height(260.0)
-                        .show(ui, |ui| {
-                            for cf_mod in &self.curseforge_results {
-                                Frame::new()
-                                    .fill(p.elevated)
-                                    .stroke(Stroke::new(1.0_f32, p.border))
-                                    .corner_radius(CornerRadius::same(3))
-                                    .inner_margin(egui::Margin::same(6))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.horizontal(|ui| {
-                                            self.render_thumbnail(ui, cf_mod.icon_url(), 44.0);
-                                            ui.add_space(6.0);
-                                            ui.vertical(|ui| {
-                                                ui.horizontal(|ui| {
-                                                    ui.label(
-                                                        RichText::new(&cf_mod.name)
-                                                            .strong()
-                                                            .size(13.0),
-                                                    );
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "{} downloads",
-                                                            cf_mod.download_count
-                                                        ))
-                                                        .monospace()
-                                                        .size(10.5)
-                                                        .color(p.text_muted),
-                                                    );
-                                                });
-                                                if !cf_mod.summary.is_empty() {
-                                                    ui.label(
-                                                        RichText::new(&cf_mod.summary)
-                                                            .size(11.5)
-                                                            .color(p.text_muted),
-                                                    );
-                                                }
-                                            });
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    let can_install = !inst.mod_loader.is_vanilla();
-                                                    let btn = Button::new(
-                                                        RichText::new("Install...")
-                                                            .color(p.accent_text)
-                                                            .strong(),
-                                                    )
-                                                    .fill(p.accent);
-                                                    let resp = ui.add_enabled(can_install, btn);
-                                                    if inst.mod_loader.is_vanilla() {
-                                                        resp.on_disabled_hover_text(
-                                                            "Vanilla instances cannot install mods",
-                                                        );
-                                                    } else if resp.clicked() {
-                                                        cf_pick = Some((
-                                                            cf_mod.id,
-                                                            cf_mod.name.clone(),
-                                                            cf_mod.icon_url().map(str::to_string),
-                                                        ));
-                                                    }
-                                                    if let Some(url) = cf_mod
-                                                        .links
-                                                        .as_ref()
-                                                        .and_then(|l| l.website_url.as_ref())
-                                                    {
-                                                        if ui.button("Web").clicked() {
-                                                            open_external(url);
-                                                        }
-                                                    }
-                                                },
-                                            );
-                                        });
-                                    });
-                                ui.add_space(4.0);
-                            }
-                        });
-                });
-            if let Some((mid, name, icon)) = cf_pick {
-                self.open_curseforge_version_picker(mid, name, icon, ctx);
-            }
-        }
-
-        if self.mod_provider_tab == ModProviderTab::Modrinth && !self.modrinth_results.is_empty() {
-            let urls: Vec<String> = self
-                .modrinth_results
-                .iter()
-                .filter_map(|h| h.icon_url.clone())
-                .collect();
-            for u in urls {
-                self.ensure_thumbnail(&u, ctx);
-            }
-            ui.add_space(6.0);
-            let mut mr_pick: Option<(String, String, Option<String>)> = None;
-            Frame::new()
-                .fill(p.surface)
-                .stroke(Stroke::new(1.0_f32, p.border))
-                .corner_radius(CornerRadius::same(3))
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Modrinth Results")
-                                .strong()
-                                .size(12.0)
-                                .color(p.text_muted),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Close results").clicked() {
-                                self.modrinth_results.clear();
-                            }
-                        });
-                    });
-                    ui.add_space(4.0);
-                    ScrollArea::vertical()
-                        .id_salt("modrinth_results_scroll")
-                        .max_height(260.0)
-                        .show(ui, |ui| {
-                            for hit in &self.modrinth_results {
-                                Frame::new()
-                                    .fill(p.elevated)
-                                    .stroke(Stroke::new(1.0_f32, p.border))
-                                    .corner_radius(CornerRadius::same(3))
-                                    .inner_margin(egui::Margin::same(6))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.horizontal(|ui| {
-                                            self.render_thumbnail(
-                                                ui,
-                                                hit.icon_url.as_deref(),
-                                                44.0,
-                                            );
-                                            ui.add_space(6.0);
-                                            ui.vertical(|ui| {
-                                                ui.horizontal(|ui| {
-                                                    ui.label(
-                                                        RichText::new(&hit.title)
-                                                            .strong()
-                                                            .size(13.0),
-                                                    );
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "by {} · {} downloads",
-                                                            hit.author, hit.downloads
-                                                        ))
-                                                        .monospace()
-                                                        .size(10.5)
-                                                        .color(p.text_muted),
-                                                    );
-                                                });
-                                                if !hit.description.is_empty() {
-                                                    ui.label(
-                                                        RichText::new(&hit.description)
-                                                            .size(11.5)
-                                                            .color(p.text_muted),
-                                                    );
-                                                }
-                                            });
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    let can_install = !inst.mod_loader.is_vanilla();
-                                                    let btn = Button::new(
-                                                        RichText::new("Install...")
-                                                            .color(p.accent_text)
-                                                            .strong(),
-                                                    )
-                                                    .fill(p.accent);
-                                                    let resp = ui.add_enabled(can_install, btn);
-                                                    if inst.mod_loader.is_vanilla() {
-                                                        resp.on_disabled_hover_text(
-                                                            "Vanilla instances cannot install mods",
-                                                        );
-                                                    } else if resp.clicked() {
-                                                        mr_pick = Some((
-                                                            hit.slug.clone(),
-                                                            hit.title.clone(),
-                                                            hit.icon_url.clone(),
-                                                        ));
-                                                    }
-                                                },
-                                            );
-                                        });
-                                    });
-                                ui.add_space(4.0);
-                            }
-                        });
-                });
-            if let Some((slug, title, icon)) = mr_pick {
-                self.open_modrinth_version_picker(slug, title, icon, false, ctx);
-            }
-        }
-
         let inst_dir = self.paths.instance_dir(&inst.instance_id);
         let provenance = ModProvenanceRegistry::load(&inst_dir);
         let unlocked_updates = self
@@ -921,13 +819,28 @@ impl McwApp {
             .filter(|c| c.update_available && !c.locked)
             .count();
 
-        ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 RichText::new(format!("Installed Mods ({})", self.selected_mods.len()))
                     .strong()
                     .color(p.text),
             );
+            let can_install = !inst.mod_loader.is_vanilla();
+            let add_btn = Button::new(RichText::new("+ Add Mod").color(p.accent_text).strong())
+                .fill(p.accent)
+                .corner_radius(CornerRadius::same(3));
+            let add_resp = ui.add_enabled(can_install, add_btn);
+            if !can_install {
+                add_resp.on_disabled_hover_text("Vanilla instances cannot install mods");
+            } else if add_resp.clicked() {
+                if !inst.mod_loader.name.is_empty()
+                    && !inst.mod_loader.name.eq_ignore_ascii_case("vanilla")
+                {
+                    self.mod_loader_filter = inst.mod_loader.name.to_ascii_lowercase();
+                }
+                self.show_mod_browser_window = true;
+            }
+
             let check_lbl = if self.checking_mod_updates {
                 "Checking Updates..."
             } else {
@@ -950,14 +863,23 @@ impl McwApp {
                     self.start_apply_mod_updates(ctx);
                 }
             }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Open mods/ Folder").clicked() {
+                    let _ = std::fs::create_dir_all(&mods_dir);
+                    open_external(&mods_dir.display().to_string());
+                }
+                if ui.button("Refresh Local").clicked() {
+                    self.load_mods_async(&inst.instance_id, ctx, true);
+                }
+            });
         });
-        ui.add_space(4.0);
+        ui.add_space(6.0);
 
         if self.selected_mods.is_empty() {
             let msg = if self.loading_mods.contains(&inst.instance_id) {
                 "Scanning mods/ in background..."
             } else {
-                "No mods installed in this instance's mods/ folder."
+                "No mods installed in this instance's mods/ folder. Click '+ Add Mod' to browse Modrinth or CurseForge."
             };
             ui.label(RichText::new(msg).color(p.text_muted));
             return;
@@ -969,6 +891,7 @@ impl McwApp {
 
         ScrollArea::vertical()
             .id_salt("local_mods_scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for m in &self.selected_mods {
                     let compat = is_loader_compatible(m.loader, &inst.mod_loader.name);
@@ -1108,29 +1031,48 @@ impl McwApp {
         let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
         let prev_kind = self.packs_kind;
 
-        // Sub-selector: Resource Packs | Shader Packs
-        ui.horizontal(|ui| {
-            ui.selectable_value(
-                &mut self.packs_kind,
-                ContentKind::ResourcePack,
-                "Resource Packs",
-            );
-            ui.selectable_value(
-                &mut self.packs_kind,
-                ContentKind::ShaderPack,
-                "Shader Packs",
-            );
-            ui.separator();
-            ui.selectable_value(
-                &mut self.packs_provider,
-                ModProviderTab::Modrinth,
-                "Modrinth",
-            );
-            ui.selectable_value(
-                &mut self.packs_provider,
-                ModProviderTab::CurseForge,
-                "CurseForge",
-            );
+        let kind_label = match self.packs_kind {
+            ContentKind::ResourcePack => "Resource Packs",
+            ContentKind::ShaderPack => "Shader Packs",
+        };
+        let section_title = match self.packs_kind {
+            ContentKind::ResourcePack => {
+                format!(
+                    "Installed Resource Packs ({})",
+                    self.selected_content_packs.len()
+                )
+            }
+            ContentKind::ShaderPack => {
+                format!(
+                    "Installed Shader Packs ({})",
+                    self.selected_content_packs.len()
+                )
+            }
+        };
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(section_title).strong().color(p.text));
+            egui::ComboBox::from_id_salt("packs_kind_combo")
+                .selected_text(kind_label)
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.packs_kind,
+                        ContentKind::ResourcePack,
+                        "Resource Packs",
+                    );
+                    ui.selectable_value(
+                        &mut self.packs_kind,
+                        ContentKind::ShaderPack,
+                        "Shader Packs",
+                    );
+                });
+            let add_btn = Button::new(RichText::new("+ Add Pack").color(p.accent_text).strong())
+                .fill(p.accent)
+                .corner_radius(CornerRadius::same(3));
+            if ui.add(add_btn).clicked() {
+                self.show_pack_browser_window = true;
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let folder_dir = mc_dir.join(self.packs_kind.folder_name());
                 if ui.button("Open Folder").clicked() {
@@ -1156,172 +1098,6 @@ impl McwApp {
 
         ui.add_space(6.0);
 
-        // Online search bar
-        ui.horizontal(|ui| {
-            let hint = match self.packs_kind {
-                ContentKind::ResourcePack => "Search resource packs (e.g. Faithful, Bare Bones)...",
-                ContentKind::ShaderPack => "Search shaders (e.g. Complementary, BSL)...",
-            };
-            let te = ui.add(
-                TextEdit::singleline(&mut self.packs_query)
-                    .hint_text(hint)
-                    .desired_width(340.0),
-            );
-            let go = ui
-                .add_enabled(!self.packs_searching, Button::new("Search"))
-                .clicked();
-            if go || (te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-                self.start_content_pack_search(ctx);
-            }
-        });
-
-        // Modrinth search results
-        if self.packs_provider == ModProviderTab::Modrinth && !self.packs_mr_results.is_empty() {
-            ui.add_space(6.0);
-            Frame::new()
-                .fill(p.surface)
-                .stroke(Stroke::new(1.0_f32, p.border))
-                .corner_radius(CornerRadius::same(3))
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Modrinth Results")
-                                .strong()
-                                .size(12.0)
-                                .color(p.text_muted),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Close results").clicked() {
-                                self.packs_mr_results.clear();
-                            }
-                        });
-                    });
-                    let mut to_install: Option<(String, String)> = None;
-                    ScrollArea::vertical()
-                        .id_salt("packs_mr_scroll")
-                        .max_height(180.0)
-                        .show(ui, |ui| {
-                            for hit in &self.packs_mr_results {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&hit.title).strong());
-                                    ui.label(
-                                        RichText::new(format!("({})", hit.slug))
-                                            .monospace()
-                                            .size(11.0)
-                                            .color(p.text_muted),
-                                    );
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        let busy_item =
-                                            self.installing_content_packs.contains(&hit.slug);
-                                        let label = if busy_item {
-                                            "Installing..."
-                                        } else {
-                                            "Install"
-                                        };
-                                        if ui.add_enabled(!busy_item, Button::new(label)).clicked()
-                                        {
-                                            to_install =
-                                                Some((hit.slug.clone(), hit.title.clone()));
-                                        }
-                                    });
-                                });
-                            }
-                        });
-                    if let Some((slug, title)) = to_install {
-                        self.start_content_pack_install(false, slug, title, None, ctx);
-                    }
-                });
-        }
-
-        // CurseForge search results
-        if self.packs_provider == ModProviderTab::CurseForge && !self.packs_cf_results.is_empty() {
-            ui.add_space(6.0);
-            Frame::new()
-                .fill(p.surface)
-                .stroke(Stroke::new(1.0_f32, p.border))
-                .corner_radius(CornerRadius::same(3))
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("CurseForge Results")
-                                .strong()
-                                .size(12.0)
-                                .color(p.text_muted),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Close results").clicked() {
-                                self.packs_cf_results.clear();
-                            }
-                        });
-                    });
-                    let mut to_install: Option<(u64, String, String)> = None;
-                    ScrollArea::vertical()
-                        .id_salt("packs_cf_scroll")
-                        .max_height(180.0)
-                        .show(ui, |ui| {
-                            for cf in &self.packs_cf_results {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&cf.name).strong());
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "#{} · {} downloads",
-                                            cf.id, cf.download_count
-                                        ))
-                                        .monospace()
-                                        .size(11.0)
-                                        .color(p.text_muted),
-                                    );
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        let key = format!("cf-{}", cf.id);
-                                        let busy_item =
-                                            self.installing_content_packs.contains(&key);
-                                        let label = if busy_item {
-                                            "Installing..."
-                                        } else {
-                                            "Install"
-                                        };
-                                        if ui.add_enabled(!busy_item, Button::new(label)).clicked()
-                                        {
-                                            to_install =
-                                                Some((cf.id, cf.slug.clone(), cf.name.clone()));
-                                        }
-                                    });
-                                });
-                            }
-                        });
-                    if let Some((mid, slug, name)) = to_install {
-                        self.start_content_pack_install(
-                            true,
-                            format!("cf-{mid}"),
-                            name,
-                            Some(mid),
-                            ctx,
-                        );
-                        let _ = slug;
-                    }
-                });
-        }
-
-        ui.add_space(8.0);
-        let section_title = match self.packs_kind {
-            ContentKind::ResourcePack => {
-                format!(
-                    "Installed Resource Packs ({})",
-                    self.selected_content_packs.len()
-                )
-            }
-            ContentKind::ShaderPack => {
-                format!(
-                    "Installed Shader Packs ({})",
-                    self.selected_content_packs.len()
-                )
-            }
-        };
-        ui.label(RichText::new(section_title).strong().color(p.text));
-        ui.add_space(4.0);
-
         if self.selected_content_packs.is_empty() {
             let msg = if self
                 .loading_content_packs
@@ -1329,7 +1105,7 @@ impl McwApp {
             {
                 "Scanning folder in background..."
             } else {
-                "No packs installed in this folder yet."
+                "No packs installed in this folder yet. Click '+ Add Pack' to browse Modrinth or CurseForge."
             };
             ui.label(RichText::new(msg).color(p.text_muted));
             return;
@@ -1340,6 +1116,7 @@ impl McwApp {
 
         ScrollArea::vertical()
             .id_salt("local_content_packs_scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for pack in &self.selected_content_packs {
                     Frame::new()
@@ -1485,6 +1262,7 @@ impl McwApp {
 
         ScrollArea::vertical()
             .id_salt("worlds_list_scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for w in &self.selected_worlds {
                     Frame::new()
@@ -1574,15 +1352,28 @@ impl McwApp {
             self.start_launch_with_world(Some(folder), ctx);
         }
         if let Some(folder) = backup_target {
-            match WorldManager::backup_world(&mc_dir, &folder, None) {
-                Ok(zip_path) => {
-                    self.notice_banner = Some((
-                        format!("Backed up world '{}' to {}", folder, zip_path.display()),
-                        false,
-                    ));
-                }
-                Err(e) => {
-                    self.notice_banner = Some((format!("World backup failed: {e}"), true));
+            let default_name = format!("world_{folder}.zip");
+            if let Some(dest_path) = save_file_dialog(
+                "Save World Backup (.zip)",
+                "Zip Archive (*.zip)|*.zip|All Files (*.*)|*.*",
+                &default_name,
+            ) {
+                match WorldManager::backup_world(&mc_dir, &folder, None) {
+                    Ok(zip_path) => {
+                        let final_path = if dest_path != zip_path {
+                            let _ = std::fs::copy(&zip_path, &dest_path);
+                            dest_path
+                        } else {
+                            zip_path
+                        };
+                        self.notice_banner = Some((
+                            format!("Backed up world '{}' to {}", folder, final_path.display()),
+                            false,
+                        ));
+                    }
+                    Err(e) => {
+                        self.notice_banner = Some((format!("World backup failed: {e}"), true));
+                    }
                 }
             }
         }
@@ -1651,6 +1442,7 @@ impl McwApp {
 
         ScrollArea::vertical()
             .id_salt("screenshots_list_scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for s in &self.selected_screenshots {
                     Frame::new()
@@ -1754,35 +1546,40 @@ impl McwApp {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
-                let out_zip = self
-                    .paths
-                    .logs_root
-                    .join(format!("diagnostics-{}-{epoch}.zip", inst.instance_id));
-                let live_lines: Vec<String> = self
-                    .instance_logs
-                    .get(&inst.instance_id)
-                    .map(|v| v.iter().map(|l| l.text.clone()).collect())
-                    .unwrap_or_default();
-                match DiagnosticsExporter::export_bundle(
-                    &mc_dir,
-                    &inst.name,
-                    &inst.version_id,
-                    &inst.mod_loader.name,
-                    self.pc_ram_mb,
-                    &self.java_installations,
-                    &live_lines,
-                    &out_zip,
+                let default_name = format!("mcw-diagnostics-{}-{epoch}.zip", inst.instance_id);
+                if let Some(out_zip) = save_file_dialog(
+                    "Export Diagnostic Bundle (.zip)",
+                    "Zip Archive (*.zip)|*.zip|All Files (*.*)|*.*",
+                    &default_name,
                 ) {
-                    Ok(path) => {
-                        self.notice_banner = Some((
-                            format!("Exported sanitized diagnostic bundle to {}", path.display()),
-                            false,
-                        ));
-                        open_external(&self.paths.logs_root.display().to_string());
-                    }
-                    Err(e) => {
-                        self.notice_banner =
-                            Some((format!("Failed to export diagnostic bundle: {e}"), true));
+                    let live_lines: Vec<String> = self
+                        .instance_logs
+                        .get(&inst.instance_id)
+                        .map(|v| v.iter().map(|l| l.text.clone()).collect())
+                        .unwrap_or_default();
+                    match DiagnosticsExporter::export_bundle(
+                        &mc_dir,
+                        &inst.name,
+                        &inst.version_id,
+                        &inst.mod_loader.name,
+                        self.pc_ram_mb,
+                        &self.java_installations,
+                        &live_lines,
+                        &out_zip,
+                    ) {
+                        Ok(path) => {
+                            self.notice_banner = Some((
+                                format!(
+                                    "Exported sanitized diagnostic bundle to {}",
+                                    path.display()
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(e) => {
+                            self.notice_banner =
+                                Some((format!("Failed to export diagnostic bundle: {e}"), true));
+                        }
                     }
                 }
             }
@@ -1852,6 +1649,7 @@ impl McwApp {
                 }
                 ScrollArea::vertical()
                     .id_salt("live_logs_scroll")
+                    .auto_shrink([false, false])
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for line in lines.unwrap() {
@@ -1924,6 +1722,7 @@ impl McwApp {
 
         ScrollArea::vertical()
             .id_salt("instance_settings_scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 Frame::new()
                     .fill(p.surface)
@@ -2048,7 +1847,7 @@ impl McwApp {
                         ui.separator();
                         ui.add_space(10.0);
 
-                        // JVM Preset + Custom JVM & Game Arguments (matching Python instance_settings_page.py)
+                        // JVM Preset Dropdown + Custom JVM & Game Arguments
                         let current_jvm_lines: Vec<String> = self
                             .edit_jvm_args_text
                             .lines()
@@ -2056,16 +1855,27 @@ impl McwApp {
                             .filter(|s| !s.is_empty())
                             .collect();
                         let detected_preset = detect_preset(&current_jvm_lines);
+                        let current_preset_text = preset_options
+                            .iter()
+                            .find(|(id, _)| *id == detected_preset)
+                            .map(|(_, t)| t.clone())
+                            .unwrap_or_else(|| "Custom".to_string());
                         ui.horizontal_wrapped(|ui| {
                             ui.label(RichText::new(&preset_lbl).strong());
-                            for (preset, p_text) in &preset_options {
-                                let active = detected_preset == *preset;
-                                if ui.selectable_label(active, p_text).clicked()
-                                    && *preset != JvmPresetId::Custom
-                                {
-                                    self.edit_jvm_args_text = get_preset_flags(*preset).join("\n");
-                                }
-                            }
+                            egui::ComboBox::from_id_salt("inst_jvm_preset_combo")
+                                .selected_text(current_preset_text)
+                                .width(220.0)
+                                .show_ui(ui, |ui| {
+                                    for (preset, p_text) in &preset_options {
+                                        let active = detected_preset == *preset;
+                                        if ui.selectable_label(active, p_text).clicked()
+                                            && *preset != JvmPresetId::Custom
+                                        {
+                                            self.edit_jvm_args_text =
+                                                get_preset_flags(*preset).join("\n");
+                                        }
+                                    }
+                                });
                         });
                         ui.add_space(4.0);
                         ui.label(RichText::new("JVM Arguments (one flag per line):").size(11.5).color(p.text_muted));
@@ -2131,25 +1941,35 @@ impl McwApp {
                             ui.label("LAN Connection Provider:");
                             let is_e4mc =
                                 settings.lan_connection_provider.eq_ignore_ascii_case("e4mc");
-                            if ui
-                                .selectable_label(!is_e4mc, "Manual (Local LAN / VPN)")
-                                .clicked()
-                                && is_e4mc
-                            {
-                                settings.lan_connection_provider = "manual".to_string();
-                                prepare_lan_provider = Some("manual".to_string());
-                            }
-                            if ui
-                                .selectable_label(
-                                    is_e4mc,
-                                    "e4mc (Public Tunnel — auto-installs e4mc mod)",
-                                )
-                                .clicked()
-                                && !is_e4mc
-                            {
-                                settings.lan_connection_provider = "e4mc".to_string();
-                                prepare_lan_provider = Some("e4mc".to_string());
-                            }
+                            let lan_provider_text = if is_e4mc {
+                                "e4mc (Public Tunnel — auto-installs e4mc mod)"
+                            } else {
+                                "Manual (Local LAN / VPN)"
+                            };
+                            egui::ComboBox::from_id_salt("inst_lan_provider_combo")
+                                .selected_text(lan_provider_text)
+                                .width(320.0)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(!is_e4mc, "Manual (Local LAN / VPN)")
+                                        .clicked()
+                                        && is_e4mc
+                                    {
+                                        settings.lan_connection_provider = "manual".to_string();
+                                        prepare_lan_provider = Some("manual".to_string());
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            is_e4mc,
+                                            "e4mc (Public Tunnel — auto-installs e4mc mod)",
+                                        )
+                                        .clicked()
+                                        && !is_e4mc
+                                    {
+                                        settings.lan_connection_provider = "e4mc".to_string();
+                                        prepare_lan_provider = Some("e4mc".to_string());
+                                    }
+                                });
                         });
 
                         ui.add_space(10.0);

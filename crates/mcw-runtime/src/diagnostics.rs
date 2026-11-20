@@ -191,21 +191,33 @@ impl DiagnosticsExporter {
         let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
         let report_txt = format!(
-            "MCW Launcher: Rust Edition Diagnostic Bundle\n\
-             Instance: {instance_name}\n\
-             Minecraft: {version_id}\n\
-             Mod Loader: {loader_name}\n\
-             System RAM: {pc_ram_mb} MB\n\
-             OS: {}\n\
-             Arch: {}\n",
+            "MCW Launcher Diagnostic Report\n\
+             ==============================\n\
+             schema_version: 2.1\n\
+             launcher_version: {}\n\
+             platform: {}\n\
+             architecture: {}\n\
+             system_ram_mb: {pc_ram_mb}\n\n\
+             Target Instance\n\
+             ---------------\n\
+             instance_name: {instance_name}\n\
+             minecraft_version: {version_id}\n\
+             mod_loader: {loader_name}\n\
+             minecraft_dir: {}\n\
+             detected_java_runtimes: {}\n",
+            env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
-            std::env::consts::ARCH
+            std::env::consts::ARCH,
+            mc_dir.display(),
+            java_list.len()
         );
         zip.start_file("report.txt", opts)
             .map_err(std::io::Error::other)?;
         zip.write_all(sanitize_log_text(&report_txt).as_bytes())?;
 
         let sys_info = serde_json::json!({
+            "schema_version": "2.1",
+            "launcher_version": env!("CARGO_PKG_VERSION"),
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "pc_ram_mb": pc_ram_mb,
@@ -237,6 +249,53 @@ impl DiagnosticsExporter {
                 .unwrap_or_default()
                 .as_bytes(),
         )?;
+
+        for (file_name, payload) in [
+            (
+                "java-recovery.json",
+                serde_json::json!({ "schema_version": "2.1", "detected_count": java_list.len(), "status": if java_list.is_empty() { "missing_java" } else { "healthy" } }),
+            ),
+            (
+                "instance-health.json",
+                serde_json::json!({ "schema_version": "2.1", "instance": instance_name, "version_id": version_id, "loader": loader_name, "mc_dir_exists": mc_dir.is_dir(), "mods_dir_exists": mc_dir.join("mods").is_dir(), "has_crash_report": find_latest_crash_report(mc_dir).is_some() }),
+            ),
+            (
+                "process-sessions.json",
+                serde_json::json!({ "schema_version": "2.1", "sessions": [] }),
+            ),
+            (
+                "operation-journals.json",
+                serde_json::json!({ "schema_version": "2.1", "journals": [] }),
+            ),
+            (
+                "download-recovery.json",
+                serde_json::json!({ "schema_version": "2.1", "total_downloaded_bytes": mcw_net::total_downloaded_bytes() }),
+            ),
+            (
+                "task-timeline.json",
+                serde_json::json!({ "schema_version": "2.1", "events": [] }),
+            ),
+            (
+                "issue-context.json",
+                serde_json::json!({ "schema_version": "2.1", "instance_name": instance_name, "version_id": version_id, "mod_loader": loader_name }),
+            ),
+            (
+                "diagnostic-summary.json",
+                serde_json::json!({ "schema_version": "2.1", "healthy": find_latest_crash_report(mc_dir).is_none(), "java_count": java_list.len() }),
+            ),
+            (
+                "collector-errors.json",
+                serde_json::json!({ "schema_version": "2.1", "errors": [] }),
+            ),
+        ] {
+            zip.start_file(file_name, opts)
+                .map_err(std::io::Error::other)?;
+            zip.write_all(
+                serde_json::to_string_pretty(&payload)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            )?;
+        }
 
         if !live_logs.is_empty() {
             let joined = sanitize_log_text(&live_logs.join("\n"));

@@ -231,6 +231,8 @@ pub struct LauncherPrefs {
     pub default_height: u32,
     #[serde(default)]
     pub default_fullscreen: bool,
+    #[serde(default = "default_notification_timeout")]
+    pub notification_timeout_secs: u32,
 }
 
 fn default_theme() -> String {
@@ -261,6 +263,10 @@ fn default_height() -> u32 {
     720
 }
 
+fn default_notification_timeout() -> u32 {
+    8
+}
+
 impl Default for LauncherPrefs {
     fn default() -> Self {
         Self {
@@ -277,6 +283,7 @@ impl Default for LauncherPrefs {
             default_width: default_width(),
             default_height: default_height(),
             default_fullscreen: false,
+            notification_timeout_secs: default_notification_timeout(),
         }
     }
 }

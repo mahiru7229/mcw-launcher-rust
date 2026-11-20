@@ -1872,14 +1872,33 @@ impl McwApp {
         options: ModpackExportOptions,
         ctx: &egui::Context,
     ) {
-        let filename = match options.mode {
-            ModpackExportMode::Mrpack => format!("{instance_id}.mrpack"),
-            ModpackExportMode::ProviderProfile => format!("{instance_id}-MCW-Profile.zip"),
-            ModpackExportMode::Portable { .. } => format!("{instance_id}.mcwpack"),
+        let (filename, filter) = match options.mode {
+            ModpackExportMode::Mrpack => (
+                format!("{instance_id}.mrpack"),
+                "Modrinth Modpack (*.mrpack)|*.mrpack|All Files (*.*)|*.*",
+            ),
+            ModpackExportMode::ProviderProfile => (
+                format!("{instance_id}-MCW-Profile.zip"),
+                "Zip Archive (*.zip)|*.zip|All Files (*.*)|*.*",
+            ),
+            ModpackExportMode::Portable { .. } => (
+                format!("{instance_id}.mcwpack"),
+                "MCW Portable Pack (*.mcwpack)|*.mcwpack|All Files (*.*)|*.*",
+            ),
         };
-        let task_id = self.begin_task(format!("Export: {filename}"), "Packaging instance files...");
+        let Some(output_path) = save_file_dialog("Export Modpack", filter, &filename) else {
+            return;
+        };
+        let display_name = output_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&filename)
+            .to_string();
+        let task_id = self.begin_task(
+            format!("Export: {display_name}"),
+            "Packaging instance files...",
+        );
         let paths = self.paths.clone();
-        let output_path = self.paths.backups_root.join(&filename);
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 

@@ -2,13 +2,20 @@ use futures::stream::{self, StreamExt};
 use reqwest::header::{RANGE, USER_AGENT};
 use reqwest::StatusCode;
 use sha1::{Digest, Sha1};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, UNIX_EPOCH};
+
+type VerificationKey = (PathBuf, u64, u128);
+
+fn verification_cache() -> &'static Mutex<HashMap<VerificationKey, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<VerificationKey, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 use tokio::sync::Notify;
 
 static GLOBAL_DOWNLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -477,7 +484,9 @@ pub fn compute_sha1(path: &Path) -> Result<String> {
     Ok(hex_encode(&digest))
 }
 
-/// Verify file size (only when `expected_size > 0`) and SHA-1 (when provided).
+/// Verify file size (only when `expected_size > 0`) and SHA-1 (when provided),
+/// using an in-memory `(path, size, mtime_ns)` verification cache so unchanged
+/// libraries and assets are not re-hashed repeatedly (mirroring Python `VerificationCache`).
 pub fn verify_file(path: &Path, expected_sha1: Option<&str>, expected_size: u64) -> Result<()> {
     let meta = fs::metadata(path).map_err(|source| NetError::Io {
         path: path.display().to_string(),
@@ -496,6 +505,23 @@ pub fn verify_file(path: &Path, expected_sha1: Option<&str>, expected_size: u64)
     if let Some(expected) = expected_sha1 {
         let expected_clean = expected.trim().to_ascii_lowercase();
         if !expected_clean.is_empty() {
+            let mtime_ns = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let cache_key = (path.to_path_buf(), meta.len(), mtime_ns);
+            if mtime_ns > 0 {
+                if let Ok(guard) = verification_cache().lock() {
+                    if let Some(cached_sha1) = guard.get(&cache_key) {
+                        if cached_sha1 == &expected_clean {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+
             let actual = compute_sha1(path)?;
             if actual != expected_clean {
                 return Err(NetError::HashMismatch {
@@ -503,6 +529,11 @@ pub fn verify_file(path: &Path, expected_sha1: Option<&str>, expected_size: u64)
                     expected: expected_clean,
                     actual,
                 });
+            }
+            if mtime_ns > 0 {
+                if let Ok(mut guard) = verification_cache().lock() {
+                    guard.insert(cache_key, actual);
+                }
             }
         }
     }

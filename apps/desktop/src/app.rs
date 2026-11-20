@@ -297,6 +297,15 @@ pub struct McwApp {
     // Mod Provenance & Update Manager state
     mod_update_candidates: Vec<ModUpdateCandidate>,
     checking_mod_updates: bool,
+
+    // Auto-dismiss notification tracking (default 8s, configurable in Launcher Settings)
+    notice_banner_last_text: Option<String>,
+    notice_banner_since: Option<Instant>,
+
+    // Dedicated Isolated OS Windows for Mod Browser, Pack Browser, and Modpack Provider Browser
+    show_mod_browser_window: bool,
+    show_pack_browser_window: bool,
+    show_modpack_provider_window: Option<CreateInstanceTab>,
 }
 
 impl McwApp {
@@ -455,6 +464,11 @@ impl McwApp {
             optifine_jar_input: String::new(),
             mod_update_candidates: Vec::new(),
             checking_mod_updates: false,
+            notice_banner_last_text: None,
+            notice_banner_since: None,
+            show_mod_browser_window: false,
+            show_pack_browser_window: false,
+            show_modpack_provider_window: None,
         };
 
         app.reload_instances();
@@ -468,6 +482,27 @@ impl McwApp {
 impl eframe::App for McwApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_events(ctx);
+
+        // Auto-dismiss notice_banner after `notification_timeout_secs` (default 8s; 0 = disabled)
+        let current_notice_msg = self.notice_banner.as_ref().map(|(m, _)| m.clone());
+        if current_notice_msg != self.notice_banner_last_text {
+            self.notice_banner_last_text = current_notice_msg.clone();
+            self.notice_banner_since = current_notice_msg.as_ref().map(|_| Instant::now());
+        }
+        let timeout_secs = self.prefs.notification_timeout_secs;
+        if timeout_secs > 0 {
+            if let Some(since) = self.notice_banner_since {
+                let limit = Duration::from_secs(timeout_secs as u64);
+                let elapsed = since.elapsed();
+                if elapsed >= limit {
+                    self.notice_banner = None;
+                    self.notice_banner_last_text = None;
+                    self.notice_banner_since = None;
+                } else {
+                    ctx.request_repaint_after(limit - elapsed);
+                }
+            }
+        }
 
         // Live download speed sampling whenever any task or launch download is active
         let any_preparing = self

@@ -1,4 +1,4 @@
-﻿use crate::theme::ThemePalette;
+use crate::theme::ThemePalette;
 use eframe::egui::{self, CornerRadius, Stroke, Vec2};
 use std::path::PathBuf;
 
@@ -32,6 +32,46 @@ pub(crate) fn pick_file_dialog(title: &str, filter: &str) -> Option<PathBuf> {
     {
         let _ = (title, filter);
         None
+    }
+}
+
+pub(crate) fn save_file_dialog(
+    title: &str,
+    filter: &str,
+    default_filename: &str,
+) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let safe_title = title.replace('\'', "''");
+        let safe_filter = filter.replace('\'', "''");
+        let safe_file = default_filename.replace('\'', "''");
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $d = New-Object System.Windows.Forms.SaveFileDialog; \
+             $d.Title = '{safe_title}'; \
+             $d.Filter = '{safe_filter}'; \
+             $d.FileName = '{safe_file}'; \
+             $d.OverwritePrompt = $true; \
+             if ($d.ShowDialog() -eq 'OK') {{ Write-Output $d.FileName }}"
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-STA", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(s))
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (title, filter);
+        Some(PathBuf::from(default_filename))
     }
 }
 
@@ -88,6 +128,49 @@ pub(crate) fn gear_icon_button(ui: &mut egui::Ui, p: ThemePalette, active: bool)
         }
         painter.circle_stroke(center, inner_r, Stroke::new(1.8_f32, icon_col));
         painter.circle_filled(center, hole_r, bg);
+    }
+    resp
+}
+
+/// Paints a crisp 5-pointed vector star button for instance favorites (never relies on font glyphs).
+pub(crate) fn star_icon_button(
+    ui: &mut egui::Ui,
+    p: ThemePalette,
+    favorite: bool,
+) -> egui::Response {
+    let size = Vec2::new(20.0, 20.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if resp.hovered() {
+            painter.rect_filled(rect, CornerRadius::same(3), p.surface);
+        }
+        let col = if favorite {
+            p.warning
+        } else if resp.hovered() {
+            p.text
+        } else {
+            p.text_muted
+        };
+        let center = rect.center();
+        let outer_r = 6.8_f32;
+        let inner_r = 2.9_f32;
+        let mut pts = Vec::with_capacity(11);
+        for i in 0..10 {
+            let r = if i % 2 == 0 { outer_r } else { inner_r };
+            let angle = -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::PI / 5.0_f32;
+            pts.push(center + Vec2::new(angle.cos(), angle.sin()) * r);
+        }
+        if let Some(&first) = pts.first() {
+            pts.push(first);
+        }
+        let stroke_w = if favorite { 1.8_f32 } else { 1.3_f32 };
+        for pair in pts.windows(2) {
+            painter.line_segment([pair[0], pair[1]], Stroke::new(stroke_w, col));
+        }
+        if favorite {
+            painter.circle_filled(center, 2.3_f32, col);
+        }
     }
     resp
 }

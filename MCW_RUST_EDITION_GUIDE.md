@@ -13,6 +13,11 @@
 > - **Không tự ý sáng tạo/tạo code hoặc cơ chế mới** — luôn kiểm tra và **tái sử dụng** tối đa logic, cấu trúc, tài nguyên (`lang/en-US.json`, `lang/vi-VN.json`, `assets/`, `tools/mcw_lan_agent/`, schema `instance.json` / `settings.json`, thuật toán & edge-case) từ codebase Python.
 > - **Ngoại lệ duy nhất**: Chỉ được viết mới hoặc điều chỉnh khác đi khi giải pháp của Python **không phù hợp** với Rust/nền tảng native (ví dụ: giới hạn thư viện GUI `egui` so với `PySide6`, Win32 API thay cho gọi PowerShell, hoặc tối ưu hiệu năng/bộ nhớ/an toàn kiểu dữ liệu của Rust). Khi điều chỉnh, vẫn phải giữ nguyên hành vi và kết quả đầu ra tương đương bản Python.
 - **Quy ước Build / Cập nhật (Không dùng cơ chế Hotfix riêng)**: **MCW Launcher: Rust Edition** không triển khai hệ thống `hotfix` tách rời như bản Python; dùng **SemVer tag bình thường** (`v0.6.0-beta.1` → `v0.6.0-beta.2`, hoặc `v0.6.0` → `v0.6.1` → `v0.6.2`), trong đó **chỉ số cuối** xác định số build/bản vá tăng dần (khớp hoàn toàn với Cargo và `mcw-updater`).
+- **Quy chuẩn UX & Hiệu năng chung**:
+  1. **Cửa sổ riêng cho trình duyệt tài nguyên**: Mọi luồng tìm kiếm/duyệt/tải tài nguyên ngoài (Mods, Modpacks, Resource Packs, Shader Packs...) phải mở ở cửa sổ OS riêng biệt (`show_viewport_immediate`); danh sách tài nguyên trong tab luôn có `ScrollArea` tự do cuộn toàn chiều cao.
+  2. **Dùng Dropdown (`ComboBox`) cho tùy chọn nhiều lựa chọn**: Không dàn hàng ngang nhiều nút bấm cho các tùy chọn chọn 1 trong nhiều giá trị (trừ khi được yêu cầu riêng).
+  3. **Hộp thoại chọn nơi lưu file & Thông báo tự đóng**: Mọi thao tác lưu/xuất file đều mở `SaveFileDialog`; thông báo có nút *Dismiss* tự động đóng sau 8 giây (có cài đặt chỉnh trong *Launcher Settings*).
+  4. **Verification Cache cho Assets & Libraries**: Không tải lại hoặc băm lại file không đổi giữa các lần chạy.
 
 ---
 

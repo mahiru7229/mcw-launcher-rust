@@ -41,14 +41,22 @@ impl<'a> AssetManager<'a> {
         let index: AssetIndex = serde_json::from_str(&raw)?;
 
         // Deduplicate by SHA-1 hash because multiple logical asset names can share the same object.
+        // Skip objects already present on disk with matching file size (mirroring Python VerificationCache fast path).
         let mut seen = std::collections::HashSet::with_capacity(index.objects.len());
-        let mut requests = Vec::with_capacity(index.objects.len());
+        let mut requests = Vec::new();
         for obj in index.objects.values() {
             let hash = obj.hash.trim().to_ascii_lowercase();
             if hash.len() < 2 || !seen.insert(hash.clone()) {
                 continue;
             }
             let dest = self.paths.asset_object_path(&hash)?;
+            if obj.size > 0 {
+                if let Ok(meta) = fs::metadata(&dest) {
+                    if meta.is_file() && meta.len() == obj.size {
+                        continue;
+                    }
+                }
+            }
             let url = format!("{MOJANG_RESOURCES_URL}/{}/{hash}", &hash[..2]);
             requests.push(
                 DownloadRequest::new(url, dest)

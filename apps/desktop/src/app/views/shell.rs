@@ -182,7 +182,8 @@ impl McwApp {
                             p.border
                         };
 
-                        let resp = Frame::new()
+                        let mut star_clicked = false;
+                        let frame_resp = Frame::new()
                             .fill(bg)
                             .stroke(Stroke::new(1.0_f32, border_col))
                             .corner_radius(CornerRadius::same(3))
@@ -213,23 +214,11 @@ impl McwApp {
                                     ui.add_space(4.0);
                                     ui.vertical(|ui| {
                                         ui.horizontal(|ui| {
-                                            let star = if inst.favorite { "★" } else { "☆" };
-                                            let star_col = if inst.favorite {
-                                                p.warning
-                                            } else {
-                                                p.text_muted
-                                            };
-                                            if ui
-                                                .add(
-                                                    Button::new(
-                                                        RichText::new(star)
-                                                            .size(12.0)
-                                                            .color(star_col),
-                                                    )
-                                                    .frame(false),
-                                                )
+                                            if star_icon_button(ui, p, inst.favorite)
+                                                .on_hover_text("Toggle favorite")
                                                 .clicked()
                                             {
+                                                star_clicked = true;
                                                 toggle_fav = Some((
                                                     inst.instance_id.clone(),
                                                     !inst.favorite,
@@ -275,11 +264,12 @@ impl McwApp {
                                         });
                                     });
                                 });
-                            })
-                            .response
-                            .interact(egui::Sense::click());
+                            });
 
-                        if resp.clicked() {
+                        let card_clicked = !star_clicked
+                            && ui.rect_contains_pointer(frame_resp.response.rect)
+                            && ui.input(|i| i.pointer.primary_clicked());
+                        if card_clicked {
                             newly_selected = Some(inst.instance_id.clone());
                         }
                         ui.add_space(4.0);
