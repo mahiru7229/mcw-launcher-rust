@@ -1,10 +1,11 @@
 //! Launcher background picture (user image or procedurally generated pixel landscape).
 //!
 //! The picture is painted once per frame on the window's background layer; floating panels
-//! (translucent `ThemePalette::glass`) are drawn above it. There is no blur and no motion.
+//! (translucent `ThemePalette::glass`) are drawn above it. User image decoding & resizing run
+//! asynchronously off the GUI thread so switching pictures never stalls rendering.
 
 use eframe::egui::{self, Color32, ColorImage, Context, Rect, TextureHandle, TextureOptions, Vec2};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MAX_BACKGROUND_EDGE: u32 = 2560;
 const DEFAULT_W: usize = 480;
@@ -13,6 +14,7 @@ const DEFAULT_H: usize = 270;
 pub struct BackgroundManager {
     texture: Option<TextureHandle>,
     loaded_key: Option<String>,
+    loading_key: Option<String>,
     size: Vec2,
 }
 
@@ -21,43 +23,91 @@ impl BackgroundManager {
         Self {
             texture: None,
             loaded_key: None,
+            loading_key: None,
             size: Vec2::new(DEFAULT_W as f32, DEFAULT_H as f32),
         }
     }
 
-    /// (Re)loads the texture when `enabled` / `user_path` changed. Returns an error string
-    /// when the user picture could not be read (the default landscape is used instead).
-    pub fn ensure(&mut self, ctx: &Context, enabled: bool, user_path: &str) -> Option<String> {
-        let key = if enabled {
-            format!("on|{}", user_path.trim())
-        } else {
-            "off".to_string()
-        };
-        if self.loaded_key.as_deref() == Some(key.as_str()) {
-            return None;
-        }
-        self.loaded_key = Some(key);
+    /// Ensures bundled/disabled state synchronously and returns `Some((key, path))` when a
+    /// user-chosen image still needs asynchronous decoding off the GUI thread.
+    pub fn ensure_or_request(
+        &mut self,
+        ctx: &Context,
+        enabled: bool,
+        user_path: &str,
+    ) -> Option<(String, PathBuf)> {
         if !enabled {
+            self.loaded_key = Some("off".to_string());
+            self.loading_key = None;
             self.texture = None;
             return None;
         }
-
-        let mut error = None;
         let trimmed = user_path.trim();
-        let mut user_image = None;
-        if !trimmed.is_empty() {
-            match load_user_image(Path::new(trimmed)) {
-                Ok(img) => user_image = Some(img),
-                Err(e) => error = Some(e),
+        let key = format!("on|{trimmed}");
+        if self.loaded_key.as_deref() == Some(key.as_str()) {
+            return None;
+        }
+
+        if trimmed.is_empty() {
+            let image = generate_default_landscape();
+            self.size = Vec2::new(image.size[0] as f32, image.size[1] as f32);
+            self.texture = Some(ctx.load_texture("mcw_background", image, TextureOptions::NEAREST));
+            self.loaded_key = Some(key);
+            self.loading_key = None;
+            return None;
+        }
+
+        // Paint bundled landscape as an immediate fallback until async user image decode completes.
+        if self.texture.is_none() {
+            let image = generate_default_landscape();
+            self.size = Vec2::new(image.size[0] as f32, image.size[1] as f32);
+            self.texture = Some(ctx.load_texture("mcw_background", image, TextureOptions::NEAREST));
+        }
+
+        if self.loading_key.as_deref() == Some(key.as_str()) {
+            return None;
+        }
+        self.loading_key = Some(key.clone());
+        Some((key, PathBuf::from(trimmed)))
+    }
+
+    /// Applies the asynchronously decoded user background image on the UI thread.
+    /// Returns `Some(err)` if decoding failed (the default landscape remains visible).
+    pub fn apply_loaded_user_image(
+        &mut self,
+        ctx: &Context,
+        key: String,
+        expected_enabled: bool,
+        expected_user_path: &str,
+        result: Result<ColorImage, String>,
+    ) -> Option<String> {
+        if self.loading_key.as_deref() == Some(key.as_str()) {
+            self.loading_key = None;
+        }
+        let current_key = if expected_enabled {
+            format!("on|{}", expected_user_path.trim())
+        } else {
+            "off".to_string()
+        };
+        if key != current_key {
+            return None;
+        }
+        self.loaded_key = Some(key);
+        match result {
+            Ok(img) => {
+                self.size = Vec2::new(img.size[0] as f32, img.size[1] as f32);
+                self.texture =
+                    Some(ctx.load_texture("mcw_background", img, TextureOptions::LINEAR));
+                None
+            }
+            Err(err) => {
+                let fallback = generate_default_landscape();
+                self.size = Vec2::new(fallback.size[0] as f32, fallback.size[1] as f32);
+                self.texture =
+                    Some(ctx.load_texture("mcw_background", fallback, TextureOptions::NEAREST));
+                Some(err)
             }
         }
-        let (image, options) = match user_image {
-            Some(img) => (img, TextureOptions::LINEAR),
-            None => (generate_default_landscape(), TextureOptions::NEAREST),
-        };
-        self.size = Vec2::new(image.size[0] as f32, image.size[1] as f32);
-        self.texture = Some(ctx.load_texture("mcw_background", image, options));
-        error
     }
 
     pub fn is_active(&self) -> bool {
@@ -110,7 +160,8 @@ pub fn cover_uv(img: Vec2, target: Vec2) -> Rect {
     }
 }
 
-fn load_user_image(path: &Path) -> Result<ColorImage, String> {
+/// Decodes and safely downscales a user background image (runs on a worker thread).
+pub fn decode_user_image(path: &Path) -> Result<ColorImage, String> {
     let img = image::open(path).map_err(|e| format!("Could not open background picture: {e}"))?;
     let img = if img.width() > MAX_BACKGROUND_EDGE || img.height() > MAX_BACKGROUND_EDGE {
         img.resize(

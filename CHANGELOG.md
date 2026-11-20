@@ -2,6 +2,28 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [0.13.1-beta.1] - 2026-11-21
+
+### Added
+- **1-Step Global Content Install Target Dialog**: Browsing **Mod & Modpacks** (`Mods`, `Resource packs`, `Shader packs`, `Data packs`) from the top navigation opens a dedicated target selector directly inside the version picker (`Existing Instance` with Data Pack world selection, or `Create New Instance` pre-filled with the matching MC version and loader).
+- **JVM Preset Selector in Modpack Install Dialog**: Added a `JVM Preset` `ComboBox` (`Default`, `Aikar`, `ZGC`, `Shenandoah`) directly inside the Modpack Install dialog, persisting selected flags into the created instance's `settings.json`.
+- **Cross-Category Right-Pane Search in Launcher Settings**: Searching in `Launcher Settings` now filters setting cards across all 6 categories (`General`, `Downloads`, `Runtime`, `Appearance`, `Storage`, `Updates`) and displays matched cards with category headers in the right pane.
+- **Secondary OS Viewport Re-Focus**: Re-triggering an already-open secondary OS window (`Create Instance`, `Export Modpack`, `Content Browser`, `Accounts`, `Repair Center`, `Global Logs`, `First-Run Setup`, `Manual Downloads`, `About`, `All Active Tasks`, `Rename`/`Clone`/`Delete`/`Group & Tags`) brings it back to the foreground.
+
+### Changed
+- **Navigation & Home Tab Restructure**: Renamed top-bar `Mods` to **Mod & Modpacks** (global browsing mode); moved **Servers & LAN** from the top bar into each instance's Home tab bar; replaced the Home quick-edit pencil with an 8-tooth **Gear** icon opening `Instance Settings` and removed the `Instance Settings` pill from the tab bar; removed the duplicate `MCW LAN Agent` block from `Instance Settings`.
+- **Manual-Only Instant LAN Hosting**: Removed `e4mc` tunnel options and the `Apply LAN Hosting` button from **Servers & LAN**; toggling `Enable MCW LAN Agent` now saves `Manual (Local LAN / VPN)` mode immediately without touching user-installed tunnel mods.
+- **Content Browser Vertical Card Layout & Global Filters**: Fixed horizontal stacking in the Content Browser result list by wrapping split columns in explicit top-down layouts, added a global MC Version filter `ComboBox`, and set Modpacks default loader filters to `Fabric` (Modrinth) and `Forge` (CurseForge, ATLauncher, FTB).
+- **Versions Page Single Overall Scroll**: Made `Cached Versions` collapsible (`Show` / `Hide`) and removed the inner `max_height` scroll inside `Available Minecraft Versions` so the entire page scrolls smoothly together.
+- **Origin-Aware Modpack Export Formats**: Restricted Export Modpack formats by detected instance origin (`Modrinth` -> `.mrpack` + `.mcwpack`; `CurseForge` -> `CurseForge Modpack (.zip)` + `.mcwpack`; `ATLauncher`/`FTB` -> `Provider Profile (.zip)` + `.mcwpack`; manual/custom -> `.mcwpack` only).
+- **First-Run / Default Recommended RAM Formula**: Updated default max memory calculation to `max(4096 MB, 50% total RAM)` snapped to 256 MB steps (`<= total - 1024 MB` safety clamp on <= 4 GB PCs, 16384 MB cap).
+- **Display Polish**: Title-cased mod loader and version type labels (`Vanilla`, `Fabric`, `Quilt`, `Forge`, `NeoForge`, `Release`, `Snapshot`, `Old Beta`, `Old Alpha`, `All Loaders`) across the UI while keeping lowercase JSON slugs; replaced all Unicode em/en-dashes in UI strings and window titles with ASCII `-`.
+
+### Fixed
+- **Background Picker Hang**: Moved background picture file picking (`TopMost` Windows dialog) and PNG/JPEG/WebP image decoding onto background threads so clicking `Choose a picture...` never freezes the UI thread.
+- **OptiFine / Import Browse Label Leak**: Fixed raw `"common.browse"` key display by switching to the verified `instance_defaults.java.browse` localization key.
+
+---
 ## [0.13.0-beta.1] — 2026-11-21
 
 ### Added

@@ -22,7 +22,7 @@ impl McwApp {
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_repair_center");
         let builder = centered_viewport_builder(
             ctx,
-            format!("Repair Center & Health — {}", inst.name),
+            format!("Repair Center & Health - {}", inst.name),
             [640.0, 500.0],
             [480.0, 360.0],
         );
@@ -243,7 +243,7 @@ impl McwApp {
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_global_logs");
         let builder = centered_viewport_builder(
             ctx,
-            format!("{title_lbl} — MCW Launcher"),
+            format!("{title_lbl} - MCW Launcher"),
             [700.0, 480.0],
             [500.0, 340.0],
         );
@@ -377,7 +377,7 @@ impl McwApp {
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_about");
         let builder = centered_viewport_builder(
             ctx,
-            "About — MCW Launcher: Rust Edition",
+            "About - MCW Launcher: Rust Edition",
             [500.0, 380.0],
             [400.0, 300.0],
         );

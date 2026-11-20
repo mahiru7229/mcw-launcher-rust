@@ -164,11 +164,6 @@ pub enum AppEvent {
         instance_id: String,
         result: Result<usize, String>,
     },
-    LanHostingPrepared {
-        task_id: u64,
-        instance_id: String,
-        result: Result<String, String>,
-    },
     ModsLoaded {
         instance_id: String,
         mods: Vec<ModInfo>,
@@ -295,6 +290,11 @@ pub enum AppEvent {
         servers: Vec<SavedServer>,
     },
     CachedVersionsLoaded(Vec<CachedVersionInfo>),
+    BackgroundPicturePicked(Option<std::path::PathBuf>),
+    BackgroundImageLoaded {
+        key: String,
+        result: Result<eframe::egui::ColorImage, String>,
+    },
     ContentBrowserSearchFinished {
         request_id: u64,
         category: BrowserCategory,

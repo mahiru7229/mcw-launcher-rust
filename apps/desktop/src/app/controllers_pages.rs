@@ -1,6 +1,15 @@
 //! Page & Content Browser controllers separated from legacy `controllers.rs` (SOLID SRP).
 
+use super::platform::focus_viewport;
 use super::*;
+
+pub(crate) fn content_browser_window_title(global_mode: bool, category: BrowserCategory) -> String {
+    if global_mode {
+        "Mod & Modpacks - MCW Content Browser".to_string()
+    } else {
+        format!("{} - MCW Content Browser", category.label())
+    }
+}
 
 impl McwApp {
     pub(crate) fn load_servers_async(
@@ -67,7 +76,21 @@ impl McwApp {
         provider: Option<BrowserProvider>,
         ctx: &egui::Context,
     ) {
+        self.open_content_browser_mode(category, provider, false, ctx);
+    }
+
+    pub(crate) fn open_content_browser_mode(
+        &mut self,
+        category: BrowserCategory,
+        provider: Option<BrowserProvider>,
+        global_mode: bool,
+        ctx: &egui::Context,
+    ) {
+        let was_open = self.show_content_browser;
+        let prev_global = self.browser_global_mode;
+        let prev_provider = self.browser_provider;
         self.show_content_browser = true;
+        self.browser_global_mode = global_mode;
         let category_changed = self.browser_category != category;
         self.browser_category = category;
 
@@ -82,26 +105,54 @@ impl McwApp {
         {
             self.browser_provider = BrowserProvider::Modrinth;
         }
+        let provider_changed = self.browser_provider != prev_provider;
 
-        if category == BrowserCategory::Mods {
-            if let Some(inst) = self.selected_instance() {
+        // Modpacks default loader filter: Fabric for Modrinth, Forge for CurseForge / ATLauncher / FTB.
+        if category == BrowserCategory::Modpacks
+            && (!was_open || category_changed || provider_changed)
+        {
+            self.browser_loader_filter = match self.browser_provider {
+                BrowserProvider::Modrinth => "fabric".to_string(),
+                BrowserProvider::CurseForge
+                | BrowserProvider::Ftb
+                | BrowserProvider::AtLauncher => "forge".to_string(),
+            };
+        } else if category == BrowserCategory::Mods {
+            if global_mode {
+                if category_changed || !prev_global {
+                    self.browser_loader_filter = "all".to_string();
+                }
+            } else if let Some(inst) = self.selected_instance() {
                 if !inst.mod_loader.name.is_empty() && !inst.mod_loader.is_vanilla() {
                     self.browser_loader_filter = inst.mod_loader.name.to_ascii_lowercase();
                 }
             }
         }
 
-        if category == BrowserCategory::DataPacks {
+        if !global_mode && category == BrowserCategory::DataPacks {
             if let Some(id) = self.selected_instance_id.clone() {
                 self.load_worlds_async(&id, ctx, false);
             }
         }
 
+        if was_open {
+            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_content_browser");
+            let title =
+                content_browser_window_title(self.browser_global_mode, self.browser_category);
+            focus_viewport(ctx, vp_id, Some(&title));
+        }
+
+        let scope_key = if self.browser_global_mode {
+            format!("global:{}", self.browser_mc_version_filter)
+        } else {
+            self.selected_instance_id
+                .as_deref()
+                .unwrap_or("")
+                .to_string()
+        };
         let target_key = format!(
             "{:?}:{:?}:{}",
-            self.browser_category,
-            self.browser_provider,
-            self.selected_instance_id.as_deref().unwrap_or("")
+            self.browser_category, self.browser_provider, scope_key
         );
         let provider_empty = match self.browser_provider {
             BrowserProvider::Modrinth => self.browser_mr_results.is_empty(),
@@ -110,6 +161,8 @@ impl McwApp {
             BrowserProvider::AtLauncher => self.browser_atl_results.is_empty(),
         };
         if category_changed
+            || provider_changed
+            || global_mode != prev_global
             || self.browser_initialized_key.as_deref() != Some(target_key.as_str())
             || provider_empty
         {
@@ -135,12 +188,15 @@ impl McwApp {
         self.browser_provider = provider;
         self.browser_searching = true;
 
-        let target_key = format!(
-            "{:?}:{:?}:{}",
-            category,
-            provider,
-            self.selected_instance_id.as_deref().unwrap_or("")
-        );
+        let scope_key = if self.browser_global_mode {
+            format!("global:{}", self.browser_mc_version_filter)
+        } else {
+            self.selected_instance_id
+                .as_deref()
+                .unwrap_or("")
+                .to_string()
+        };
+        let target_key = format!("{:?}:{:?}:{}", category, provider, scope_key);
         self.browser_initialized_key = Some(target_key);
 
         let query = self.browser_query.clone();
@@ -148,6 +204,13 @@ impl McwApp {
         let inst = self.selected_instance().cloned();
         let game_version = if category == BrowserCategory::Modpacks {
             None
+        } else if self.browser_global_mode {
+            let v = self.browser_mc_version_filter.trim();
+            if v.is_empty() || v.eq_ignore_ascii_case("all") {
+                None
+            } else {
+                Some(v.to_string())
+            }
         } else {
             inst.as_ref().map(|i| i.version_id.clone())
         };

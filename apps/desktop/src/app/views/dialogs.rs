@@ -12,7 +12,7 @@ impl McwApp {
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_create_instance");
             let builder = centered_viewport_builder(
                 ctx,
-                "Create Instance — MCW Launcher",
+                "Create Instance - MCW Launcher",
                 [580.0, 480.0],
                 [460.0, 380.0],
             );
@@ -85,7 +85,7 @@ impl McwApp {
                                         let label = if ver_type == "release" {
                                             ver_id.clone()
                                         } else {
-                                            format!("{ver_id} ({ver_type})")
+                                            format!("{ver_id} ({})", display_version_type(ver_type))
                                         };
                                         ui.selectable_value(
                                             &mut self.create_version,
@@ -97,8 +97,9 @@ impl McwApp {
                             ui.add_space(6.0);
 
                             ui.label(self.t("instance.mod_loader"));
+                            let create_loader_disp = display_loader_name(&self.create_loader);
                             egui::ComboBox::from_id_salt("create_mod_loader_combo")
-                                .selected_text(&self.create_loader)
+                                .selected_text(&create_loader_disp)
                                 .width(200.0)
                                 .show_ui(ui, |ui| {
                                     for loader in ["vanilla", "fabric", "quilt", "forge", "neoforge"]
@@ -106,7 +107,7 @@ impl McwApp {
                                         ui.selectable_value(
                                             &mut self.create_loader,
                                             loader.to_string(),
-                                            loader,
+                                            display_loader_name(loader),
                                         );
                                     }
                                 });
@@ -243,7 +244,7 @@ impl McwApp {
                                         {
                                             self.inspect_local_archive_optional_files();
                                         }
-                                        if ui.button(self.t("common.browse")).clicked() {
+                                        if ui.button(self.t("instance_defaults.java.browse")).clicked() {
                                             if let Some(p) = pick_file_dialog(
                                                 "Select Modpack / Instance Package",
                                                 "MCW & Modpack Archives (*.mcwpack;*.mrpack;*.zip)|*.mcwpack;*.mrpack;*.zip|All Files (*.*)|*.*",
@@ -365,7 +366,7 @@ impl McwApp {
             });
             if let Some(prov) = open_browser_prov {
                 self.show_create_modal = false;
-                self.open_content_browser(BrowserCategory::Modpacks, Some(prov), ctx);
+                self.open_content_browser_mode(BrowserCategory::Modpacks, Some(prov), true, ctx);
             } else if !open {
                 self.show_create_modal = false;
             }
@@ -392,7 +393,7 @@ impl McwApp {
                 let vp_id = egui::ViewportId::from_hash_of("mcw_vp_export_modpack");
                 let builder = centered_viewport_builder(
                     ctx,
-                    format!("{title} — {}", inst.name),
+                    format!("{title} - {}", inst.name),
                     [540.0, 420.0],
                     [420.0, 320.0],
                 );
@@ -422,13 +423,57 @@ impl McwApp {
                                 );
                                 ui.add_space(10.0);
 
+                                let origin = detect_export_origin(
+                                    &self.paths.instance_dir(&inst.instance_id),
+                                    &inst.icon_origin,
+                                );
+                                let allow_mrpack = origin == InstanceExportOrigin::Modrinth;
+                                let allow_provider = matches!(
+                                    origin,
+                                    InstanceExportOrigin::CurseForge
+                                        | InstanceExportOrigin::OtherProvider
+                                );
+
                                 let mrpack_lbl =
                                     self.t("modpack_package.export.mrpack").to_string();
-                                let provider_lbl = self
-                                    .t("modpack_package.export.provider_profile")
-                                    .to_string();
+                                let provider_lbl = if origin == InstanceExportOrigin::CurseForge {
+                                    "CurseForge Modpack (.zip)".to_string()
+                                } else {
+                                    self.t("modpack_package.export.provider_profile")
+                                        .to_string()
+                                };
+                                let provider_help = if origin == InstanceExportOrigin::CurseForge {
+                                    "Exports a CurseForge-compatible manifest archive (.zip) referencing CurseForge project and file IDs plus overrides."
+                                        .to_string()
+                                } else {
+                                    self.t("modpack_package.export.provider_profile_help")
+                                        .to_string()
+                                };
                                 let portable_lbl =
                                     self.t("modpack_package.export.portable").to_string();
+
+                                // Coerce invalid mode for this instance origin
+                                match self.export_mode {
+                                    ModpackExportMode::Mrpack if !allow_mrpack => {
+                                        self.export_mode = if allow_provider {
+                                            ModpackExportMode::ProviderProfile
+                                        } else {
+                                            ModpackExportMode::Portable {
+                                                full: self.export_portable_full,
+                                            }
+                                        };
+                                    }
+                                    ModpackExportMode::ProviderProfile if !allow_provider => {
+                                        self.export_mode = if allow_mrpack {
+                                            ModpackExportMode::Mrpack
+                                        } else {
+                                            ModpackExportMode::Portable {
+                                                full: self.export_portable_full,
+                                            }
+                                        };
+                                    }
+                                    _ => {}
+                                }
 
                                 let is_mrpack =
                                     matches!(self.export_mode, ModpackExportMode::Mrpack);
@@ -450,10 +495,15 @@ impl McwApp {
                                     .selected_text(current_mode_label)
                                     .width(360.0)
                                     .show_ui(ui, |ui| {
-                                        if ui.selectable_label(is_mrpack, &mrpack_lbl).clicked() {
+                                        if allow_mrpack
+                                            && ui.selectable_label(is_mrpack, &mrpack_lbl).clicked()
+                                        {
                                             self.export_mode = ModpackExportMode::Mrpack;
                                         }
-                                        if ui.selectable_label(is_provider, &provider_lbl).clicked()
+                                        if allow_provider
+                                            && ui
+                                                .selectable_label(is_provider, &provider_lbl)
+                                                .clicked()
                                         {
                                             self.export_mode = ModpackExportMode::ProviderProfile;
                                         }
@@ -465,16 +515,16 @@ impl McwApp {
                                         }
                                     });
 
-                                let help_key = if is_mrpack {
-                                    "modpack_package.export.mrpack_help"
+                                let help_text = if is_mrpack {
+                                    self.t("modpack_package.export.mrpack_help").to_string()
                                 } else if is_provider {
-                                    "modpack_package.export.provider_profile_help"
+                                    provider_help
                                 } else {
-                                    "modpack_package.export.portable_help"
+                                    self.t("modpack_package.export.portable_help").to_string()
                                 };
                                 ui.add_space(4.0);
                                 ui.label(
-                                    RichText::new(self.t(help_key))
+                                    RichText::new(help_text)
                                         .size(11.0)
                                         .color(p.text_muted),
                                 );
@@ -574,14 +624,24 @@ impl McwApp {
             }
         }
 
-        // 1c. Mod / Modpack Version Picker Isolated OS Window (with Release/Beta/Alpha, MC Version, Loader & Version Dropdown filters)
+        // 1c. Mod / Content / Modpack Version Picker Isolated OS Window (with optional 1-step target instance selector)
         if self.version_picker_open {
             let mut open = self.version_picker_open;
             let mut chosen: Option<ModVersionChoice> = None;
             let mut filter_changed = false;
-            let title = format!("Select Version — {}", self.version_picker_title);
+            let mut load_worlds_for: Option<String> = None;
+            let title = if self.version_picker_global_mode {
+                format!("Install Content - {}", self.version_picker_title)
+            } else {
+                format!("Select Version - {}", self.version_picker_title)
+            };
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_version_picker");
-            let builder = centered_viewport_builder(ctx, title, [640.0, 540.0], [480.0, 380.0]);
+            let init_h = if self.version_picker_global_mode {
+                640.0
+            } else {
+                540.0
+            };
+            let builder = centered_viewport_builder(ctx, title, [680.0, init_h], [480.0, 380.0]);
 
             let beta_lbl = self.t("content.channel.beta").to_string();
             let alpha_lbl = self.t("content.channel.alpha").to_string();
@@ -604,6 +664,26 @@ impl McwApp {
 
             let filtered_items: Vec<ModVersionChoice> =
                 self.filtered_mod_versions().into_iter().cloned().collect();
+            let compat_instances = if self.version_picker_global_mode {
+                self.compatible_instances_for_content(self.version_picker_content_kind)
+            } else {
+                Vec::new()
+            };
+            let target_worlds: Vec<WorldInfo> = if self.version_picker_global_mode
+                && !self.version_picker_create_new
+                && self.version_picker_content_kind == Some(ContentKind::DataPack)
+            {
+                self.worlds_cache
+                    .get(&self.version_picker_target_instance_id)
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let target_ready = !self.version_picker_global_mode
+                || self.version_picker_create_new
+                || (!compat_instances.is_empty()
+                    && !self.version_picker_target_instance_id.trim().is_empty());
 
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
                 if vp_ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
@@ -630,8 +710,10 @@ impl McwApp {
                                 ui.label(
                                     RichText::new(if self.version_picker_is_pack {
                                         "Choose a modpack version to download and install."
+                                    } else if self.version_picker_global_mode {
+                                        "Choose an existing instance or create a new matching one, then select a version."
                                     } else {
-                                        "Filter and select a compatible mod version to install into mods/."
+                                        "Filter and select a compatible file version to install."
                                     })
                                     .size(11.5)
                                     .color(p.text_muted),
@@ -651,6 +733,220 @@ impl McwApp {
                         ui.separator();
                         ui.add_space(6.0);
 
+                        if self.version_picker_global_mode && !self.version_picker_is_pack {
+                            Frame::new()
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0_f32, p.border))
+                                .corner_radius(CornerRadius::same(10))
+                                .inner_margin(egui::Margin::same(10))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(RichText::new("Install Destination:").strong());
+                                        let mode_lbl = if self.version_picker_create_new {
+                                            "Create New Instance"
+                                        } else {
+                                            "Existing Instance"
+                                        };
+                                        let mw = auto_combo_width(ui, mode_lbl, 150.0, 210.0);
+                                        egui::ComboBox::from_id_salt("vp_dest_mode_combo")
+                                            .selected_text(mode_lbl)
+                                            .width(mw)
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(
+                                                    &mut self.version_picker_create_new,
+                                                    false,
+                                                    "Existing Instance",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut self.version_picker_create_new,
+                                                    true,
+                                                    "Create New Instance",
+                                                );
+                                            });
+                                    });
+                                    ui.add_space(6.0);
+                                    if !self.version_picker_create_new {
+                                        if compat_instances.is_empty() {
+                                            ui.label(
+                                                RichText::new(
+                                                    "No compatible instances exist yet. Switch Destination to 'Create New Instance'.",
+                                                )
+                                                .size(11.5)
+                                                .color(p.warning),
+                                            );
+                                        } else {
+                                            let cur_inst = compat_instances
+                                                .iter()
+                                                .find(|i| {
+                                                    i.instance_id
+                                                        == self.version_picker_target_instance_id
+                                                })
+                                                .or_else(|| compat_instances.first());
+                                            let cur_inst_lbl = cur_inst
+                                                .map(|i| {
+                                                    format!(
+                                                        "{} (MC {} - {})",
+                                                        i.name,
+                                                        i.version_id,
+                                                        display_loader_name(&i.mod_loader.name)
+                                                    )
+                                                })
+                                                .unwrap_or_else(|| "Select instance...".to_string());
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label("Target Instance:");
+                                                let iw = auto_combo_width(
+                                                    ui,
+                                                    &cur_inst_lbl,
+                                                    200.0,
+                                                    360.0,
+                                                );
+                                                egui::ComboBox::from_id_salt("vp_target_inst_combo")
+                                                    .selected_text(&cur_inst_lbl)
+                                                    .width(iw)
+                                                    .truncate()
+                                                    .show_ui(ui, |ui| {
+                                                        for inst in &compat_instances {
+                                                            let sel = self
+                                                                .version_picker_target_instance_id
+                                                                == inst.instance_id;
+                                                            let lbl = format!(
+                                                                "{} (MC {} - {})",
+                                                                inst.name,
+                                                                inst.version_id,
+                                                                display_loader_name(
+                                                                    &inst.mod_loader.name
+                                                                )
+                                                            );
+                                                            if ui.selectable_label(sel, lbl).clicked()
+                                                                && !sel
+                                                            {
+                                                                self.version_picker_target_instance_id =
+                                                                    inst.instance_id.clone();
+                                                                self.version_picker_datapack_world
+                                                                    .clear();
+                                                                if self.version_picker_content_kind
+                                                                    == Some(ContentKind::DataPack)
+                                                                {
+                                                                    load_worlds_for = Some(
+                                                                        inst.instance_id.clone(),
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                    });
+                                            });
+                                            if self.version_picker_content_kind
+                                                == Some(ContentKind::DataPack)
+                                            {
+                                                ui.add_space(4.0);
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label("Data Pack Target:");
+                                                    let w_lbl = if self
+                                                        .version_picker_datapack_world
+                                                        .trim()
+                                                        .is_empty()
+                                                    {
+                                                        "Global (.minecraft/datapacks)".to_string()
+                                                    } else {
+                                                        format!(
+                                                            "World: {}",
+                                                            self.version_picker_datapack_world
+                                                        )
+                                                    };
+                                                    let ww = auto_combo_width(
+                                                        ui,
+                                                        &w_lbl,
+                                                        190.0,
+                                                        320.0,
+                                                    );
+                                                    egui::ComboBox::from_id_salt(
+                                                        "vp_datapack_world_combo",
+                                                    )
+                                                    .selected_text(&w_lbl)
+                                                    .width(ww)
+                                                    .truncate()
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut self.version_picker_datapack_world,
+                                                            String::new(),
+                                                            "Global (.minecraft/datapacks)",
+                                                        );
+                                                        for w in &target_worlds {
+                                                            let lbl = format!(
+                                                                "{} ({})",
+                                                                w.display_name, w.folder_name
+                                                            );
+                                                            ui.selectable_value(
+                                                                &mut self
+                                                                    .version_picker_datapack_world,
+                                                                w.folder_name.clone(),
+                                                                lbl,
+                                                            );
+                                                        }
+                                                    });
+                                                });
+                                            }
+                                        }
+                                    } else {
+                                        let loaders_list: &[&str] =
+                                            if self.version_picker_content_kind.is_some() {
+                                                &[
+                                                    "vanilla",
+                                                    "fabric",
+                                                    "quilt",
+                                                    "forge",
+                                                    "neoforge",
+                                                ]
+                                            } else {
+                                                &["fabric", "quilt", "forge", "neoforge"]
+                                            };
+                                        let auto_mc = filtered_items
+                                            .iter()
+                                            .find(|v| v.id == self.version_picker_selected_id)
+                                            .or_else(|| filtered_items.first())
+                                            .and_then(|v| v.game_versions.first().cloned())
+                                            .unwrap_or_else(|| "latest".to_string());
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label("New Name:");
+                                            ui.add(
+                                                TextEdit::singleline(
+                                                    &mut self.version_picker_new_inst_name,
+                                                )
+                                                .hint_text("Instance name")
+                                                .desired_width(210.0),
+                                            );
+                                            ui.label("Loader:");
+                                            let l_disp = display_loader_name(
+                                                &self.version_picker_new_inst_loader,
+                                            );
+                                            let lw = auto_combo_width(ui, &l_disp, 96.0, 145.0);
+                                            egui::ComboBox::from_id_salt("vp_new_inst_loader_combo")
+                                                .selected_text(&l_disp)
+                                                .width(lw)
+                                                .show_ui(ui, |ui| {
+                                                    for &l in loaders_list {
+                                                        ui.selectable_value(
+                                                            &mut self.version_picker_new_inst_loader,
+                                                            l.to_string(),
+                                                            display_loader_name(l),
+                                                        );
+                                                    }
+                                                });
+                                        });
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "Auto-configured MC {auto_mc} - {} (uses default launcher RAM/Java)",
+                                                display_loader_name(&self.version_picker_new_inst_loader)
+                                            ))
+                                            .size(11.0)
+                                            .color(p.text_muted),
+                                        );
+                                    }
+                                });
+                            ui.add_space(6.0);
+                        }
+
                         // Row 1: Release channels (Include Beta / Include Alpha) + auto-sized MC Version & Loader dropdowns
                         ui.horizontal_wrapped(|ui| {
                             if ui
@@ -667,23 +963,28 @@ impl McwApp {
                             }
                             ui.separator();
                             ui.label("MC Version:");
-                            let mc_w = auto_combo_width(
-                                ui,
-                                &self.version_picker_mc_filter,
-                                68.0,
-                                150.0,
-                            );
+                            let mc_disp = if self.version_picker_mc_filter == "all" {
+                                "All Versions".to_string()
+                            } else {
+                                self.version_picker_mc_filter.clone()
+                            };
+                            let mc_w = auto_combo_width(ui, &mc_disp, 80.0, 150.0);
                             egui::ComboBox::from_id_salt("mod_vp_mc_filter_combo")
-                                .selected_text(&self.version_picker_mc_filter)
+                                .selected_text(&mc_disp)
                                 .width(mc_w)
                                 .truncate()
                                 .show_ui(ui, |ui| {
                                     for gv in &all_mc_versions {
+                                        let disp = if gv == "all" {
+                                            "All Versions".to_string()
+                                        } else {
+                                            gv.clone()
+                                        };
                                         if ui
                                             .selectable_value(
                                                 &mut self.version_picker_mc_filter,
                                                 gv.clone(),
-                                                gv,
+                                                disp,
                                             )
                                             .changed()
                                         {
@@ -692,14 +993,11 @@ impl McwApp {
                                     }
                                 });
                             ui.label("Loader:");
-                            let loader_w = auto_combo_width(
-                                ui,
-                                &self.version_picker_loader_filter,
-                                68.0,
-                                130.0,
-                            );
+                            let loader_disp =
+                                display_loader_name(&self.version_picker_loader_filter);
+                            let loader_w = auto_combo_width(ui, &loader_disp, 84.0, 140.0);
                             egui::ComboBox::from_id_salt("mod_vp_loader_filter_combo")
-                                .selected_text(&self.version_picker_loader_filter)
+                                .selected_text(&loader_disp)
                                 .width(loader_w)
                                 .truncate()
                                 .show_ui(ui, |ui| {
@@ -708,7 +1006,7 @@ impl McwApp {
                                             .selectable_value(
                                                 &mut self.version_picker_loader_filter,
                                                 l.to_string(),
-                                                l,
+                                                display_loader_name(l),
                                             )
                                             .changed()
                                         {
@@ -759,7 +1057,7 @@ impl McwApp {
                                         .cloned()
                                         .collect::<Vec<_>>()
                                         .join(", ");
-                                    let loaders = item.loaders.join(", ");
+                                    let loaders = item.loaders.iter().map(|l| display_loader_name(l)).collect::<Vec<_>>().join(", ");
                                     if loaders.is_empty() {
                                         format!(
                                             "{badge} {} ({}) · MC {} · {}",
@@ -804,7 +1102,7 @@ impl McwApp {
                                                 .cloned()
                                                 .collect::<Vec<_>>()
                                                 .join(", ");
-                                            let loaders = item.loaders.join(", ");
+                                            let loaders = item.loaders.iter().map(|l| display_loader_name(l)).collect::<Vec<_>>().join(", ");
                                             let text = if loaders.is_empty() {
                                                 format!(
                                                     "{badge} {} ({}) · MC {} · {}",
@@ -852,7 +1150,10 @@ impl McwApp {
                                         )
                                         .fill(p.accent);
                                         if ui
-                                            .add_enabled(selected_item.is_some(), install_btn)
+                                            .add_enabled(
+                                                selected_item.is_some() && target_ready,
+                                                install_btn,
+                                            )
                                             .clicked()
                                         {
                                             if let Some(sel) = selected_item {
@@ -917,7 +1218,7 @@ impl McwApp {
                                                             .cloned()
                                                             .collect::<Vec<_>>()
                                                             .join(", ");
-                                                        let loaders = item.loaders.join(", ");
+                                                        let loaders = item.loaders.iter().map(|l| display_loader_name(l)).collect::<Vec<_>>().join(", ");
                                                         let meta = if loaders.is_empty() {
                                                             format!(
                                                                 "{} · MC {} · {}",
@@ -950,7 +1251,10 @@ impl McwApp {
                                                                     .strong(),
                                                             )
                                                             .fill(p.accent);
-                                                            if ui.add(btn).clicked() {
+                                                            if ui
+                                                                .add_enabled(target_ready, btn)
+                                                                .clicked()
+                                                            {
                                                                 chosen = Some(item.clone());
                                                             }
                                                         },
@@ -964,6 +1268,9 @@ impl McwApp {
                     });
             });
             self.version_picker_open = open;
+            if let Some(wid) = load_worlds_for {
+                self.load_worlds_async(&wid, ctx, false);
+            }
             if filter_changed {
                 self.sync_mod_version_picker_selection();
             }
@@ -977,6 +1284,18 @@ impl McwApp {
                         .to_string();
                     let title = self.version_picker_title.clone();
                     self.start_modrinth_pack_install(slug, title, Some(choice.id), ctx);
+                } else if self.version_picker_global_mode {
+                    let dp_world = (!self.version_picker_datapack_world.trim().is_empty())
+                        .then(|| self.version_picker_datapack_world.clone());
+                    self.install_content_choice_to_target(
+                        choice,
+                        self.version_picker_create_new,
+                        self.version_picker_target_instance_id.clone(),
+                        self.version_picker_new_inst_name.clone(),
+                        self.version_picker_new_inst_loader.clone(),
+                        dp_world,
+                        ctx,
+                    );
                 } else {
                     self.start_direct_mod_file_install(choice, ctx);
                 }
@@ -990,7 +1309,7 @@ impl McwApp {
                 let vp_id = egui::ViewportId::from_hash_of("mcw_vp_rename_instance");
                 let builder = centered_viewport_builder(
                     ctx,
-                    format!("Rename Instance — {}", inst.name),
+                    format!("Rename Instance - {}", inst.name),
                     [420.0, 170.0],
                     [360.0, 150.0],
                 );
@@ -1054,7 +1373,7 @@ impl McwApp {
                 let vp_id = egui::ViewportId::from_hash_of("mcw_vp_edit_group_tags");
                 let builder = centered_viewport_builder(
                     ctx,
-                    format!("Edit Group & Tags — {}", inst.name),
+                    format!("Edit Group & Tags - {}", inst.name),
                     [460.0, 230.0],
                     [380.0, 200.0],
                 );
@@ -1141,7 +1460,7 @@ impl McwApp {
                 let vp_id = egui::ViewportId::from_hash_of("mcw_vp_clone_instance");
                 let builder = centered_viewport_builder(
                     ctx,
-                    format!("{clone_title} — {}", inst.name),
+                    format!("{clone_title} - {}", inst.name),
                     [440.0, 210.0],
                     [360.0, 180.0],
                 );
@@ -1207,7 +1526,7 @@ impl McwApp {
                 let vp_id = egui::ViewportId::from_hash_of("mcw_vp_delete_instance");
                 let builder = centered_viewport_builder(
                     ctx,
-                    format!("Delete Instance — {}", inst.name),
+                    format!("Delete Instance - {}", inst.name),
                     [460.0, 190.0],
                     [380.0, 160.0],
                 );
@@ -1273,7 +1592,7 @@ impl McwApp {
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_accounts");
             let builder = centered_viewport_builder(
                 ctx,
-                "Accounts — MCW Launcher",
+                "Accounts - MCW Launcher",
                 [480.0, 440.0],
                 [380.0, 340.0],
             );
@@ -1487,7 +1806,7 @@ impl McwApp {
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_restore_backup");
             let builder = centered_viewport_builder(
                 ctx,
-                format!("Restore Backup — {backup_id}"),
+                format!("Restore Backup - {backup_id}"),
                 [460.0, 190.0],
                 [380.0, 160.0],
             );
@@ -1543,7 +1862,7 @@ impl McwApp {
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_delete_world");
             let builder = centered_viewport_builder(
                 ctx,
-                format!("Delete World — {folder_name}"),
+                format!("Delete World - {folder_name}"),
                 [440.0, 180.0],
                 [360.0, 150.0],
             );
@@ -1629,7 +1948,7 @@ impl McwApp {
             let builder = centered_viewport_builder(
                 ctx,
                 format!(
-                    "Manual Downloads — {} ({} remaining)",
+                    "Manual Downloads - {} ({} remaining)",
                     inst_name,
                     items.len()
                 ),
@@ -1831,7 +2150,7 @@ impl McwApp {
         let mut browse_java = false;
 
         let title = format!(
-            "{} ({}) — MCW Launcher",
+            "{} ({}) - MCW Launcher",
             self.modpack_dialog.pack_title, self.modpack_dialog.provider_label
         );
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_modpack_install");
@@ -2009,8 +2328,9 @@ impl McwApp {
                                 ui.label(RichText::new("RAM (MB)").strong().size(12.5));
                                 ui.label(
                                     RichText::new(format!(
-                                        "(PC RAM: {} MB · Loader: {})",
-                                        self.pc_ram_mb, active_loader
+                                        "(PC RAM: {} MB - Loader: {})",
+                                        self.pc_ram_mb,
+                                        display_loader_name(active_loader)
                                     ))
                                     .size(11.0)
                                     .color(p.text_muted),
@@ -2054,6 +2374,36 @@ impl McwApp {
                                             self.modpack_dialog.max_ram_mb;
                                     }
                                 }
+                            });
+
+                            ui.add_space(8.0);
+
+                            // 3b. JVM Preset (Default, Aikar, ZGC, Shenandoah)
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("JVM Preset:").strong().size(12.5));
+                                let cur_preset_lbl = self
+                                    .t(self.modpack_dialog.jvm_preset.i18n_key())
+                                    .to_string();
+                                let pw = auto_combo_width(ui, &cur_preset_lbl, 160.0, 260.0);
+                                egui::ComboBox::from_id_salt("modpack_install_jvm_preset_combo")
+                                    .selected_text(&cur_preset_lbl)
+                                    .width(pw)
+                                    .truncate()
+                                    .show_ui(ui, |ui| {
+                                        for preset in [
+                                            JvmPresetId::Default,
+                                            JvmPresetId::Aikar,
+                                            JvmPresetId::Zgc,
+                                            JvmPresetId::Shenandoah,
+                                        ] {
+                                            let lbl = self.t(preset.i18n_key()).to_string();
+                                            ui.selectable_value(
+                                                &mut self.modpack_dialog.jvm_preset,
+                                                preset,
+                                                lbl,
+                                            );
+                                        }
+                                    });
                             });
 
                             ui.add_space(10.0);

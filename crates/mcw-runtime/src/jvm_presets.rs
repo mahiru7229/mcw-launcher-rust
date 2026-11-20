@@ -1,7 +1,8 @@
 /// Direct 1:1 port of `src/core/java/jvm_presets.py` from MCW Launcher Python.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JvmPresetId {
+    #[default]
     Default,
     Aikar,
     Zgc,

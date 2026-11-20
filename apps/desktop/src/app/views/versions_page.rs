@@ -18,8 +18,8 @@ impl McwApp {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Import Archive...").clicked() {
+                    self.open_create_instance_dialog(ctx);
                     self.create_tab = CreateInstanceTab::ImportArchive;
-                    self.show_create_modal = true;
                 }
                 if ui
                     .add_enabled(!self.versions_loading && !self.cached_versions_loading, Button::new("Refresh"))
@@ -80,7 +80,7 @@ impl McwApp {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
                                 RichText::new(format!(
-                                    "Cached Versions ({}) · {}",
+                                    "Cached Versions ({}) - {}",
                                     self.cached_versions.len(),
                                     format_bytes(total_cached_bytes)
                                 ))
@@ -88,7 +88,22 @@ impl McwApp {
                                 .size(15.5)
                                 .color(p.text),
                             );
+                            if !unused_ids.is_empty() {
+                                ui.label(
+                                    RichText::new(format!("({} unused)", unused_ids.len()))
+                                        .size(11.5)
+                                        .color(p.text_muted),
+                                );
+                            }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                let toggle_lbl = if self.versions_cached_expanded {
+                                    "Hide"
+                                } else {
+                                    "Show"
+                                };
+                                if ui.button(toggle_lbl).clicked() {
+                                    self.versions_cached_expanded = !self.versions_cached_expanded;
+                                }
                                 if ui.button("Open cache/versions/").clicked() {
                                     let dir = self.paths.cache_root.join("versions");
                                     let _ = std::fs::create_dir_all(&dir);
@@ -123,131 +138,139 @@ impl McwApp {
                                 }
                             });
                         });
-                        ui.add_space(8.0);
 
-                        let mut delete_id: Option<String> = None;
-                        let mut create_from_ver: Option<String> = None;
+                        if self.versions_cached_expanded {
+                            ui.add_space(8.0);
+                            let mut delete_id: Option<String> = None;
+                            let mut create_from_ver: Option<String> = None;
 
-                        if self.cached_versions_loading && self.cached_versions.is_empty() {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
+                            if self.cached_versions_loading && self.cached_versions.is_empty() {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label(
+                                        RichText::new("Scanning cache/versions/...")
+                                            .color(p.text_muted),
+                                    );
+                                });
+                            } else if self.cached_versions.is_empty() {
                                 ui.label(
-                                    RichText::new("Scanning cache/versions/...").color(p.text_muted),
+                                    RichText::new(
+                                        "No cached versions found yet. Launching or creating an instance downloads its version metadata & JAR here.",
+                                    )
+                                    .color(p.text_muted),
                                 );
-                            });
-                        } else if self.cached_versions.is_empty() {
-                            ui.label(
-                                RichText::new(
-                                    "No cached versions found yet. Launching or creating an instance downloads its version metadata & JAR here.",
-                                )
-                                .color(p.text_muted),
-                            );
-                        } else {
-                            for ver in &self.cached_versions {
-                                let refs = used_by.get(&ver.version_id);
-                                Frame::new()
-                                    .fill(p.elevated)
-                                    .stroke(Stroke::new(1.0_f32, p.border))
-                                    .corner_radius(CornerRadius::same(10))
-                                    .inner_margin(egui::Margin::symmetric(12, 8))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.horizontal(|ui| {
-                                            ui.vertical(|ui| {
-                                                ui.horizontal_wrapped(|ui| {
-                                                    ui.label(
-                                                        RichText::new(&ver.version_id)
-                                                            .monospace()
-                                                            .strong()
-                                                            .color(p.text),
-                                                    );
-                                                    let jar_lbl = if ver.has_jar {
-                                                        "JAR ready"
+                            } else {
+                                for ver in &self.cached_versions {
+                                    let refs = used_by.get(&ver.version_id);
+                                    Frame::new()
+                                        .fill(p.elevated)
+                                        .stroke(Stroke::new(1.0_f32, p.border))
+                                        .corner_radius(CornerRadius::same(10))
+                                        .inner_margin(egui::Margin::symmetric(12, 8))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.horizontal(|ui| {
+                                                ui.vertical(|ui| {
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        ui.label(
+                                                            RichText::new(&ver.version_id)
+                                                                .monospace()
+                                                                .strong()
+                                                                .color(p.text),
+                                                        );
+                                                        let jar_lbl = if ver.has_jar {
+                                                            "JAR ready"
+                                                        } else {
+                                                            "Metadata only"
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "- {jar_lbl} - {}",
+                                                                format_bytes(ver.size_bytes)
+                                                            ))
+                                                            .size(11.5)
+                                                            .color(p.text_muted),
+                                                        );
+                                                    });
+                                                    if let Some(names) = refs {
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "Used by: {}",
+                                                                names.join(", ")
+                                                            ))
+                                                            .size(11.0)
+                                                            .color(p.accent),
+                                                        );
                                                     } else {
-                                                        "Metadata only"
-                                                    };
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "· {jar_lbl} · {}",
-                                                            format_bytes(ver.size_bytes)
-                                                        ))
-                                                        .size(11.5)
-                                                        .color(p.text_muted),
-                                                    );
-                                                });
-                                                if let Some(names) = refs {
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "Used by: {}",
-                                                            names.join(", ")
-                                                        ))
-                                                        .size(11.0)
-                                                        .color(p.accent),
-                                                    );
-                                                } else {
-                                                    ui.label(
-                                                        RichText::new("Unused by current instances")
+                                                        ui.label(
+                                                            RichText::new(
+                                                                "Unused by current instances",
+                                                            )
                                                             .size(11.0)
                                                             .color(p.text_muted),
-                                                    );
-                                                }
-                                            });
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    let can_delete = refs.is_none();
-                                                    let del_resp = ui.add_enabled(
-                                                        can_delete,
-                                                        Button::new(
-                                                            RichText::new("Delete").color(if can_delete {
-                                                                p.danger
-                                                            } else {
-                                                                p.text_muted
-                                                            }),
-                                                        ),
-                                                    );
-                                                    if !can_delete {
-                                                        del_resp.on_disabled_hover_text(
-                                                            "Still referenced by one or more instances",
                                                         );
-                                                    } else if del_resp.clicked() {
-                                                        delete_id = Some(ver.version_id.clone());
                                                     }
-                                                    if ui.button("New Instance").clicked() {
-                                                        create_from_ver =
-                                                            Some(ver.version_id.clone());
-                                                    }
-                                                },
-                                            );
+                                                });
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        let can_delete = refs.is_none();
+                                                        let del_resp = ui.add_enabled(
+                                                            can_delete,
+                                                            Button::new(
+                                                                RichText::new("Delete").color(
+                                                                    if can_delete {
+                                                                        p.danger
+                                                                    } else {
+                                                                        p.text_muted
+                                                                    },
+                                                                ),
+                                                            ),
+                                                        );
+                                                        if !can_delete {
+                                                            del_resp.on_disabled_hover_text(
+                                                                "Still referenced by one or more instances",
+                                                            );
+                                                        } else if del_resp.clicked() {
+                                                            delete_id =
+                                                                Some(ver.version_id.clone());
+                                                        }
+                                                        if ui.button("New Instance").clicked() {
+                                                            create_from_ver =
+                                                                Some(ver.version_id.clone());
+                                                        }
+                                                    },
+                                                );
+                                            });
                                         });
-                                    });
-                                ui.add_space(6.0);
+                                    ui.add_space(6.0);
+                                }
                             }
-                        }
 
-                        if let Some(id) = delete_id {
-                            match StorageCleanupService::delete_cached_version(&self.paths, &id) {
-                                Ok(bytes) => {
-                                    self.notice_banner = Some((
-                                        format!(
-                                            "Deleted cached version '{id}' ({}).",
-                                            format_bytes(bytes)
-                                        ),
-                                        false,
-                                    ));
-                                    self.load_cached_versions_async(ctx);
-                                }
-                                Err(e) => {
-                                    self.notice_banner = Some((
-                                        format!("Failed to delete version '{id}': {e}"),
-                                        true,
-                                    ));
+                            if let Some(id) = delete_id {
+                                match StorageCleanupService::delete_cached_version(&self.paths, &id) {
+                                    Ok(bytes) => {
+                                        self.notice_banner = Some((
+                                            format!(
+                                                "Deleted cached version '{id}' ({}).",
+                                                format_bytes(bytes)
+                                            ),
+                                            false,
+                                        ));
+                                        self.load_cached_versions_async(ctx);
+                                    }
+                                    Err(e) => {
+                                        self.notice_banner = Some((
+                                            format!("Failed to delete version '{id}': {e}"),
+                                            true,
+                                        ));
+                                    }
                                 }
                             }
-                        }
-                        if let Some(v) = create_from_ver {
-                            self.open_create_instance_dialog();
-                            self.create_version = v;
+                            if let Some(v) = create_from_ver {
+                                self.open_create_instance_dialog(ctx);
+                                self.create_version = v;
+                            }
                         }
                     });
 
@@ -335,60 +358,53 @@ impl McwApp {
                             .collect();
 
                         let mut pick_ver: Option<String> = None;
-                        ScrollArea::vertical()
-                            .id_salt("versions_manifest_scroll")
-                            .max_height(320.0)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                if matching.is_empty() {
-                                    ui.label(
-                                        RichText::new("No matching Minecraft versions.")
-                                            .color(p.text_muted),
-                                    );
-                                } else {
-                                    for (ver_id, ver_type) in &matching {
-                                        Frame::new()
-                                            .fill(p.elevated)
-                                            .stroke(Stroke::new(1.0_f32, p.border))
-                                            .corner_radius(CornerRadius::same(8))
-                                            .inner_margin(egui::Margin::symmetric(10, 6))
-                                            .show(ui, |ui| {
-                                                ui.set_width(ui.available_width());
-                                                ui.horizontal(|ui| {
-                                                    ui.label(
-                                                        RichText::new(ver_id)
-                                                            .monospace()
-                                                            .strong()
-                                                            .color(p.text),
-                                                    );
-                                                    ui.label(
-                                                        RichText::new(ver_type)
-                                                            .size(11.0)
-                                                            .color(p.text_muted),
-                                                    );
-                                                    if cached_set.contains(ver_id) {
-                                                        render_badge_pill(
-                                                            ui, "Cached", true, true, p,
-                                                        );
+                        ui.set_width(ui.available_width());
+                        if matching.is_empty() {
+                            ui.label(
+                                RichText::new("No matching Minecraft versions.")
+                                    .color(p.text_muted),
+                            );
+                        } else {
+                            for (ver_id, ver_type) in &matching {
+                                Frame::new()
+                                    .fill(p.elevated)
+                                    .stroke(Stroke::new(1.0_f32, p.border))
+                                    .corner_radius(CornerRadius::same(8))
+                                    .inner_margin(egui::Margin::symmetric(10, 6))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(ver_id)
+                                                    .monospace()
+                                                    .strong()
+                                                    .color(p.text),
+                                            );
+                                            ui.label(
+                                                RichText::new(display_version_type(ver_type))
+                                                    .size(11.0)
+                                                    .color(p.text_muted),
+                                            );
+                                            if cached_set.contains(ver_id) {
+                                                render_badge_pill(
+                                                    ui, "Cached", true, true, p,
+                                                );
+                                            }
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if ui.button("Create Instance").clicked() {
+                                                        pick_ver = Some(ver_id.clone());
                                                     }
-                                                    ui.with_layout(
-                                                        Layout::right_to_left(Align::Center),
-                                                        |ui| {
-                                                            if ui.button("Create Instance").clicked()
-                                                            {
-                                                                pick_ver = Some(ver_id.clone());
-                                                            }
-                                                        },
-                                                    );
-                                                });
-                                            });
-                                        ui.add_space(4.0);
-                                    }
-                                }
-                            });
+                                                },
+                                            );
+                                        });
+                                    });
+                                ui.add_space(4.0);
+                            }
+                        }
                         if let Some(v) = pick_ver {
-                            self.open_create_instance_dialog();
+                            self.open_create_instance_dialog(ctx);
                             self.create_version = v;
                         }
                     });

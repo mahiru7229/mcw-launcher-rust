@@ -4,7 +4,7 @@ mod platform;
 mod views;
 
 use self::platform::default_user_downloads_dir;
-use crate::background::BackgroundManager;
+use crate::background::{decode_user_image, BackgroundManager};
 use crate::i18n::{LanguageManager, LauncherPrefs};
 use crate::skin_render::{default_skin_face_rgba, render_skin_face_rgba};
 use crate::state::{
@@ -39,13 +39,13 @@ use mcw_mods::{
 };
 use mcw_net::{DownloadClient, TaskControl};
 use mcw_providers::{
-    detect_installed_pack, load_curseforge_api_key, load_custom_curseforge_api_key,
-    save_custom_curseforge_api_key, ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient,
-    CurseForgeMod, CurseForgeSearchParams, FtbClient, FtbPackSummary, LanHostingManager,
-    ManualDownloadItem, ModProvenanceRegistry, ModUpdateCandidate, ModUpdateManager,
-    ModpackExportMode, ModpackExportOptions, ModpackInstallOptions, ModpackInstaller,
-    ModpackOptionalFile, ModpackProgressCallback, ModrinthClient, ModrinthSearchHit,
-    ModrinthSearchParams, TrackedModEntry,
+    detect_export_origin, detect_installed_pack, load_curseforge_api_key,
+    load_custom_curseforge_api_key, save_custom_curseforge_api_key, ApiCache, AtLauncherClient,
+    AtLauncherPack, CurseForgeClient, CurseForgeMod, CurseForgeSearchParams, FtbClient,
+    FtbPackSummary, InstanceExportOrigin, ManualDownloadItem, ModProvenanceRegistry,
+    ModUpdateCandidate, ModUpdateManager, ModpackExportMode, ModpackExportOptions,
+    ModpackInstallOptions, ModpackInstaller, ModpackOptionalFile, ModpackProgressCallback,
+    ModrinthClient, ModrinthSearchHit, ModrinthSearchParams, TrackedModEntry,
 };
 use mcw_runtime::{
     detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
@@ -73,7 +73,6 @@ const MAX_LOG_LINES_PER_INSTANCE: usize = 1500;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppPage {
     Home,
-    Servers,
     Versions,
     Logs,
 }
@@ -82,6 +81,7 @@ pub(crate) enum AppPage {
 pub(crate) enum DetailTab {
     Mods,
     Worlds,
+    Servers,
     ResourcePacks,
     Shaders,
     Screenshots,
@@ -152,6 +152,7 @@ struct ModpackInstallDialogState {
     ram_user_edited: bool,
     java_custom: bool,
     java_path: String,
+    jvm_preset: JvmPresetId,
     include_optional_files: bool,
     optional_files: Vec<ModpackOptionalFile>,
     selected_optional_ids: HashSet<String>,
@@ -299,8 +300,10 @@ pub struct McwApp {
     browser_ftb_results: Vec<FtbPackSummary>,
     browser_atl_results: Vec<AtLauncherPack>,
     browser_datapack_world: String,
+    browser_global_mode: bool,
+    browser_mc_version_filter: String,
 
-    // v0.12 Pages state (Servers, Versions, Logs)
+    // v0.12 / v0.13.1 Pages & Instance Servers tab state
     selected_servers: Vec<SavedServer>,
     servers_cache: HashMap<String, Vec<SavedServer>>,
     loading_servers: HashSet<String>,
@@ -308,6 +311,7 @@ pub struct McwApp {
     add_server_ip: String,
     cached_versions: Vec<CachedVersionInfo>,
     cached_versions_loading: bool,
+    versions_cached_expanded: bool,
     versions_search: String,
     versions_type_filter: String,
     logs_page_source: String,
@@ -344,6 +348,13 @@ pub struct McwApp {
     version_picker_mc_filter: String,
     version_picker_loader_filter: String,
     version_picker_selected_id: String,
+    version_picker_global_mode: bool,
+    version_picker_content_kind: Option<ContentKind>,
+    version_picker_create_new: bool,
+    version_picker_target_instance_id: String,
+    version_picker_new_inst_name: String,
+    version_picker_new_inst_loader: String,
+    version_picker_datapack_world: String,
 
     // OptiFine JAR path input inside Instance Settings tab
     optifine_jar_input: String,
@@ -408,8 +419,9 @@ pub struct McwApp {
     dedup_running: bool,
     optifine_installing: bool,
 
-    // v0.11 shell: background picture, icon rail flyout, in-app Settings modal, page fade
+    // v0.11+ shell: async background picture, icon rail flyout, in-app Settings modal, page fade
     background: BackgroundManager,
+    bg_picker_open: bool,
     show_instance_flyout: bool,
     flyout_toggle_rect: Option<egui::Rect>,
     settings_search: String,
@@ -584,6 +596,8 @@ impl McwApp {
             browser_ftb_results: Vec::new(),
             browser_atl_results: Vec::new(),
             browser_datapack_world: String::new(),
+            browser_global_mode: true,
+            browser_mc_version_filter: "all".to_string(),
             selected_servers: Vec::new(),
             servers_cache: HashMap::new(),
             loading_servers: HashSet::new(),
@@ -591,6 +605,7 @@ impl McwApp {
             add_server_ip: String::new(),
             cached_versions: Vec::new(),
             cached_versions_loading: false,
+            versions_cached_expanded: false,
             versions_search: String::new(),
             versions_type_filter: "release".to_string(),
             logs_page_source: "__global__".to_string(),
@@ -616,6 +631,13 @@ impl McwApp {
             version_picker_mc_filter: "all".to_string(),
             version_picker_loader_filter: "all".to_string(),
             version_picker_selected_id: String::new(),
+            version_picker_global_mode: false,
+            version_picker_content_kind: None,
+            version_picker_create_new: false,
+            version_picker_target_instance_id: String::new(),
+            version_picker_new_inst_name: String::new(),
+            version_picker_new_inst_loader: "fabric".to_string(),
+            version_picker_datapack_world: String::new(),
             optifine_jar_input: String::new(),
             mod_update_candidates: Vec::new(),
             checking_mod_updates: false,
@@ -669,6 +691,7 @@ impl McwApp {
             dedup_running: false,
             optifine_installing: false,
             background: BackgroundManager::new(),
+            bg_picker_open: false,
             show_instance_flyout: false,
             flyout_toggle_rect: None,
             settings_search: String::new(),

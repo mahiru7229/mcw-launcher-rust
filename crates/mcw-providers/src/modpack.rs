@@ -2,7 +2,7 @@ use crate::curseforge::CurseForgeClient;
 use crate::{ProviderError, Result};
 use mcw_models::instance::ModLoader;
 use mcw_net::{DownloadClient, DownloadRequest};
-use mcw_storage::{InstanceStore, LauncherPaths};
+use mcw_storage::{atomic_write_json, InstanceStore, LauncherPaths};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -450,6 +450,16 @@ impl ModpackInstaller {
         let extracted_overrides =
             extract_overrides(archive_path, &["overrides/", "client-overrides/"], &mc_dir)?;
         extract_embedded_instance_icon(archive_path, &store, &inst.instance_id);
+        let _ = atomic_write_json(
+            &paths
+                .instance_dir(&inst.instance_id)
+                .join(".mcw")
+                .join("modrinth-pack.json"),
+            &serde_json::json!({
+                "source": "modrinth",
+                "packName": target_name,
+            }),
+        );
 
         Ok(ModpackInstallReport {
             instance_id: inst.instance_id,
@@ -607,6 +617,16 @@ impl ModpackInstaller {
         );
         let extracted_overrides = extract_overrides(archive_path, &[&override_prefix], &mc_dir)?;
         extract_embedded_instance_icon(archive_path, &store, &inst.instance_id);
+        let _ = atomic_write_json(
+            &paths
+                .instance_dir(&inst.instance_id)
+                .join(".mcw")
+                .join("curseforge-pack.json"),
+            &serde_json::json!({
+                "source": "curseforge",
+                "packName": target_name,
+            }),
+        );
 
         // Persist pending manual downloads inside the instance folder so the user can resume later.
         let pending_path = paths

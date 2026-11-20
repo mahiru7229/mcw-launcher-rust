@@ -2,86 +2,13 @@ use crate::app::platform::*;
 use crate::app::*;
 
 impl McwApp {
-    pub(crate) fn render_servers_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    pub(crate) fn render_servers_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        inst: &Instance,
+    ) {
         let p = self.palette;
-
-        ui.horizontal_wrapped(|ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new("Servers & LAN").size(28.0).strong().color(p.text));
-                ui.label(
-                    RichText::new(
-                        "Manage saved servers in servers.dat and offline LAN / e4mc hosting per instance.",
-                    )
-                    .size(12.5)
-                    .color(p.text_muted),
-                );
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if !self.instances.is_empty() {
-                    let current_name = self
-                        .selected_instance()
-                        .map(|i| format!("{} ({})", i.name, i.version_id))
-                        .unwrap_or_else(|| "Select instance".to_string());
-                    let mut picked_id: Option<String> = None;
-                    let w = auto_combo_width(ui, &current_name, 180.0, 300.0);
-                    egui::ComboBox::from_id_salt("servers_page_instance_combo")
-                        .selected_text(&current_name)
-                        .width(w)
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for inst in &self.instances {
-                                let selected = self.selected_instance_id.as_deref()
-                                    == Some(inst.instance_id.as_str());
-                                let lbl = format!("{} ({})", inst.name, inst.version_id);
-                                if ui.selectable_label(selected, lbl).clicked() && !selected {
-                                    picked_id = Some(inst.instance_id.clone());
-                                }
-                            }
-                        });
-                    ui.label(RichText::new("Instance:").color(p.text_muted));
-                    if let Some(new_id) = picked_id {
-                        self.selected_instance_id = Some(new_id.clone());
-                        self.sync_selected_from_cache();
-                        self.load_servers_async(&new_id, ctx, false);
-                    }
-                }
-            });
-        });
-
-        ui.add_space(12.0);
-
-        let Some(inst) = self.selected_instance().cloned() else {
-            Frame::new()
-                .fill(p.surface)
-                .stroke(Stroke::new(1.0_f32, p.border))
-                .corner_radius(CornerRadius::same(14))
-                .inner_margin(egui::Margin::same(24))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("Create or select an instance to manage saved servers.")
-                                .color(p.text_muted),
-                        );
-                        ui.add_space(8.0);
-                        if ui
-                            .add(
-                                Button::new(
-                                    RichText::new("+ Create Instance")
-                                        .color(p.accent_text)
-                                        .strong(),
-                                )
-                                .fill(p.accent)
-                                .corner_radius(CornerRadius::same(10)),
-                            )
-                            .clicked()
-                        {
-                            self.open_create_instance_dialog();
-                        }
-                    });
-                });
-            return;
-        };
 
         let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
         let busy = self.is_instance_busy(&inst.instance_id);
@@ -90,7 +17,7 @@ impl McwApp {
         let loading = self.loading_servers.contains(&inst.instance_id);
 
         ScrollArea::vertical()
-            .id_salt("servers_page_scroll")
+            .id_salt("servers_tab_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 // Card 1: Saved Servers (servers.dat)
@@ -279,10 +206,9 @@ impl McwApp {
 
                 ui.add_space(12.0);
 
-                // Card 2: MCW LAN Hosting & e4mc Tunnel
+                // Card 2: Manual LAN Hosting (instant apply toggle)
                 let mut open_lan_log = false;
-                let mut prepare_lan_provider: Option<String> = None;
-                let mut save_lan = false;
+                let mut saved_toggle_state: Option<bool> = None;
                 let lan_log_btn_lbl = self.t("lan.agent.log.view").to_string();
 
                 Frame::new()
@@ -293,14 +219,14 @@ impl McwApp {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(
-                            RichText::new("LAN Hosting & e4mc Tunnel")
+                            RichText::new("LAN Hosting")
                                 .strong()
                                 .size(15.5)
                                 .color(p.text),
                         );
                         ui.label(
                             RichText::new(
-                                "Allow offline players on your LAN/tunnel and attach e4mc without leaving the Servers view.",
+                                "Allow offline players on your local LAN or VPN to join published LAN worlds. Applied immediately on toggle.",
                             )
                             .size(11.5)
                             .color(p.text_muted),
@@ -325,73 +251,23 @@ impl McwApp {
                                 } else {
                                     "microsoft_only".to_string()
                                 };
-                                save_lan = true;
+                                settings.lan_connection_provider = "manual".to_string();
+                                saved_toggle_state = Some(lan_on);
                             }
                             ui.add_space(6.0);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label("LAN Connection Provider:");
-                                let is_e4mc =
-                                    settings.lan_connection_provider.eq_ignore_ascii_case("e4mc");
-                                let cur_lbl = if is_e4mc {
-                                    "e4mc (Public Tunnel — auto-installs e4mc mod)"
-                                } else {
-                                    "Manual (Local LAN / VPN)"
-                                };
-                                let w = auto_combo_width(ui, cur_lbl, 220.0, 340.0);
-                                egui::ComboBox::from_id_salt("servers_page_lan_provider_combo")
-                                    .selected_text(cur_lbl)
-                                    .width(w)
-                                    .truncate()
-                                    .show_ui(ui, |ui| {
-                                        if ui
-                                            .selectable_label(!is_e4mc, "Manual (Local LAN / VPN)")
-                                            .clicked()
-                                            && is_e4mc
-                                        {
-                                            settings.lan_connection_provider = "manual".to_string();
-                                            prepare_lan_provider = Some("manual".to_string());
-                                            save_lan = true;
-                                        }
-                                        if ui
-                                            .selectable_label(
-                                                is_e4mc,
-                                                "e4mc (Public Tunnel — auto-installs e4mc mod)",
-                                            )
-                                            .clicked()
-                                            && !is_e4mc
-                                        {
-                                            settings.lan_connection_provider = "e4mc".to_string();
-                                            prepare_lan_provider = Some("e4mc".to_string());
-                                            save_lan = true;
-                                        }
-                                    });
-                            });
+                            ui.label(
+                                RichText::new("Connection Mode: Manual (Local LAN / VPN)")
+                                    .size(11.5)
+                                    .color(p.text_muted),
+                            );
                             ui.add_space(8.0);
-                            ui.horizontal_wrapped(|ui| {
-                                if ui.button(&lan_log_btn_lbl).clicked() {
-                                    open_lan_log = true;
-                                }
-                                if ui
-                                    .add(
-                                        Button::new(
-                                            RichText::new("Apply LAN Hosting")
-                                                .color(p.accent_text)
-                                                .strong(),
-                                        )
-                                        .fill(p.accent)
-                                        .corner_radius(CornerRadius::same(8)),
-                                    )
-                                    .clicked()
-                                {
-                                    prepare_lan_provider =
-                                        Some(settings.lan_connection_provider.clone());
-                                    save_lan = true;
-                                }
-                            });
+                            if ui.button(&lan_log_btn_lbl).clicked() {
+                                open_lan_log = true;
+                            }
                         }
                     });
 
-                if save_lan {
+                if let Some(lan_on) = saved_toggle_state {
                     if let Some(ref s) = self.selected_settings {
                         let store = InstanceStore::new(&self.paths);
                         if let Err(e) = store.save_settings(&inst.instance_id, s) {
@@ -400,14 +276,17 @@ impl McwApp {
                         } else {
                             self.settings_cache
                                 .insert(inst.instance_id.clone(), s.clone());
+                            let msg = if lan_on {
+                                "MCW LAN Agent enabled (Manual LAN).".to_string()
+                            } else {
+                                "MCW LAN Agent disabled.".to_string()
+                            };
+                            self.notice_banner = Some((msg, false));
                         }
                     }
                 }
-                if let Some(prov) = prepare_lan_provider {
-                    self.start_prepare_lan_hosting(prov, ctx);
-                }
                 if open_lan_log {
-                    self.open_lan_agent_log_window(&inst.instance_id);
+                    self.open_lan_agent_log_window(&inst.instance_id, ctx);
                 }
             });
     }

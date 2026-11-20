@@ -231,6 +231,37 @@ pub fn detect_installed_pack(instance_dir: &Path) -> Option<InstalledPackOrigin>
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceExportOrigin {
+    Modrinth,
+    CurseForge,
+    OtherProvider,
+    Custom,
+}
+
+/// Determines which modpack provider (if any) originally created this instance,
+/// so Export Modpack filters allowed formats cleanly.
+pub fn detect_export_origin(instance_dir: &Path, icon_source: &str) -> InstanceExportOrigin {
+    let mcw_dir = instance_dir.join(".mcw");
+    let src = icon_source.trim().to_ascii_lowercase();
+    if mcw_dir.join("modrinth-pack.json").is_file() || src == "modpack:modrinth" {
+        return InstanceExportOrigin::Modrinth;
+    }
+    if mcw_dir.join("curseforge-pack.json").is_file()
+        || instance_dir.join("pending_manual_downloads.json").is_file()
+        || src == "modpack:curseforge"
+    {
+        return InstanceExportOrigin::CurseForge;
+    }
+    if FtbPackRegistry::is_managed(instance_dir)
+        || AtLauncherPackRegistry::is_managed(instance_dir)
+        || matches!(src.as_str(), "modpack:ftb" | "modpack:atlauncher")
+    {
+        return InstanceExportOrigin::OtherProvider;
+    }
+    InstanceExportOrigin::Custom
+}
+
 pub fn safe_relative_posix(raw: &str, fallback_filename: &str) -> String {
     let fallback = Path::new(fallback_filename)
         .file_name()
@@ -351,5 +382,50 @@ mod tests {
         let atl_origin = detect_installed_pack(&inst_atl).unwrap();
         assert_eq!(atl_origin.provider, "ATLauncher");
         assert_eq!(atl_origin.version_name, "2.1.0");
+    }
+
+    #[test]
+    fn detects_instance_export_origin_from_markers_and_icon_source() {
+        let dir = tempdir().unwrap();
+
+        let custom = dir.path().join("custom");
+        fs::create_dir_all(&custom).unwrap();
+        assert_eq!(
+            detect_export_origin(&custom, ""),
+            InstanceExportOrigin::Custom
+        );
+
+        let mr = dir.path().join("mr");
+        fs::create_dir_all(mr.join(".mcw")).unwrap();
+        fs::write(mr.join(".mcw/modrinth-pack.json"), "{}").unwrap();
+        assert_eq!(
+            detect_export_origin(&mr, ""),
+            InstanceExportOrigin::Modrinth
+        );
+        assert_eq!(
+            detect_export_origin(&custom, "modpack:modrinth"),
+            InstanceExportOrigin::Modrinth
+        );
+
+        let cf = dir.path().join("cf");
+        fs::create_dir_all(cf.join(".mcw")).unwrap();
+        fs::write(cf.join(".mcw/curseforge-pack.json"), "{}").unwrap();
+        assert_eq!(
+            detect_export_origin(&cf, ""),
+            InstanceExportOrigin::CurseForge
+        );
+        assert_eq!(
+            detect_export_origin(&custom, "modpack:curseforge"),
+            InstanceExportOrigin::CurseForge
+        );
+
+        assert_eq!(
+            detect_export_origin(&custom, "modpack:ftb"),
+            InstanceExportOrigin::OtherProvider
+        );
+        assert_eq!(
+            detect_export_origin(&custom, "modpack:atlauncher"),
+            InstanceExportOrigin::OtherProvider
+        );
     }
 }

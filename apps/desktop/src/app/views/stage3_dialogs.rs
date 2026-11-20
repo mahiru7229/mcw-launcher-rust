@@ -7,101 +7,131 @@ impl McwApp {
         ui: &mut egui::Ui,
         ctx: &egui::Context,
         prefs_dirty: &mut bool,
-    ) {
+        search_q: Option<&str>,
+    ) -> usize {
         let p = self.palette;
-        ui.label(
-            RichText::new(self.t("settings.section.appearance"))
-                .strong()
-                .size(15.0)
-                .color(p.text),
-        );
-        ui.label(
-            RichText::new(self.t("settings.section.appearance_detail"))
-                .size(11.5)
-                .color(p.text_muted),
-        );
-        ui.add_space(10.0);
+        let cat_title = self.t("settings.section.appearance").to_string();
+        let cat_detail = self.t("settings.section.appearance_detail").to_string();
+        if search_q.is_none() {
+            ui.label(RichText::new(&cat_title).strong().size(15.0).color(p.text));
+            ui.label(RichText::new(&cat_detail).size(11.5).color(p.text_muted));
+            ui.add_space(10.0);
+        }
+        let mut matched = 0usize;
 
         // Card 1: Built-in + External JSON Theme Selector
-        Frame::new()
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new(self.t("launcher_settings.theme.selector")).strong());
-                ui.label(
-                    RichText::new(format!(
-                        "Scans built-in themes and external JSON packs under {}",
-                        self.paths.theme_root.display()
-                    ))
-                    .size(11.0)
-                    .color(p.text_muted),
-                );
-                ui.add_space(8.0);
+        let theme_title = self.t("launcher_settings.theme.selector").to_string();
+        let theme_reload_lbl = self.t("launcher_settings.theme.reload").to_string();
+        if crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                &theme_title,
+                &theme_reload_lbl,
+                "theme selector open themes folder dark light obsidian emerald json color scheme",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                crate::app::views::settings_modal::render_settings_search_badge(ui, p, &cat_title);
+            }
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(self.t("launcher_settings.theme.selector")).strong());
+                    ui.label(
+                        RichText::new(format!(
+                            "Scans built-in themes and external JSON packs under {}",
+                            self.paths.theme_root.display()
+                        ))
+                        .size(11.0)
+                        .color(p.text_muted),
+                    );
+                    ui.add_space(8.0);
 
-                let active_def = self.theme_catalog.find(&self.prefs.theme).clone();
-                let mut picked_theme_id: Option<String> = None;
-                let mut reload_clicked = false;
-                let themes_snapshot = self.theme_catalog.themes.clone();
+                    let active_def = self.theme_catalog.find(&self.prefs.theme).clone();
+                    let mut picked_theme_id: Option<String> = None;
+                    let mut reload_clicked = false;
+                    let themes_snapshot = self.theme_catalog.themes.clone();
 
-                ui.horizontal_wrapped(|ui| {
-                    let combo_w = auto_combo_width(ui, &active_def.name, 180.0, 300.0);
-                    egui::ComboBox::from_id_salt("launcher_settings_theme_combo")
-                        .selected_text(&active_def.name)
-                        .width(combo_w)
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for def in &themes_snapshot {
-                                let selected = def.id.eq_ignore_ascii_case(&active_def.id);
-                                if ui.selectable_label(selected, &def.name).clicked() && !selected {
-                                    picked_theme_id = Some(def.id.clone());
+                    ui.horizontal_wrapped(|ui| {
+                        let combo_w = auto_combo_width(ui, &active_def.name, 180.0, 300.0);
+                        egui::ComboBox::from_id_salt("launcher_settings_theme_combo")
+                            .selected_text(&active_def.name)
+                            .width(combo_w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for def in &themes_snapshot {
+                                    let selected = def.id.eq_ignore_ascii_case(&active_def.id);
+                                    if ui.selectable_label(selected, &def.name).clicked()
+                                        && !selected
+                                    {
+                                        picked_theme_id = Some(def.id.clone());
+                                    }
                                 }
-                            }
-                        });
-                    if ui
-                        .button(self.t("launcher_settings.theme.reload"))
-                        .clicked()
-                    {
-                        reload_clicked = true;
+                            });
+                        if ui
+                            .button(self.t("launcher_settings.theme.reload"))
+                            .clicked()
+                        {
+                            reload_clicked = true;
+                        }
+                        if ui.button("Open Themes Folder").clicked() {
+                            let _ = std::fs::create_dir_all(&self.paths.theme_root);
+                            open_external(&self.paths.theme_root.display().to_string());
+                        }
+                    });
+
+                    if !active_def.description.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(&active_def.description)
+                                .size(11.0)
+                                .color(p.text_muted),
+                        );
                     }
-                    if ui.button("Open Themes Folder").clicked() {
-                        let _ = std::fs::create_dir_all(&self.paths.theme_root);
-                        open_external(&self.paths.theme_root.display().to_string());
+                    if let Some(ref src_path) = active_def.source_path {
+                        ui.label(
+                            RichText::new(format!("Theme JSON: {}", src_path.display()))
+                                .monospace()
+                                .size(10.5)
+                                .color(p.text_muted),
+                        );
+                    }
+
+                    if let Some(tid) = picked_theme_id {
+                        self.prefs.theme = tid;
+                        self.apply_current_theme(ctx);
+                        *prefs_dirty = true;
+                    }
+                    if reload_clicked {
+                        self.reload_theme_catalog(ctx);
                     }
                 });
 
-                if !active_def.description.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new(&active_def.description)
-                            .size(11.0)
-                            .color(p.text_muted),
-                    );
-                }
-                if let Some(ref src_path) = active_def.source_path {
-                    ui.label(
-                        RichText::new(format!("Theme JSON: {}", src_path.display()))
-                            .monospace()
-                            .size(10.5)
-                            .color(p.text_muted),
-                    );
-                }
-
-                if let Some(tid) = picked_theme_id {
-                    self.prefs.theme = tid;
-                    self.apply_current_theme(ctx);
-                    *prefs_dirty = true;
-                }
-                if reload_clicked {
-                    self.reload_theme_catalog(ctx);
-                }
-            });
-
-        ui.add_space(8.0);
+            ui.add_space(8.0);
+        }
 
         // Card 2: Custom Accent Hex & Motion Mode
+        let accent_title = self.t("appearance.accent.mode.label").to_string();
+        let accent_reset_lbl = self.t("appearance.accent.reset").to_string();
+        if crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                &accent_title,
+                &accent_reset_lbl,
+                "custom accent colour color hex rrggbb apply reset ui motion animations full reduced off",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                crate::app::views::settings_modal::render_settings_search_badge(ui, p, &cat_title);
+            }
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
@@ -183,9 +213,21 @@ impl McwApp {
                 }
             });
 
-        ui.add_space(8.0);
+            ui.add_space(8.0);
+        }
 
         // Card 3: Home background picture, panel transparency & dimming (no blur)
+        if crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                "home background picture image wallpaper choose png jpeg webp use default panel opacity transparency dimming",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                crate::app::views::settings_modal::render_settings_search_badge(ui, p, &cat_title);
+            }
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
@@ -212,15 +254,26 @@ impl McwApp {
                     *prefs_dirty = true;
                 }
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("Choose a picture...").clicked() {
-                        if let Some(path) = pick_file_dialog(
-                            "Choose a background picture",
-                            "Pictures (*.png;*.jpg;*.jpeg;*.webp)|*.png;*.jpg;*.jpeg;*.webp|All Files (*.*)|*.*",
-                        ) {
-                            self.prefs.background_image_path = path.display().to_string();
-                            self.prefs.background_enabled = true;
-                            *prefs_dirty = true;
-                        }
+                    let choose_bg_lbl = if self.bg_picker_open {
+                        "Opening picker..."
+                    } else {
+                        "Choose a picture..."
+                    };
+                    if ui
+                        .add_enabled(!self.bg_picker_open, Button::new(choose_bg_lbl))
+                        .clicked()
+                    {
+                        self.bg_picker_open = true;
+                        let tx = self.tx.clone();
+                        let ctx_c = ctx.clone();
+                        pick_file_dialog_async(
+                            "Choose a background picture".to_string(),
+                            "Pictures (*.png;*.jpg;*.jpeg;*.webp)|*.png;*.jpg;*.jpeg;*.webp|All Files (*.*)|*.*".to_string(),
+                            move |path| {
+                                let _ = tx.send(AppEvent::BackgroundPicturePicked(path));
+                                ctx_c.request_repaint();
+                            },
+                        );
                     }
                     if ui
                         .add_enabled(
@@ -271,28 +324,40 @@ impl McwApp {
                     *prefs_dirty = true;
                 }
             });
+            ui.add_space(8.0);
+        }
+        matched
     }
+
     pub(crate) fn render_settings_storage_tab(
         &mut self,
         ui: &mut egui::Ui,
         ctx: &egui::Context,
         prefs_dirty: &mut bool,
-    ) {
+        search_q: Option<&str>,
+    ) -> usize {
         let p = self.palette;
-        ui.label(
-            RichText::new(self.t("storage.settings.section"))
-                .strong()
-                .size(15.0)
-                .color(p.text),
-        );
-        ui.label(
-            RichText::new(self.t("storage.settings.section_detail"))
-                .size(11.5)
-                .color(p.text_muted),
-        );
-        ui.add_space(10.0);
+        let cat_title = self.t("storage.settings.section").to_string();
+        let cat_detail = self.t("storage.settings.section_detail").to_string();
+        if search_q.is_none() {
+            ui.label(RichText::new(&cat_title).strong().size(15.0).color(p.text));
+            ui.label(RichText::new(&cat_detail).size(11.5).color(p.text_muted));
+            ui.add_space(10.0);
+        }
+        let mut matched = 0usize;
 
         // Card 1: Disk Usage Summary
+        if crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                "launcher disk usage scan storage open launcher folder instances cache runtimes backups logs total",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                crate::app::views::settings_modal::render_settings_search_badge(ui, p, &cat_title);
+            }
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
@@ -361,92 +426,120 @@ impl McwApp {
                 }
             });
 
-        ui.add_space(8.0);
+            ui.add_space(8.0);
+        }
 
         // Card 2: Unused Version Retention & Cache Cleanup
-        Frame::new()
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new("Cache & Unused Version Cleanup").strong());
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(self.t("storage.legacy.protected_hint"))
-                        .size(11.0)
-                        .color(p.text_muted),
-                );
-                ui.add_space(6.0);
+        let prot_hint = self.t("storage.legacy.protected_hint").to_string();
+        let ret_lbl = self.t("storage.legacy.jar_retention.label").to_string();
+        if crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                &prot_hint,
+                &ret_lbl,
+                "cache unused version cleanup retention days clear api temp prune unused versions",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                crate::app::views::settings_modal::render_settings_search_badge(ui, p, &cat_title);
+            }
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Cache & Unused Version Cleanup").strong());
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(self.t("storage.legacy.protected_hint"))
+                            .size(11.0)
+                            .color(p.text_muted),
+                    );
+                    ui.add_space(6.0);
 
-                ui.horizontal_wrapped(|ui| {
-                    let lbl = self.t("storage.legacy.jar_retention.label").to_string();
-                    let suffix = self.t("storage.legacy.jar_retention.suffix").to_string();
-                    ui.label(lbl);
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut self.prefs.unused_version_retention_days)
-                                .range(0..=365)
-                                .suffix(suffix),
-                        )
-                        .changed()
-                    {
-                        *prefs_dirty = true;
-                    }
+                    ui.horizontal_wrapped(|ui| {
+                        let lbl = self.t("storage.legacy.jar_retention.label").to_string();
+                        let suffix = self.t("storage.legacy.jar_retention.suffix").to_string();
+                        ui.label(lbl);
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.prefs.unused_version_retention_days)
+                                    .range(0..=365)
+                                    .suffix(suffix),
+                            )
+                            .changed()
+                        {
+                            *prefs_dirty = true;
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    let unused_count = self.storage_unused_versions.len();
+                    let unused_bytes: u64 = self
+                        .storage_unused_versions
+                        .iter()
+                        .map(|c| c.size_bytes)
+                        .sum();
+                    ui.label(
+                        RichText::new(format!(
+                            "Eligible unused Minecraft version folder(s): {unused_count} ({})",
+                            format_bytes(unused_bytes)
+                        ))
+                        .size(11.5)
+                        .color(if unused_count > 0 {
+                            p.warning
+                        } else {
+                            p.text_muted
+                        }),
+                    );
+
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                !self.storage_cleaning,
+                                Button::new("Clear API & Temp Cache"),
+                            )
+                            .clicked()
+                        {
+                            self.start_clear_cache(ctx);
+                        }
+                        let prune_lbl = if unused_count > 0 {
+                            format!("Prune Unused Versions ({})", format_bytes(unused_bytes))
+                        } else {
+                            "Prune Unused Versions".to_string()
+                        };
+                        if ui
+                            .add_enabled(
+                                !self.storage_cleaning && unused_count > 0,
+                                Button::new(RichText::new(prune_lbl).color(p.warning)),
+                            )
+                            .clicked()
+                        {
+                            self.start_prune_unused_versions(ctx);
+                        }
+                    });
                 });
 
-                ui.add_space(6.0);
-                let unused_count = self.storage_unused_versions.len();
-                let unused_bytes: u64 = self
-                    .storage_unused_versions
-                    .iter()
-                    .map(|c| c.size_bytes)
-                    .sum();
-                ui.label(
-                    RichText::new(format!(
-                        "Eligible unused Minecraft version folder(s): {unused_count} ({})",
-                        format_bytes(unused_bytes)
-                    ))
-                    .size(11.5)
-                    .color(if unused_count > 0 {
-                        p.warning
-                    } else {
-                        p.text_muted
-                    }),
-                );
-
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .add_enabled(
-                            !self.storage_cleaning,
-                            Button::new("Clear API & Temp Cache"),
-                        )
-                        .clicked()
-                    {
-                        self.start_clear_cache(ctx);
-                    }
-                    let prune_lbl = if unused_count > 0 {
-                        format!("Prune Unused Versions ({})", format_bytes(unused_bytes))
-                    } else {
-                        "Prune Unused Versions".to_string()
-                    };
-                    if ui
-                        .add_enabled(
-                            !self.storage_cleaning && unused_count > 0,
-                            Button::new(RichText::new(prune_lbl).color(p.warning)),
-                        )
-                        .clicked()
-                    {
-                        self.start_prune_unused_versions(ctx);
-                    }
-                });
-            });
-
-        ui.add_space(8.0);
+            ui.add_space(8.0);
+        }
 
         // Card 3: Shared Content Store & Hardlink Deduplication
+        if crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                "shared content store hardlink deduplication canonical blobs deduplicate mods packs sha-256",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                crate::app::views::settings_modal::render_settings_search_badge(ui, p, &cat_title);
+            }
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
@@ -492,6 +585,9 @@ impl McwApp {
                     self.start_content_store_dedup(ctx);
                 }
             });
+            ui.add_space(8.0);
+        }
+        matched
     }
 
     pub(crate) fn render_settings_updates_tab(
@@ -499,20 +595,36 @@ impl McwApp {
         ui: &mut egui::Ui,
         ctx: &egui::Context,
         prefs_dirty: &mut bool,
-    ) {
+        search_q: Option<&str>,
+    ) -> usize {
         let p = self.palette;
-        ui.label(
-            RichText::new(self.t("launcher_settings.update.title"))
-                .strong()
-                .size(15.0)
-                .color(p.text),
-        );
-        ui.label(
-            RichText::new(self.t("launcher_settings.update.subtitle"))
-                .size(11.5)
-                .color(p.text_muted),
-        );
-        ui.add_space(10.0);
+        let upd_title = self.t("launcher_settings.update.title").to_string();
+        let upd_sub = self.t("launcher_settings.update.subtitle").to_string();
+        let auto_lbl = self.t("launcher_settings.update.auto_check").to_string();
+        let chan_lbl = self.t("launcher_settings.update.channel").to_string();
+        let chk_lbl = self.t("launcher_settings.update.check").to_string();
+        if search_q.is_none() {
+            ui.label(RichText::new(&upd_title).strong().size(15.0).color(p.text));
+            ui.label(RichText::new(&upd_sub).size(11.5).color(p.text_muted));
+            ui.add_space(10.0);
+        }
+        if !crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                "Updates",
+                &upd_title,
+                &upd_sub,
+                &auto_lbl,
+                &chan_lbl,
+                &chk_lbl,
+                "updates current version check automatic channel stable beta",
+            ],
+        ) {
+            return 0;
+        }
+        if search_q.is_some() {
+            crate::app::views::settings_modal::render_settings_search_badge(ui, p, "Updates");
+        }
 
         Frame::new()
             .fill(p.surface)
@@ -638,6 +750,7 @@ impl McwApp {
                     );
                 }
             });
+        1
     }
 
     pub(crate) fn render_update_dialog(&mut self, ctx: &egui::Context) {
@@ -662,7 +775,7 @@ impl McwApp {
             .any(|s| matches!(s, LaunchState::Running { .. }));
 
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_update_dialog");
-        let title = format!("{} — v{}", self.t("update.dialog.title"), release.version);
+        let title = format!("{} - v{}", self.t("update.dialog.title"), release.version);
         let builder = centered_viewport_builder(ctx, title, [560.0, 440.0], [440.0, 340.0]);
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
@@ -803,7 +916,7 @@ impl McwApp {
         let mut skip_clicked = false;
         let mut use_recommended_clicked = false;
 
-        let first_run_title = format!("{} — MCW Launcher", self.t("first_run.title"));
+        let first_run_title = format!("{} - MCW Launcher", self.t("first_run.title"));
         let finish_lbl = self.t("first_run.finish").to_string();
         let skip_lbl = self.t("first_run.skip").to_string();
 

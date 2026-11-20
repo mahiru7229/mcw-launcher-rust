@@ -1,3 +1,4 @@
+use crate::app::controllers_pages::content_browser_window_title;
 use crate::app::platform::*;
 use crate::app::*;
 use eframe::egui::Margin;
@@ -20,11 +21,13 @@ enum BrowserInstallAction {
         slug: String,
         title: String,
         icon: Option<String>,
+        content_kind: Option<ContentKind>,
     },
     CurseForgeModPicker {
         mod_id: u64,
         title: String,
         icon: Option<String>,
+        content_kind: Option<ContentKind>,
     },
     ModpackDialog {
         provider: ModpackInstallProvider,
@@ -86,10 +89,15 @@ impl McwApp {
 
         let target_subtitle = if cat == BrowserCategory::Modpacks {
             "Installs as a standalone new instance".to_string()
+        } else if self.browser_global_mode {
+            "Browse globally - click Install to pick an existing instance or create a new matching one."
+                .to_string()
         } else if let Some(ref inst) = selected_inst {
             format!(
-                "Target: {} (MC {} · {})",
-                inst.name, inst.version_id, inst.mod_loader.name
+                "Target: {} (MC {} - {})",
+                inst.name,
+                inst.version_id,
+                display_loader_name(&inst.mod_loader.name)
             )
         } else {
             "Select or create a Minecraft instance first".to_string()
@@ -104,7 +112,7 @@ impl McwApp {
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_content_browser");
         let builder = centered_viewport_builder(
             ctx,
-            format!("{} — MCW Content Browser", cat.label()),
+            content_browser_window_title(self.browser_global_mode, cat),
             [1020.0, 660.0],
             [760.0, 480.0],
         );
@@ -279,14 +287,12 @@ impl McwApp {
                                         BrowserCategory::Mods | BrowserCategory::Modpacks
                                     ) {
                                         let prev_loader = self.browser_loader_filter.clone();
-                                        let lw = auto_combo_width(
-                                            ui,
-                                            &self.browser_loader_filter,
-                                            76.0,
-                                            120.0,
-                                        );
+                                        let cur_loader_lbl =
+                                            display_loader_name(&self.browser_loader_filter);
+                                        let lw =
+                                            auto_combo_width(ui, &cur_loader_lbl, 88.0, 140.0);
                                         egui::ComboBox::from_id_salt("cb_loader_combo")
-                                            .selected_text(&self.browser_loader_filter)
+                                            .selected_text(&cur_loader_lbl)
                                             .width(lw)
                                             .truncate()
                                             .show_ui(ui, |ui| {
@@ -300,7 +306,7 @@ impl McwApp {
                                                     ui.selectable_value(
                                                         &mut self.browser_loader_filter,
                                                         l.to_string(),
-                                                        l,
+                                                        display_loader_name(l),
                                                     );
                                                 }
                                             });
@@ -310,7 +316,50 @@ impl McwApp {
                                     }
                                 }
 
-                                if cat != BrowserCategory::Modpacks && !self.instances.is_empty() {
+                                if self.browser_global_mode
+                                    && cat != BrowserCategory::Modpacks
+                                    && matches!(
+                                        prov,
+                                        BrowserProvider::Modrinth | BrowserProvider::CurseForge
+                                    )
+                                {
+                                    let prev_mc = self.browser_mc_version_filter.clone();
+                                    let mc_lbl = if prev_mc.trim().is_empty()
+                                        || prev_mc.eq_ignore_ascii_case("all")
+                                    {
+                                        "All Versions".to_string()
+                                    } else {
+                                        format!("MC {prev_mc}")
+                                    };
+                                    let mw = auto_combo_width(ui, &mc_lbl, 102.0, 155.0);
+                                    egui::ComboBox::from_id_salt("cb_mc_ver_filter_combo")
+                                        .selected_text(&mc_lbl)
+                                        .width(mw)
+                                        .truncate()
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut self.browser_mc_version_filter,
+                                                String::new(),
+                                                "All Versions",
+                                            );
+                                            for (vid, vtype) in &self.available_versions {
+                                                if vtype != "release" {
+                                                    continue;
+                                                }
+                                                ui.selectable_value(
+                                                    &mut self.browser_mc_version_filter,
+                                                    vid.clone(),
+                                                    vid,
+                                                );
+                                            }
+                                        });
+                                    if self.browser_mc_version_filter != prev_mc {
+                                        trigger_search = true;
+                                    }
+                                } else if !self.browser_global_mode
+                                    && cat != BrowserCategory::Modpacks
+                                    && !self.instances.is_empty()
+                                {
                                     let cur_inst = selected_inst
                                         .as_ref()
                                         .map(|i| format!("{} ({})", i.name, i.version_id))
@@ -369,20 +418,25 @@ impl McwApp {
                     let body_h = avail.y.max(200.0);
 
                     ui.horizontal_top(|ui| {
-                        // Left Result List Panel
-                        Frame::new()
-                            .fill(p.surface)
-                            .stroke(Stroke::new(1.0_f32, p.border))
-                            .corner_radius(CornerRadius::same(12))
-                            .inner_margin(Margin::same(10))
-                            .show(ui, |ui| {
-                                ui.set_width(list_w - 22.0);
-                                ui.set_height(body_h - 22.0);
-                                ScrollArea::vertical()
-                                    .id_salt("mcw_browser_results_scroll")
-                                    .auto_shrink([false, false])
+                        // Left Result List Panel (explicit top-down layout so cards stack vertically)
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(list_w, body_h),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                Frame::new()
+                                    .fill(p.surface)
+                                    .stroke(Stroke::new(1.0_f32, p.border))
+                                    .corner_radius(CornerRadius::same(12))
+                                    .inner_margin(Margin::same(10))
                                     .show(ui, |ui| {
-                                        let card_w = (ui.available_width() - 6.0).max(180.0);
+                                        ui.set_width((list_w - 22.0).max(180.0));
+                                        ui.set_height((body_h - 22.0).max(160.0));
+                                        ScrollArea::vertical()
+                                            .id_salt("mcw_browser_results_scroll")
+                                            .auto_shrink([false, false])
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                let card_w = (ui.available_width() - 6.0).max(180.0);
                                         if entries.is_empty() {
                                             ui.add_space(20.0);
                                             ui.vertical_centered(|ui| {
@@ -465,8 +519,16 @@ impl McwApp {
                                                                             cat,
                                                                             selected_inst.as_ref(),
                                                                         );
+                                                                    let install_lbl =
+                                                                        if self.browser_global_mode
+                                                                            && cat != BrowserCategory::Modpacks
+                                                                        {
+                                                                            "Install..."
+                                                                        } else {
+                                                                            "Install"
+                                                                        };
                                                                     let btn = Button::new(
-                                                                        RichText::new("Install")
+                                                                        RichText::new(install_lbl)
                                                                             .color(p.accent_text)
                                                                             .strong()
                                                                             .size(11.5),
@@ -509,24 +571,31 @@ impl McwApp {
                                                 ui.add_space(6.0);
                                             }
                                         }
+                                            });
                                     });
-                            });
+                            },
+                        );
 
                         ui.add_space(10.0);
 
-                        // Right Detail Panel
-                        Frame::new()
-                            .fill(p.surface)
-                            .stroke(Stroke::new(1.0_f32, p.border))
-                            .corner_radius(CornerRadius::same(12))
-                            .inner_margin(Margin::same(14))
-                            .show(ui, |ui| {
-                                ui.set_width(detail_w - 30.0);
-                                ui.set_height(body_h - 30.0);
-                                ScrollArea::vertical()
-                                    .id_salt("mcw_browser_detail_scroll")
-                                    .auto_shrink([false, false])
+                        // Right Detail Panel (explicit top-down layout)
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(detail_w, body_h),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                Frame::new()
+                                    .fill(p.surface)
+                                    .stroke(Stroke::new(1.0_f32, p.border))
+                                    .corner_radius(CornerRadius::same(12))
+                                    .inner_margin(Margin::same(14))
                                     .show(ui, |ui| {
+                                        ui.set_width((detail_w - 30.0).max(180.0));
+                                        ui.set_height((body_h - 30.0).max(160.0));
+                                        ScrollArea::vertical()
+                                            .id_salt("mcw_browser_detail_scroll")
+                                            .auto_shrink([false, false])
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
                                         let selected_entry = self
                                             .browser_selected_key
                                             .as_deref()
@@ -587,7 +656,7 @@ impl McwApp {
                                         }
 
                                         // Compatibility note + DataPack world picker
-                                        if cat == BrowserCategory::DataPacks {
+                                        if !self.browser_global_mode && cat == BrowserCategory::DataPacks {
                                             ui.separator();
                                             ui.add_space(6.0);
                                             ui.label(
@@ -626,40 +695,46 @@ impl McwApp {
                                             ui.add_space(8.0);
                                         }
 
-                                        let compat_msg: Option<(String, Color32)> = match (cat, &selected_inst) {
-                                            (BrowserCategory::Modpacks, _) => Some((
+                                        let compat_msg: Option<(String, Color32)> = if cat == BrowserCategory::Modpacks {
+                                            Some((
                                                 "Creates a separate new instance with its own mods and settings."
                                                     .to_string(),
                                                 p.accent,
-                                            )),
-                                            (_, None) => Some((
-                                                "Select or create an instance to install content."
+                                            ))
+                                        } else if self.browser_global_mode {
+                                            Some((
+                                                "Choose an existing compatible instance or create a new matching instance on install."
                                                     .to_string(),
-                                                p.warning,
-                                            )),
-                                            (BrowserCategory::Mods, Some(inst))
-                                                if inst.mod_loader.is_vanilla() =>
-                                            {
-                                                Some((
+                                                p.accent,
+                                            ))
+                                        } else {
+                                            match &selected_inst {
+                                                None => Some((
+                                                    "Select or create an instance to install content."
+                                                        .to_string(),
+                                                    p.warning,
+                                                )),
+                                                Some(inst) if cat == BrowserCategory::Mods && inst.mod_loader.is_vanilla() => Some((
                                                     "Vanilla instances cannot load mods. Switch to Fabric/Quilt/Forge/NeoForge in Settings."
                                                         .to_string(),
                                                     p.warning,
-                                                ))
+                                                )),
+                                                Some(inst) => Some((
+                                                    if cat == BrowserCategory::Mods {
+                                                        format!(
+                                                            "Opens version picker for MC {} ({}).",
+                                                            inst.version_id,
+                                                            display_loader_name(&inst.mod_loader.name)
+                                                        )
+                                                    } else {
+                                                        format!(
+                                                            "Installs compatible file for MC {} automatically.",
+                                                            inst.version_id
+                                                        )
+                                                    },
+                                                    p.text_muted,
+                                                )),
                                             }
-                                            (_, Some(inst)) => Some((
-                                                if cat == BrowserCategory::Mods {
-                                                    format!(
-                                                        "Opens version picker for MC {} ({}).",
-                                                        inst.version_id, inst.mod_loader.name
-                                                    )
-                                                } else {
-                                                    format!(
-                                                        "Installs compatible file for MC {} automatically.",
-                                                        inst.version_id
-                                                    )
-                                                },
-                                                p.text_muted,
-                                            )),
                                         };
                                         if let Some((msg, col)) = compat_msg {
                                             ui.label(RichText::new(msg).size(11.5).color(col));
@@ -673,6 +748,9 @@ impl McwApp {
                                         let cta_lbl = match (&selected_inst, cat) {
                                             (_, BrowserCategory::Modpacks) => {
                                                 "Install Modpack...".to_string()
+                                            }
+                                            (_, _) if self.browser_global_mode => {
+                                                "Choose Instance & Install...".to_string()
                                             }
                                             (Some(inst), _) => format!("Install in {}", inst.name),
                                             (None, _) => "Select Instance First".to_string(),
@@ -706,8 +784,10 @@ impl McwApp {
                                                 open_external(url);
                                             }
                                         }
+                                            });
                                     });
-                            });
+                            },
+                        );
                     });
                 });
         });
@@ -716,15 +796,25 @@ impl McwApp {
         if let Some(new_id) = switch_instance {
             self.selected_instance_id = Some(new_id);
             self.sync_selected_from_cache();
-            self.open_content_browser(self.browser_category, Some(self.browser_provider), ctx);
+            self.open_content_browser_mode(
+                self.browser_category,
+                Some(self.browser_provider),
+                self.browser_global_mode,
+                ctx,
+            );
             return;
         }
         if let Some(new_cat) = switch_category {
-            self.open_content_browser(new_cat, None, ctx);
+            self.open_content_browser_mode(new_cat, None, self.browser_global_mode, ctx);
             return;
         }
         if let Some(new_prov) = switch_provider {
-            self.open_content_browser(self.browser_category, Some(new_prov), ctx);
+            self.open_content_browser_mode(
+                self.browser_category,
+                Some(new_prov),
+                self.browser_global_mode,
+                ctx,
+            );
             return;
         }
         if trigger_search {
@@ -732,15 +822,36 @@ impl McwApp {
         }
         if let Some(action) = pending_install {
             match action {
-                BrowserInstallAction::ModrinthModPicker { slug, title, icon } => {
-                    self.open_modrinth_version_picker(slug, title, icon, false, ctx);
+                BrowserInstallAction::ModrinthModPicker {
+                    slug,
+                    title,
+                    icon,
+                    content_kind,
+                } => {
+                    self.open_modrinth_version_picker(
+                        slug,
+                        title,
+                        icon,
+                        false,
+                        content_kind,
+                        self.browser_global_mode,
+                        ctx,
+                    );
                 }
                 BrowserInstallAction::CurseForgeModPicker {
                     mod_id,
                     title,
                     icon,
+                    content_kind,
                 } => {
-                    self.open_curseforge_version_picker(mod_id, title, icon, ctx);
+                    self.open_curseforge_version_picker(
+                        mod_id,
+                        title,
+                        icon,
+                        content_kind,
+                        self.browser_global_mode,
+                        ctx,
+                    );
                 }
                 BrowserInstallAction::ModpackDialog {
                     provider,
@@ -789,7 +900,7 @@ impl McwApp {
     }
 
     fn can_install_browser_entry(&self, cat: BrowserCategory, inst: Option<&Instance>) -> bool {
-        if cat == BrowserCategory::Modpacks {
+        if cat == BrowserCategory::Modpacks || self.browser_global_mode {
             return true;
         }
         let Some(inst) = inst else {
@@ -818,6 +929,7 @@ impl McwApp {
                             slug: hit.slug.clone(),
                             title: hit.title.clone(),
                             icon: hit.icon_url.clone(),
+                            content_kind: None,
                         },
                         BrowserCategory::Modpacks => BrowserInstallAction::ModpackDialog {
                             provider: ModpackInstallProvider::Modrinth {
@@ -828,6 +940,12 @@ impl McwApp {
                             icon: hit.icon_url.clone(),
                             web_url: Some(web.clone()),
                             default_loader: "fabric",
+                        },
+                        _ if self.browser_global_mode => BrowserInstallAction::ModrinthModPicker {
+                            slug: hit.slug.clone(),
+                            title: hit.title.clone(),
+                            icon: hit.icon_url.clone(),
+                            content_kind: cat.content_kind(),
                         },
                         _ => BrowserInstallAction::ContentPack {
                             kind: cat.content_kind().unwrap_or(ContentKind::ResourcePack),
@@ -869,6 +987,7 @@ impl McwApp {
                             mod_id: cf.id,
                             title: cf.name.clone(),
                             icon: icon.clone(),
+                            content_kind: None,
                         },
                         BrowserCategory::Modpacks => BrowserInstallAction::ModpackDialog {
                             provider: ModpackInstallProvider::CurseForge {
@@ -881,6 +1000,14 @@ impl McwApp {
                             web_url: Some(web.clone()),
                             default_loader: "forge",
                         },
+                        _ if self.browser_global_mode => {
+                            BrowserInstallAction::CurseForgeModPicker {
+                                mod_id: cf.id,
+                                title: cf.name.clone(),
+                                icon: icon.clone(),
+                                content_kind: cat.content_kind(),
+                            }
+                        }
                         _ => BrowserInstallAction::ContentPack {
                             kind: cat.content_kind().unwrap_or(ContentKind::ResourcePack),
                             provider_is_cf: true,

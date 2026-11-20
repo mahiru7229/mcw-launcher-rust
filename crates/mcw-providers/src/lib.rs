@@ -29,8 +29,9 @@ pub use modrinth::{
     ModrinthSearchParams, ModrinthSearchResult, ModrinthVersion,
 };
 pub use pack_registry::{
-    detect_installed_pack, AtLauncherManagedFile, AtLauncherPackRecord, AtLauncherPackRegistry,
-    FtbManagedFile, FtbPackRecord, FtbPackRegistry, InstalledPackOrigin,
+    detect_export_origin, detect_installed_pack, AtLauncherManagedFile, AtLauncherPackRecord,
+    AtLauncherPackRegistry, FtbManagedFile, FtbPackRecord, FtbPackRegistry, InstalledPackOrigin,
+    InstanceExportOrigin,
 };
 
 use thiserror::Error;

@@ -100,6 +100,76 @@ pub(crate) fn auto_combo_width(ui: &egui::Ui, selected_text: &str, min_w: f32, m
     (galley.size().x + 34.0).clamp(min_w, max_w.max(min_w))
 }
 
+pub(crate) fn display_loader_name(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => String::new(),
+        "vanilla" => "Vanilla".to_string(),
+        "fabric" => "Fabric".to_string(),
+        "quilt" => "Quilt".to_string(),
+        "forge" => "Forge".to_string(),
+        "neoforge" => "NeoForge".to_string(),
+        "all" => "All Loaders".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        }
+    }
+}
+
+pub(crate) fn display_version_type(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "release" => "Release".to_string(),
+        "snapshot" => "Snapshot".to_string(),
+        "old_beta" => "Old Beta".to_string(),
+        "old_alpha" => "Old Alpha".to_string(),
+        "all" => "All".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        }
+    }
+}
+
+/// Restores (un-minimizes) and focuses an already-open OS viewport so users never lose
+/// secondary windows behind the main window.
+pub(crate) fn focus_viewport(
+    ctx: &egui::Context,
+    vp_id: egui::ViewportId,
+    title_hint: Option<&str>,
+) {
+    ctx.send_viewport_cmd_to(vp_id, egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd_to(vp_id, egui::ViewportCommand::Focus);
+    #[cfg(target_os = "windows")]
+    if let Some(title) = title_hint {
+        let mut wide: Vec<u16> = title.encode_utf16().collect();
+        wide.push(0);
+        #[link(name = "user32")]
+        extern "system" {
+            fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> isize;
+            fn IsIconic(h_wnd: isize) -> i32;
+            fn ShowWindow(h_wnd: isize, n_cmd_show: i32) -> i32;
+            fn SetForegroundWindow(h_wnd: isize) -> i32;
+        }
+        unsafe {
+            let hwnd = FindWindowW(std::ptr::null(), wide.as_ptr());
+            if hwnd != 0 {
+                if IsIconic(hwnd) != 0 {
+                    ShowWindow(hwnd, 9);
+                }
+                SetForegroundWindow(hwnd);
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = title_hint;
+}
+
 pub(crate) fn pick_file_dialog(title: &str, filter: &str) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -109,10 +179,14 @@ pub(crate) fn pick_file_dialog(title: &str, filter: &str) -> Option<PathBuf> {
         let safe_filter = filter.replace('\'', "''");
         let script = format!(
             "Add-Type -AssemblyName System.Windows.Forms; \
+             $owner = New-Object System.Windows.Forms.Form; \
+             $owner.TopMost = $true; \
              $d = New-Object System.Windows.Forms.OpenFileDialog; \
              $d.Title = '{safe_title}'; \
              $d.Filter = '{safe_filter}'; \
-             if ($d.ShowDialog() -eq 'OK') {{ Write-Output $d.FileName }}"
+             $res = $d.ShowDialog($owner); \
+             $owner.Dispose(); \
+             if ($res -eq 'OK') {{ Write-Output $d.FileName }}"
         );
         let out = std::process::Command::new("powershell")
             .args(["-NoProfile", "-STA", "-Command", &script])
@@ -133,6 +207,17 @@ pub(crate) fn pick_file_dialog(title: &str, filter: &str) -> Option<PathBuf> {
     }
 }
 
+pub(crate) fn pick_file_dialog_async(
+    title: String,
+    filter: String,
+    on_done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        let picked = pick_file_dialog(&title, &filter);
+        on_done(picked);
+    });
+}
+
 pub(crate) fn save_file_dialog(
     title: &str,
     filter: &str,
@@ -147,12 +232,16 @@ pub(crate) fn save_file_dialog(
         let safe_file = default_filename.replace('\'', "''");
         let script = format!(
             "Add-Type -AssemblyName System.Windows.Forms; \
+             $owner = New-Object System.Windows.Forms.Form; \
+             $owner.TopMost = $true; \
              $d = New-Object System.Windows.Forms.SaveFileDialog; \
              $d.Title = '{safe_title}'; \
              $d.Filter = '{safe_filter}'; \
              $d.FileName = '{safe_file}'; \
              $d.OverwritePrompt = $true; \
-             if ($d.ShowDialog() -eq 'OK') {{ Write-Output $d.FileName }}"
+             $res = $d.ShowDialog($owner); \
+             $owner.Dispose(); \
+             if ($res -eq 'OK') {{ Write-Output $d.FileName }}"
         );
         let out = std::process::Command::new("powershell")
             .args(["-NoProfile", "-STA", "-Command", &script])

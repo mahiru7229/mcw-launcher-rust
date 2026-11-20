@@ -23,7 +23,7 @@ impl McwApp {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Pop Out Global Window").clicked() {
-                    self.show_global_logs_window = true;
+                    self.open_global_logs_window(ctx);
                 }
             });
         });

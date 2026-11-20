@@ -100,32 +100,16 @@ impl FirstRunRecommendationService {
         }
     }
 
-    /// Exact parity with Python `FirstRunRecommendationService.recommended_max_memory_mb`.
-    pub fn recommended_max_memory_mb(total_mb: u32, avail_mb: u32) -> u32 {
+    /// Recommended max memory using `max(4096 MB, 50% of total RAM)` snapped to 256 MB steps,
+    /// capped at 16384 MB and clamped safely on low-RAM machines (`<= total_mb - 1024`).
+    pub fn recommended_max_memory_mb(total_mb: u32, _avail_mb: u32) -> u32 {
         if total_mb == 0 {
-            return 2048;
+            return 4096;
         }
-        let mut rec = if total_mb < 4096 {
-            1024
-        } else if total_mb < 8192 {
-            2048
-        } else if total_mb < 12288 {
-            4096
-        } else if total_mb < 24576 {
-            6144
-        } else {
-            8192
-        };
-
-        if avail_mb > 0 {
-            let safe_avail = avail_mb.saturating_sub(1536).max(1024);
-            rec = rec.min(safe_avail);
-        }
-        let sixty_pct = ((total_mb as f64 * 0.60) as u32).max(1024);
-        rec = rec.min(sixty_pct);
-
-        // Snap down to 128 MB step, never below 1024 MB unless physical total is lower.
-        let snapped = ((rec / 128) * 128).max(1024);
+        let raw = 4096u32.max(total_mb / 2);
+        let safe_limit = total_mb.saturating_sub(1024).max(512);
+        let clamped = raw.min(16384).min(safe_limit);
+        let snapped = ((clamped / 256) * 256).max(512);
         snapped.min(total_mb.max(512))
     }
 
@@ -158,34 +142,41 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn computes_first_run_memory_tiers_and_caps_matching_python() {
+    fn computes_first_run_memory_tiers_and_caps_matching_formula() {
         assert_eq!(
-            FirstRunRecommendationService::recommended_max_memory_mb(3072, 2048),
+            FirstRunRecommendationService::recommended_max_memory_mb(2048, 1024),
             1024
         );
         assert_eq!(
+            FirstRunRecommendationService::recommended_max_memory_mb(4096, 2048),
+            3072
+        );
+        assert_eq!(
             FirstRunRecommendationService::recommended_max_memory_mb(6144, 4096),
-            2048
+            4096
         );
         assert_eq!(
             FirstRunRecommendationService::recommended_max_memory_mb(8192, 6000),
             4096
         );
         assert_eq!(
-            FirstRunRecommendationService::recommended_max_memory_mb(16384, 12000),
-            6144
+            FirstRunRecommendationService::recommended_max_memory_mb(16087, 4071),
+            7936
+        );
+        assert_eq!(
+            FirstRunRecommendationService::recommended_max_memory_mb(16384, 3000),
+            8192
         );
         assert_eq!(
             FirstRunRecommendationService::recommended_max_memory_mb(32768, 24000),
-            8192
-        );
-        // Low available memory tightens the ceiling safely
-        assert_eq!(
-            FirstRunRecommendationService::recommended_max_memory_mb(16384, 3000),
-            1408
+            16384
         );
         assert_eq!(
-            FirstRunRecommendationService::recommended_min_memory_mb(2048),
+            FirstRunRecommendationService::recommended_max_memory_mb(65536, 48000),
+            16384
+        );
+        assert_eq!(
+            FirstRunRecommendationService::recommended_min_memory_mb(4096),
             1024
         );
     }

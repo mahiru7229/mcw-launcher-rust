@@ -45,7 +45,7 @@ impl McwApp {
         }
     }
 
-    pub(crate) fn open_manual_downloads_for(&mut self, instance_id: &str) {
+    pub(crate) fn open_manual_downloads_for(&mut self, instance_id: &str, ctx: &egui::Context) {
         let pending = ModpackInstaller::load_pending_manual_downloads(&self.paths, instance_id);
         if pending.is_empty() {
             self.pending_manual_counts.remove(instance_id);
@@ -59,7 +59,10 @@ impl McwApp {
             .insert(instance_id.to_string(), pending);
         self.manual_scan_status.remove(instance_id);
         self.last_manual_scan_at = None;
-        if !self.open_manual_modals.iter().any(|id| id == instance_id) {
+        if self.open_manual_modals.iter().any(|id| id == instance_id) {
+            let vp_id = egui::ViewportId::from_hash_of(("mcw_vp_manual_downloads", instance_id));
+            focus_viewport(ctx, vp_id, None);
+        } else {
             self.open_manual_modals.push(instance_id.to_string());
         }
     }
@@ -108,7 +111,7 @@ impl McwApp {
                     }
                     let msg = if remaining.is_empty() {
                         format!(
-                            "Imported {resolved} mod(s) for '{inst_id}'. All manual downloads complete — modpack is ready!"
+                            "Imported {resolved} mod(s) for '{inst_id}'. All manual downloads complete - modpack is ready!"
                         )
                     } else {
                         format!(
@@ -197,11 +200,9 @@ impl McwApp {
         let Some(id) = self.selected_instance_id.clone() else {
             return;
         };
-        if self.active_page == AppPage::Servers {
-            self.load_servers_async(&id, ctx, false);
-        }
         match self.active_tab {
             DetailTab::Mods => self.load_mods_async(&id, ctx, false),
+            DetailTab::Servers => self.load_servers_async(&id, ctx, false),
             DetailTab::ResourcePacks => {
                 self.load_content_packs_async(&id, ContentKind::ResourcePack, ctx, false)
             }
@@ -634,7 +635,7 @@ impl McwApp {
                 "Add or sign in to an account before launching.".to_string(),
                 true,
             ));
-            self.show_account_modal = true;
+            self.open_accounts_window(ctx);
             return;
         };
 
@@ -663,7 +664,7 @@ impl McwApp {
                     ),
                     true,
                 ));
-                self.open_manual_downloads_for(&instance_id);
+                self.open_manual_downloads_for(&instance_id, ctx);
                 return;
             } else if cf_policy.warns() {
                 self.push_global_log(format!(
@@ -1010,23 +1011,115 @@ impl McwApp {
         );
     }
 
+    fn setup_version_picker_target_defaults(
+        &mut self,
+        title: &str,
+        content_kind: Option<ContentKind>,
+        global_mode: bool,
+        ctx: &egui::Context,
+    ) {
+        if self.version_picker_open {
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_version_picker"),
+                None,
+            );
+        }
+        self.version_picker_global_mode = global_mode;
+        self.version_picker_content_kind = content_kind;
+        self.version_picker_datapack_world.clear();
+
+        let store = InstanceStore::new(&self.paths);
+        let base_name = title.trim();
+        let base_name = if base_name.is_empty() {
+            "New Instance"
+        } else {
+            base_name
+        };
+        let mut candidate = base_name.to_string();
+        let mut idx = 2usize;
+        while store.load_instance(&candidate).is_ok() {
+            candidate = format!("{base_name} ({idx})");
+            idx += 1;
+        }
+        self.version_picker_new_inst_name = candidate;
+
+        if global_mode {
+            let compatible = self.compatible_instances_for_content(content_kind);
+            let preferred_id = self
+                .selected_instance_id
+                .as_ref()
+                .filter(|id| compatible.iter().any(|i| &i.instance_id == *id))
+                .cloned()
+                .or_else(|| compatible.first().map(|i| i.instance_id.clone()));
+            if let Some(id) = preferred_id {
+                self.version_picker_create_new = false;
+                self.version_picker_target_instance_id = id.clone();
+                if content_kind == Some(ContentKind::DataPack) {
+                    self.load_worlds_async(&id, ctx, false);
+                }
+            } else {
+                self.version_picker_create_new = true;
+                self.version_picker_target_instance_id.clear();
+            }
+            self.version_picker_new_inst_loader = if content_kind.is_some() {
+                "vanilla".to_string()
+            } else if !self.browser_loader_filter.is_empty() && self.browser_loader_filter != "all"
+            {
+                self.browser_loader_filter.to_ascii_lowercase()
+            } else {
+                "fabric".to_string()
+            };
+        } else {
+            self.version_picker_create_new = false;
+            self.version_picker_target_instance_id =
+                self.selected_instance_id.clone().unwrap_or_default();
+            self.version_picker_datapack_world = self.browser_datapack_world.clone();
+            self.version_picker_new_inst_loader = "fabric".to_string();
+        }
+    }
+
+    pub(crate) fn compatible_instances_for_content(
+        &self,
+        content_kind: Option<ContentKind>,
+    ) -> Vec<Instance> {
+        self.instances
+            .iter()
+            .filter(|inst| {
+                if content_kind.is_none() {
+                    !inst.mod_loader.is_vanilla()
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_modrinth_version_picker(
         &mut self,
         slug: String,
         title: String,
         icon_url: Option<String>,
         is_pack: bool,
+        content_kind: Option<ContentKind>,
+        global_mode: bool,
         ctx: &egui::Context,
     ) {
         let target_key = format!("mr:{slug}");
+        self.setup_version_picker_target_defaults(&title, content_kind, global_mode, ctx);
         self.version_picker_open = true;
         self.version_picker_title = title;
         self.version_picker_icon = icon_url;
-        self.version_picker_website_url = Some(format!(
-            "https://modrinth.com/{}/{}",
-            if is_pack { "modpack" } else { "mod" },
-            slug
-        ));
+        let path_seg = match (is_pack, content_kind) {
+            (true, _) => "modpack",
+            (false, Some(ContentKind::ResourcePack)) => "resourcepack",
+            (false, Some(ContentKind::ShaderPack)) => "shader",
+            (false, Some(ContentKind::DataPack)) => "datapack",
+            (false, None) => "mod",
+        };
+        self.version_picker_website_url = Some(format!("https://modrinth.com/{path_seg}/{slug}"));
         self.version_picker_key = target_key.clone();
         self.version_picker_is_pack = is_pack;
         self.version_picker_loading = true;
@@ -1043,13 +1136,27 @@ impl McwApp {
             } else {
                 self.browser_loader_filter.to_ascii_lowercase()
             };
+        } else if global_mode {
+            self.version_picker_mc_filter = if self.browser_mc_version_filter.is_empty() {
+                "all".to_string()
+            } else {
+                self.browser_mc_version_filter.clone()
+            };
+            self.version_picker_loader_filter =
+                if content_kind.is_some() || self.browser_loader_filter.is_empty() {
+                    "all".to_string()
+                } else {
+                    self.browser_loader_filter.to_ascii_lowercase()
+                };
         } else {
             let inst = self.selected_instance().cloned();
             self.version_picker_mc_filter = inst
                 .as_ref()
                 .map(|i| i.version_id.clone())
                 .unwrap_or_else(|| "all".to_string());
-            self.version_picker_loader_filter = if self.browser_loader_filter.is_empty() {
+            self.version_picker_loader_filter = if content_kind.is_some() {
+                "all".to_string()
+            } else if self.browser_loader_filter.is_empty() {
                 inst.as_ref()
                     .map(|i| i.mod_loader.name.to_ascii_lowercase())
                     .filter(|l| l != "vanilla")
@@ -1120,6 +1227,8 @@ impl McwApp {
         mod_id: u64,
         title: String,
         icon_url: Option<String>,
+        content_kind: Option<ContentKind>,
+        global_mode: bool,
         ctx: &egui::Context,
     ) {
         let target_key = format!("cf:{mod_id}");
@@ -1143,6 +1252,7 @@ impl McwApp {
                     })
             });
 
+        self.setup_version_picker_target_defaults(&title, content_kind, global_mode, ctx);
         self.version_picker_open = true;
         self.version_picker_title = title;
         self.version_picker_icon = icon_url;
@@ -1156,10 +1266,31 @@ impl McwApp {
         self.version_picker_include_alpha = self.prefs.modrinth_include_alpha;
         self.version_picker_selected_id.clear();
 
-        let inst = self.selected_instance().cloned();
-        let gv_opt = inst.as_ref().map(|i| i.version_id.clone());
+        let inst = if global_mode {
+            None
+        } else {
+            self.selected_instance().cloned()
+        };
+        let gv_opt = if global_mode {
+            let v = self.browser_mc_version_filter.trim();
+            if v.is_empty() || v == "all" {
+                None
+            } else {
+                Some(v.to_string())
+            }
+        } else {
+            inst.as_ref().map(|i| i.version_id.clone())
+        };
         self.version_picker_mc_filter = gv_opt.clone().unwrap_or_else(|| "all".to_string());
-        self.version_picker_loader_filter = if self.browser_loader_filter.is_empty() {
+        self.version_picker_loader_filter = if content_kind.is_some() {
+            "all".to_string()
+        } else if global_mode {
+            if self.browser_loader_filter.is_empty() {
+                "all".to_string()
+            } else {
+                self.browser_loader_filter.to_ascii_lowercase()
+            }
+        } else if self.browser_loader_filter.is_empty() {
             inst.as_ref()
                 .map(|i| i.mod_loader.name.to_ascii_lowercase())
                 .filter(|l| l != "vanilla")
@@ -1314,6 +1445,203 @@ impl McwApp {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn install_content_choice_to_target(
+        &mut self,
+        choice: ModVersionChoice,
+        create_new: bool,
+        target_instance_id: String,
+        new_inst_name: String,
+        new_inst_loader: String,
+        datapack_world: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        if choice.download_url.is_none() {
+            self.notice_banner = Some((
+                format!(
+                    "'{}' has third-party distribution disabled by its author on CurseForge.",
+                    choice.file_name
+                ),
+                true,
+            ));
+            return;
+        }
+        let content_kind = self.version_picker_content_kind;
+        let dest_inst = if create_new {
+            let mc_ver = choice
+                .game_versions
+                .first()
+                .cloned()
+                .filter(|v| !v.trim().is_empty())
+                .or_else(|| {
+                    let latest = self.latest_mc_version(false);
+                    (!latest.is_empty()).then_some(latest)
+                })
+                .unwrap_or_else(|| "1.21.4".to_string());
+            let loader_name = if content_kind.is_none() {
+                let l = new_inst_loader.trim().to_ascii_lowercase();
+                if matches!(l.as_str(), "fabric" | "forge" | "neoforge" | "quilt") {
+                    l
+                } else {
+                    choice
+                        .loaders
+                        .iter()
+                        .find(|x| {
+                            matches!(
+                                x.to_ascii_lowercase().as_str(),
+                                "fabric" | "forge" | "neoforge" | "quilt"
+                            )
+                        })
+                        .map(|x| x.to_ascii_lowercase())
+                        .unwrap_or_else(|| "fabric".to_string())
+                }
+            } else {
+                let l = new_inst_loader.trim().to_ascii_lowercase();
+                if matches!(
+                    l.as_str(),
+                    "vanilla" | "fabric" | "forge" | "neoforge" | "quilt"
+                ) {
+                    l
+                } else {
+                    "vanilla".to_string()
+                }
+            };
+            let mod_loader = if loader_name == "vanilla" {
+                ModLoader::vanilla()
+            } else {
+                ModLoader {
+                    name: loader_name,
+                    version: "latest".to_string(),
+                }
+            };
+            let store = InstanceStore::new(&self.paths);
+            let mut candidate = new_inst_name.trim().to_string();
+            if candidate.is_empty() {
+                candidate = self.version_picker_title.trim().to_string();
+            }
+            if candidate.is_empty() {
+                candidate = format!("Minecraft {mc_ver}");
+            }
+            let base = candidate.clone();
+            let mut idx = 2usize;
+            while store.load_instance(&candidate).is_ok() {
+                candidate = format!("{base} ({idx})");
+                idx += 1;
+            }
+            match store.create_instance(&candidate, &mc_ver, mod_loader) {
+                Ok((created, mut inst_settings)) => {
+                    inst_settings.min_memory = self.prefs.default_min_memory;
+                    inst_settings.max_memory = self.prefs.default_max_memory;
+                    inst_settings.width = self.prefs.default_width;
+                    inst_settings.height = self.prefs.default_height;
+                    inst_settings.fullscreen = self.prefs.default_fullscreen;
+                    let _ = store.save_settings(&created.instance_id, &inst_settings);
+                    self.selected_instance_id = Some(created.instance_id.clone());
+                    self.reload_instances();
+                    created
+                }
+                Err(err) => {
+                    self.notice_banner = Some((format!("Create instance failed: {err}"), true));
+                    return;
+                }
+            }
+        } else {
+            let found = self
+                .instances
+                .iter()
+                .find(|i| i.instance_id == target_instance_id)
+                .cloned()
+                .or_else(|| self.selected_instance().cloned());
+            let Some(inst) = found else {
+                self.notice_banner =
+                    Some(("Select or create an instance first.".to_string(), true));
+                return;
+            };
+            inst
+        };
+
+        if let Some(kind) = content_kind {
+            self.start_direct_content_pack_file_install(
+                choice,
+                dest_inst,
+                kind,
+                datapack_world,
+                ctx,
+            );
+        } else {
+            self.start_direct_mod_file_install_for(choice, dest_inst, ctx);
+        }
+    }
+
+    pub(crate) fn start_direct_content_pack_file_install(
+        &mut self,
+        choice: ModVersionChoice,
+        inst: Instance,
+        kind: ContentKind,
+        datapack_world: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        let Some(url) = choice.download_url else {
+            return;
+        };
+        let kind_label = match kind {
+            ContentKind::ResourcePack => "Resource Pack",
+            ContentKind::ShaderPack => "Shader Pack",
+            ContentKind::DataPack => "Data Pack",
+        };
+        let item_key = self.version_picker_key.clone();
+        self.installing_content_packs.insert(item_key.clone());
+        let (task_id, task_ctrl) = self.begin_task_with_control(
+            format!("{kind_label}: {}", choice.file_name),
+            format!("Downloading into {}...", inst.name),
+        );
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let target_dir = if kind == ContentKind::DataPack {
+            match datapack_world
+                .as_deref()
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+            {
+                Some(world) => mc_dir.join("saves").join(world).join("datapacks"),
+                None => mc_dir.join(kind.folder_name()),
+            }
+        } else {
+            mc_dir.join(kind.folder_name())
+        };
+        let dest = target_dir.join(&choice.file_name);
+        let file_name = choice.file_name.clone();
+        let sha1 = choice.sha1;
+        let file_size = choice.file_size;
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let _ = std::fs::create_dir_all(&target_dir);
+                let downloader = DownloadClient::new()
+                    .map_err(|e| e.to_string())?
+                    .with_task_control(task_ctrl);
+                let req = mcw_net::DownloadRequest::new(url, dest)
+                    .with_sha1(sha1)
+                    .with_size(file_size);
+                downloader
+                    .download_file(&req)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok::<String, String>(file_name)
+            }
+            .await;
+            let _ = tx.send(AppEvent::ContentPackInstallFinished {
+                task_id,
+                item_key,
+                instance_id: inst.instance_id,
+                kind,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
     pub(crate) fn start_direct_mod_file_install(
         &mut self,
         choice: ModVersionChoice,
@@ -1322,6 +1650,15 @@ impl McwApp {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
         };
+        self.start_direct_mod_file_install_for(choice, inst, ctx);
+    }
+
+    pub(crate) fn start_direct_mod_file_install_for(
+        &mut self,
+        choice: ModVersionChoice,
+        inst: Instance,
+        ctx: &egui::Context,
+    ) {
         let Some(url) = choice.download_url else {
             self.notice_banner = Some((
                 format!(
@@ -1484,49 +1821,6 @@ impl McwApp {
             }
             .await;
             let _ = tx.send(AppEvent::ModUpdatesApplied {
-                task_id,
-                instance_id: inst.instance_id,
-                result: res,
-            });
-            ctx_c.request_repaint();
-        });
-    }
-
-    pub(crate) fn start_prepare_lan_hosting(&mut self, provider: String, ctx: &egui::Context) {
-        let Some(inst) = self.selected_instance().cloned() else {
-            return;
-        };
-        let (task_id, task_ctrl) = self.begin_task_with_control(
-            format!("LAN Hosting ({})", inst.name),
-            format!("Configuring {} LAN connection...", provider),
-        );
-        let inst_dir = self.paths.instance_dir(&inst.instance_id);
-        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
-        let cache_path = self.paths.cache_root.join("providers.sqlite");
-        let tx = self.tx.clone();
-        let ctx_c = ctx.clone();
-
-        self.runtime.spawn(async move {
-            let res = async {
-                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
-                let downloader = DownloadClient::new()
-                    .map_err(|e| e.to_string())?
-                    .with_task_control(task_ctrl);
-                LanHostingManager::prepare(
-                    &inst_dir,
-                    &mc_dir,
-                    &inst.version_id,
-                    &inst.mod_loader.name,
-                    &provider,
-                    &mr,
-                    &downloader,
-                )
-                .await
-                .map_err(|e| e.to_string())
-            }
-            .await;
-            let _ = tx.send(AppEvent::LanHostingPrepared {
                 task_id,
                 instance_id: inst.instance_id,
                 result: res,
@@ -1950,6 +2244,24 @@ impl McwApp {
                                 self.version_picker_items = list;
                                 self.version_picker_error = None;
                                 self.sync_mod_version_picker_selection();
+                                if self.version_picker_content_kind.is_none() {
+                                    if let Some(sel) = self
+                                        .version_picker_items
+                                        .iter()
+                                        .find(|v| v.id == self.version_picker_selected_id)
+                                        .or_else(|| self.version_picker_items.first())
+                                    {
+                                        if let Some(first_loader) = sel.loaders.iter().find(|l| {
+                                            matches!(
+                                                l.to_ascii_lowercase().as_str(),
+                                                "fabric" | "forge" | "neoforge" | "quilt"
+                                            )
+                                        }) {
+                                            self.version_picker_new_inst_loader =
+                                                first_loader.to_ascii_lowercase();
+                                        }
+                                    }
+                                }
                             }
                             Err(err) => {
                                 self.version_picker_error = Some(err);
@@ -2010,23 +2322,6 @@ impl McwApp {
                         }
                         Err(err) => {
                             self.notice_banner = Some((format!("Mod update failed: {err}"), true));
-                        }
-                    }
-                }
-                AppEvent::LanHostingPrepared {
-                    task_id,
-                    instance_id,
-                    result,
-                } => {
-                    self.finish_task(task_id);
-                    match result {
-                        Ok(msg) => {
-                            self.mods_cache.remove(&instance_id);
-                            self.notice_banner = Some((msg, false));
-                        }
-                        Err(err) => {
-                            self.notice_banner =
-                                Some((format!("LAN hosting setup failed: {err}"), true));
                         }
                     }
                 }
@@ -2385,10 +2680,10 @@ impl McwApp {
                             self.reload_instances();
                             self.notice_banner = Some((
                                 format!(
-                                    "Installed modpack '{}' (MC {}, {} — {} files, {} overrides{}).",
+                                    "Installed modpack '{}' (MC {}, {} - {} files, {} overrides{}).",
                                     rep.instance_id,
                                     rep.game_version,
-                                    rep.loader.name,
+                                    display_loader_name(&rep.loader.name),
                                     rep.downloaded_files,
                                     rep.extracted_overrides,
                                     if rep.manual_downloads.is_empty() {
@@ -2421,10 +2716,10 @@ impl McwApp {
                             self.reload_instances();
                             self.notice_banner = Some((
                                 format!(
-                                    "Installed modpack '{}' (MC {}, {} — {} files).",
+                                    "Installed modpack '{}' (MC {}, {} - {} files).",
                                     rep.instance_id,
                                     rep.game_version,
-                                    rep.loader.name,
+                                    display_loader_name(&rep.loader.name),
                                     rep.downloaded_files
                                 ),
                                 false,
@@ -2670,6 +2965,25 @@ impl McwApp {
                     self.cached_versions_loading = false;
                     self.cached_versions = list;
                 }
+                AppEvent::BackgroundPicturePicked(picked) => {
+                    self.bg_picker_open = false;
+                    if let Some(path) = picked {
+                        self.prefs.background_image_path = path.display().to_string();
+                        self.prefs.background_enabled = true;
+                        self.save_prefs();
+                    }
+                }
+                AppEvent::BackgroundImageLoaded { key, result } => {
+                    if let Some(err) = self.background.apply_loaded_user_image(
+                        ctx,
+                        key,
+                        self.prefs.background_enabled,
+                        &self.prefs.background_image_path,
+                        result,
+                    ) {
+                        self.notice_banner = Some((err, true));
+                    }
+                }
                 AppEvent::ContentBrowserSearchFinished {
                     request_id,
                     category,
@@ -2793,6 +3107,13 @@ impl McwApp {
             self.ensure_thumbnail(url, ctx);
         }
 
+        if self.modpack_dialog.open {
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_modpack_install"),
+                None,
+            );
+        }
         self.modpack_dialog = ModpackInstallDialogState {
             open: true,
             request_id: req_id,
@@ -2814,13 +3135,14 @@ impl McwApp {
             ram_user_edited: false,
             java_custom: false,
             java_path: String::new(),
+            jvm_preset: JvmPresetId::Default,
             include_optional_files: true,
             optional_files: Vec::new(),
             selected_optional_ids: HashSet::new(),
             loading_optional_files: false,
         };
 
-        // ATLauncher versions are already present in `pack.versions` — populate instantaneously!
+        // ATLauncher versions are already present in `pack.versions` - populate instantaneously!
         if let ModpackInstallProvider::AtLauncher { ref pack } = provider {
             let versions: Vec<ModpackVersionOption> = pack
                 .versions
@@ -3066,6 +3388,7 @@ impl McwApp {
         } else {
             None
         };
+        let jvm_preset = d.jvm_preset;
         let min_ram = d.min_ram_mb.max(256).min(d.max_ram_mb.max(256));
         let max_ram = d.max_ram_mb.max(min_ram);
         let icon_url = d.icon_url.clone();
@@ -3238,11 +3561,17 @@ impl McwApp {
                     }
                 };
 
-                // Apply configured RAM + Java settings to the newly created instance
+                // Apply configured RAM, JVM preset & Java settings to the newly created instance
                 let store = InstanceStore::new(&paths);
                 if let Ok(mut settings) = store.load_settings(&report.instance_id) {
                     settings.min_memory = min_ram;
                     settings.max_memory = max_ram;
+                    if jvm_preset != JvmPresetId::Default {
+                        settings.jvm_arguments = get_preset_flags(jvm_preset)
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect();
+                    }
                     if custom_java.is_some() {
                         settings.java_path = custom_java;
                     }
@@ -3455,7 +3784,63 @@ impl McwApp {
         });
     }
 
+    pub(crate) fn open_accounts_window(&mut self, ctx: &egui::Context) {
+        if self.show_account_modal {
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_accounts"),
+                Some("Accounts - MCW Launcher"),
+            );
+        }
+        self.show_account_modal = true;
+    }
+
+    pub(crate) fn open_export_modpack_window(&mut self, ctx: &egui::Context) {
+        if let Some(inst) = self.selected_instance() {
+            if self.show_export_modal {
+                let title = self.t("modpack_package.export.title").to_string();
+                focus_viewport(
+                    ctx,
+                    egui::ViewportId::from_hash_of("mcw_vp_export_modpack"),
+                    Some(&format!("{title} - {}", inst.name)),
+                );
+            }
+            self.show_export_modal = true;
+        }
+    }
+
+    pub(crate) fn open_global_logs_window(&mut self, ctx: &egui::Context) {
+        if self.show_global_logs_window {
+            let title_lbl = self.t("navigation.logs").to_string();
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_global_logs"),
+                Some(&format!("{title_lbl} - MCW Launcher")),
+            );
+        }
+        self.show_global_logs_window = true;
+    }
+
+    pub(crate) fn open_about_window(&mut self, ctx: &egui::Context) {
+        if self.show_about_window {
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_about"),
+                Some("About - MCW Launcher: Rust Edition"),
+            );
+        }
+        self.show_about_window = true;
+    }
+
     pub(crate) fn open_first_run_wizard(&mut self, ctx: &egui::Context) {
+        if self.show_first_run_wizard {
+            let title = format!("{} - MCW Launcher", self.t("first_run.title"));
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_first_run_setup"),
+                Some(&title),
+            );
+        }
         self.show_first_run_wizard = true;
         self.first_run_language = self.lang.current_locale().to_string();
         self.first_run_auto_updates = self.prefs.auto_check_updates;
@@ -3598,6 +3983,13 @@ impl McwApp {
             .find(|i| i.instance_id == instance_id)
             .cloned()
         {
+            if self.show_repair_center_window {
+                focus_viewport(
+                    ctx,
+                    egui::ViewportId::from_hash_of("mcw_vp_repair_center"),
+                    Some(&format!("Repair Center & Health - {}", inst.name)),
+                );
+            }
             self.repair_center_report = Some(InstanceHealthManager::scan(&self.paths, &inst));
             if !inst.mod_loader.is_vanilla() && !self.mods_cache.contains_key(instance_id) {
                 self.load_mods_async(instance_id, ctx, false);
@@ -3861,7 +4253,15 @@ impl McwApp {
         }
     }
 
-    pub(crate) fn open_lan_agent_log_window(&mut self, instance_id: &str) {
+    pub(crate) fn open_lan_agent_log_window(&mut self, instance_id: &str, ctx: &egui::Context) {
+        if self.show_lan_agent_log_window {
+            let title = self.t("lan.agent.log.title").to_string();
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_lan_agent_log"),
+                Some(&title),
+            );
+        }
         self.lan_agent_log_instance_id = instance_id.to_string();
         self.refresh_lan_agent_log();
         self.show_lan_agent_log_window = true;

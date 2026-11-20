@@ -1,6 +1,6 @@
 # MCW Launcher: Rust Edition
 
-[![Status](https://img.shields.io/badge/status-v0.13.0--beta.1-7C3AED?style=flat-square)](#)
+[![Status](https://img.shields.io/badge/status-v0.13.1--beta.1-7C3AED?style=flat-square)](#)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -11,11 +11,11 @@
 
 ## Performance & Footprint (vs. MCW Launcher Python)
 
-| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v0.13.0-beta.1`) |
+| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v0.13.1-beta.1`) |
 | --- | --- | --- |
 | **Idle / Active RAM** | ~150 MB | **~60–70 MB** (~55–60% lower memory footprint) |
 | **Runtime Performance** | Baseline | **~2× faster** UI responsiveness, mod scanning, and concurrent downloads |
-| **Package Size** | Larger (bundled Python + Qt runtime) | **Lighter (~9.6 MiB / ~10.1 MB single binary)** — zero bundled Python/Qt runtime |
+| **Package Size** | Larger (bundled Python + Qt runtime) | **Lighter (~9.66 MiB / ~10.13 MB single binary)** — zero bundled Python/Qt runtime |
 
 ---
 
@@ -23,9 +23,9 @@
 
 - **UI v2.0 Native Desktop Interface (`egui` / `eframe`)**
   - **Custom Background & Theme Presets**: Bundled procedural pixel-landscape or user PNG/JPEG/WebP background with *Panel opacity* and *Background dimming* sliders (no blur); 6 built-in presets (**Violet** default, **Sunrise**, **Neon**, **Ocean**, **Emerald**, **Light**), `#RRGGBB` custom accent override, and `themes/*.json` pack loading.
-  - **Clean Shell & Navigation**: Floating top pill bar (**Home**, **Mods**, **Servers**, **Versions**, **Logs**), slim left icon rail with status indicators and context menu, slide-out Instance Flyout (search, favorites, responsive Group/Tag pills), **in-app Launcher Settings modal** with live search, and **`Ctrl+K` Global Quick Search**.
-  - **Dedicated Pages & Floating Tabbed Home**: Home hero header (`Play`, `•••` Actions menu, quick icons, `Mods`/`Worlds`/`Resource packs`/`Shaders`/`Screenshots`/`Backups`/`Logs`/`Settings` tabs), **Servers & LAN** (`servers.dat` NBT + Quick Play + MCW LAN Agent / `e4mc`), **Versions** (`cache/versions/` + Mojang manifests), and unified **Logs** view.
-  - **Dedicated Centered OS Windows**: Isolated OS viewports for Content Browser (**Mods**, **Modpacks**, **Resource packs**, **Shader packs**, **Data packs**), Mod/Modpack version pickers, Accounts, Create Instance, Export Modpack, Manual Downloads, Repair Center, Global Logs, First-Run Wizard, and LAN Agent Log.
+  - **Clean Shell & Navigation**: Floating top pill bar (**Home**, **Mod & Modpacks**, **Versions**, **Logs**), slim left icon rail with status indicators and context menu, slide-out Instance Flyout (search, favorites, responsive Group/Tag pills), **in-app Launcher Settings modal** with cross-category right-pane content search, and **`Ctrl+K` Global Quick Search**.
+  - **Dedicated Pages & Floating Tabbed Home**: Home hero header (`Play`, `•••` Actions menu, quick Add Content / Open Folder / Gear **Instance Settings** icons, `Mods`/`Worlds`/`Resource packs`/`Shaders`/`Screenshots`/`Backups`/`Logs`/`Servers & LAN` tabs), **Servers & LAN** per-instance tab (`servers.dat` NBT + Quick Play + instant-apply Manual MCW LAN Agent), **Versions** (single vertical scroll covering collapsible `Cached Versions` + Mojang manifest), and unified **Logs** view.
+  - **Dedicated Centered OS Windows**: Isolated OS viewports for **Mod & Modpacks** (`Mods`, `Modpacks`, `Resource packs`, `Shader packs`, `Data packs` — including 1-step global instance/new-instance target selection), Modpack Install (with `JVM Preset` selector), origin-aware Export Modpack, Accounts, Create Instance, Manual Downloads, Repair Center, Global Logs, First-Run Wizard, and LAN Agent Log (re-focusing when already open).
   - **Simple Animations Only**: Hover/fade (`~120 ms`), modal/page fade-in (`~150 ms`), and smooth animated task progress bars honoring `MotionMode` (**Full** / **Reduced** / **Off**).
 - **Full Mod Loader Support & Safety**
   - **Vanilla**, **Fabric**, **Quilt**, **Forge** (legacy `1.12.2` + modern `--installClient`), **NeoForge**, and managed **OptiFine** validation/install.

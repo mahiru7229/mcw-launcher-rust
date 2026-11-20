@@ -13,12 +13,29 @@ fn quick_icon_button(
     tooltip: &str,
     paint_icon: impl FnOnce(&egui::Painter, egui::Rect, Color32),
 ) -> egui::Response {
+    quick_icon_button_active(ui, p, motion_secs, false, tooltip, paint_icon)
+}
+
+fn quick_icon_button_active(
+    ui: &mut egui::Ui,
+    p: ThemePalette,
+    motion_secs: f32,
+    active: bool,
+    tooltip: &str,
+    paint_icon: impl FnOnce(&egui::Painter, egui::Rect, Color32),
+) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::click());
     let t = ui
         .ctx()
         .animate_bool_with_time(resp.id.with("hover"), resp.hovered(), motion_secs);
-    let fill = if t > 0.01 { p.elevated } else { p.surface };
-    let stroke = if resp.hovered() {
+    let fill = if active {
+        with_alpha(p.accent, 64)
+    } else if t > 0.01 {
+        p.elevated
+    } else {
+        p.surface
+    };
+    let stroke = if active || resp.hovered() {
         Stroke::new(1.0_f32, p.accent)
     } else {
         Stroke::new(1.0_f32, p.border)
@@ -30,7 +47,8 @@ fn quick_icon_button(
         stroke,
         egui::StrokeKind::Inside,
     );
-    paint_icon(ui.painter(), rect, p.text);
+    let icon_col = if active { p.accent } else { p.text };
+    paint_icon(ui.painter(), rect, icon_col);
     resp.on_hover_text(tooltip)
 }
 
@@ -91,7 +109,6 @@ impl McwApp {
 
                 match self.active_page {
                     AppPage::Home => self.render_home_page(ui, ctx),
-                    AppPage::Servers => self.render_servers_page(ui, ctx),
                     AppPage::Versions => self.render_versions_page(ui, ctx),
                     AppPage::Logs => self.render_logs_page(ui, ctx),
                 }
@@ -137,7 +154,7 @@ impl McwApp {
                             )
                             .clicked()
                         {
-                            self.open_create_instance_dialog();
+                            self.open_create_instance_dialog(ctx);
                         }
                         ui.add_space(24.0);
                     });
@@ -234,8 +251,9 @@ impl McwApp {
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new(format!(
-                                "MC {} · {}",
-                                inst.version_id, inst.mod_loader.name
+                                "MC {} - {}",
+                                inst.version_id,
+                                display_loader_name(&inst.mod_loader.name)
                             ))
                             .monospace()
                             .size(12.0)
@@ -356,7 +374,7 @@ impl McwApp {
                         )
                         .clicked()
                     {
-                        self.open_manual_downloads_for(&inst.instance_id);
+                        self.open_manual_downloads_for(&inst.instance_id, ctx);
                     }
                 }
                 _ => {
@@ -443,9 +461,17 @@ impl McwApp {
                             }
                             ui.separator();
                             if ui.button("Edit Group & Tags...").clicked() {
-                                self.edit_group_input = inst.group.clone();
-                                self.edit_tags_input = inst.tags.join(", ");
-                                self.show_group_tags_modal = true;
+                                if self.show_group_tags_modal {
+                                    focus_viewport(
+                                        ctx,
+                                        egui::ViewportId::from_hash_of("mcw_vp_group_tags"),
+                                        Some(&format!("Edit Group & Tags - {}", inst.name)),
+                                    );
+                                } else {
+                                    self.edit_group_input = inst.group.clone();
+                                    self.edit_tags_input = inst.tags.join(", ");
+                                    self.show_group_tags_modal = true;
+                                }
                                 ui.close_menu();
                             }
                             if ui.button(&chg_icon_lbl).clicked() {
@@ -465,14 +491,30 @@ impl McwApp {
                                 .on_disabled_hover_text("Stop the instance before renaming")
                                 .clicked()
                             {
-                                self.rename_input = inst.name.clone();
-                                self.show_rename_modal = true;
+                                if self.show_rename_modal {
+                                    focus_viewport(
+                                        ctx,
+                                        egui::ViewportId::from_hash_of("mcw_vp_rename_instance"),
+                                        Some(&format!("Rename Instance - {}", inst.name)),
+                                    );
+                                } else {
+                                    self.rename_input = inst.name.clone();
+                                    self.show_rename_modal = true;
+                                }
                                 ui.close_menu();
                             }
                             if ui.button(&clone_lbl).clicked() {
-                                self.clone_name_input = format!("{} (Copy)", inst.name);
-                                self.clone_include_saves = false;
-                                self.show_clone_modal = true;
+                                if self.show_clone_modal {
+                                    focus_viewport(
+                                        ctx,
+                                        egui::ViewportId::from_hash_of("mcw_vp_clone_instance"),
+                                        None,
+                                    );
+                                } else {
+                                    self.clone_name_input = format!("{} (Copy)", inst.name);
+                                    self.clone_include_saves = false;
+                                    self.show_clone_modal = true;
+                                }
                                 ui.close_menu();
                             }
                             ui.separator();
@@ -485,7 +527,15 @@ impl McwApp {
                                 .on_disabled_hover_text("Stop the instance before deleting")
                                 .clicked()
                             {
-                                self.show_delete_modal = true;
+                                if self.show_delete_modal {
+                                    focus_viewport(
+                                        ctx,
+                                        egui::ViewportId::from_hash_of("mcw_vp_delete_instance"),
+                                        Some(&format!("Delete Instance - {}", inst.name)),
+                                    );
+                                } else {
+                                    self.show_delete_modal = true;
+                                }
                                 ui.close_menu();
                             }
                         },
@@ -561,41 +611,30 @@ impl McwApp {
                 open_external(&mc_dir.display().to_string());
             }
 
-            // Quick icon: Instance Settings (edit pencil vector)
-            if quick_icon_button(
+            // Quick icon: Instance Settings (8-tooth gear vector)
+            let settings_active = self.active_tab == DetailTab::Settings;
+            if quick_icon_button_active(
                 ui,
                 p,
                 motion_hover,
+                settings_active,
                 "Instance Settings",
                 |painter, r, col| {
-                    let st = Stroke::new(1.6_f32, col);
                     let c = r.center();
-                    painter.line_segment(
-                        [
-                            egui::pos2(c.x - 6.0, c.y + 6.0),
-                            egui::pos2(c.x + 6.0, c.y - 6.0),
-                        ],
-                        Stroke::new(2.0_f32, col),
-                    );
-                    painter.line_segment(
-                        [
-                            egui::pos2(c.x + 3.0, c.y - 6.0),
-                            egui::pos2(c.x + 6.0, c.y - 3.0),
-                        ],
-                        st,
-                    );
-                    painter.line_segment(
-                        [
-                            egui::pos2(c.x - 7.0, c.y + 7.0),
-                            egui::pos2(c.x - 3.5, c.y + 7.0),
-                        ],
-                        st,
-                    );
+                    painter.circle_stroke(c, 5.4, Stroke::new(2.0_f32, col));
+                    painter.circle_stroke(c, 2.1, Stroke::new(1.5_f32, col));
+                    for i in 0..8 {
+                        let a = (i as f32) * std::f32::consts::FRAC_PI_4;
+                        let p1 = c + Vec2::new(a.cos() * 6.0, a.sin() * 6.0);
+                        let p2 = c + Vec2::new(a.cos() * 8.6, a.sin() * 8.6);
+                        painter.line_segment([p1, p2], Stroke::new(2.0_f32, col));
+                    }
                 },
             )
             .clicked()
             {
                 self.active_tab = DetailTab::Settings;
+                self.sync_selected_from_cache();
             }
         });
 
@@ -606,13 +645,13 @@ impl McwApp {
             self.open_repair_center(&inst.instance_id, ctx);
         }
         if open_export {
-            self.show_export_modal = true;
+            self.open_export_modpack_window(ctx);
         }
         if export_loader_diag {
             self.export_loader_diagnostics(&inst);
         }
         if let Some(cat) = open_content_cat {
-            self.open_content_browser(cat, None, ctx);
+            self.open_content_browser_mode(cat, None, false, ctx);
         }
         if change_icon_clicked {
             if let Some(chosen) = pick_file_dialog(
@@ -672,7 +711,7 @@ impl McwApp {
                             .fill(p.warning)
                             .corner_radius(CornerRadius::same(8));
                             if ui.add(open_btn).clicked() {
-                                self.open_manual_downloads_for(&inst.instance_id);
+                                self.open_manual_downloads_for(&inst.instance_id, ctx);
                             }
                             if ui.button("Scan Now").clicked() {
                                 self.run_manual_downloads_scan(&inst.instance_id, true);
@@ -698,7 +737,7 @@ impl McwApp {
                                 .color(p.accent),
                         );
                         ui.label(
-                            RichText::new(format!("PID {pid} — streaming live logs"))
+                            RichText::new(format!("PID {pid} - streaming live logs"))
                                 .color(p.text_muted),
                         );
                     });
@@ -755,10 +794,7 @@ impl McwApp {
                         format!("{} ({})", self.t("Backups"), self.selected_backups.len()),
                     ),
                     (DetailTab::Logs, self.t("navigation.logs").to_string()),
-                    (
-                        DetailTab::Settings,
-                        self.t("navigation.instance_settings").to_string(),
-                    ),
+                    (DetailTab::Servers, "Servers & LAN".to_string()),
                 ];
 
                 ui.horizontal_wrapped(|ui| {
@@ -811,6 +847,7 @@ impl McwApp {
                         DetailTab::Screenshots => self.render_screenshots_tab(ui, ctx, &inst),
                         DetailTab::Backups => self.render_backups_tab(ui, ctx, &inst, busy),
                         DetailTab::Logs => self.render_logs_tab(ui, ctx, &inst),
+                        DetailTab::Servers => self.render_servers_tab(ui, ctx, &inst),
                         DetailTab::Settings => self.render_settings_tab(ui, ctx, &inst),
                     }
                 });

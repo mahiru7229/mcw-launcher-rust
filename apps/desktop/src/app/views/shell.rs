@@ -23,15 +23,7 @@ impl McwApp {
             .min_size(Vec2::new(ui.available_width(), 32.0))
             .corner_radius(CornerRadius::same(10));
         if ui.add(new_btn).clicked() {
-            self.create_tab = CreateInstanceTab::Custom;
-            self.create_name.clear();
-            self.create_error = None;
-            self.modpack_manual_downloads.clear();
-            let latest = self.latest_mc_version(self.create_show_snapshots);
-            if !latest.is_empty() {
-                self.create_version = latest;
-            }
-            self.show_create_modal = true;
+            self.open_create_instance_dialog(ctx);
         }
 
         ui.add_space(6.0);
@@ -176,8 +168,9 @@ impl McwApp {
                                 // Row 2: Minecraft version · Loader
                                 ui.label(
                                     RichText::new(format!(
-                                        "{} · {}",
-                                        inst.version_id, inst.mod_loader.name
+                                        "{} - {}",
+                                        inst.version_id,
+                                        display_loader_name(&inst.mod_loader.name)
                                     ))
                                     .monospace()
                                     .size(11.0)
@@ -392,9 +385,17 @@ impl McwApp {
             self.open_repair_center(&inst.instance_id, ctx);
         }
         if open_tags {
-            self.edit_group_input = inst.group.clone();
-            self.edit_tags_input = inst.tags.join(", ");
-            self.show_group_tags_modal = true;
+            if self.show_group_tags_modal {
+                focus_viewport(
+                    ctx,
+                    egui::ViewportId::from_hash_of("mcw_vp_group_tags"),
+                    Some(&format!("Edit Group & Tags - {}", inst.name)),
+                );
+            } else {
+                self.edit_group_input = inst.group.clone();
+                self.edit_tags_input = inst.tags.join(", ");
+                self.show_group_tags_modal = true;
+            }
         }
         if change_icon {
             if let Some(chosen) = pick_file_dialog(
@@ -414,16 +415,40 @@ impl McwApp {
             }
         }
         if open_clone {
-            self.clone_name_input = format!("{} (Copy)", inst.name);
-            self.clone_include_saves = false;
-            self.show_clone_modal = true;
+            if self.show_clone_modal {
+                focus_viewport(
+                    ctx,
+                    egui::ViewportId::from_hash_of("mcw_vp_clone_instance"),
+                    None,
+                );
+            } else {
+                self.clone_name_input = format!("{} (Copy)", inst.name);
+                self.clone_include_saves = false;
+                self.show_clone_modal = true;
+            }
         }
         if open_rename {
-            self.rename_input = inst.name.clone();
-            self.show_rename_modal = true;
+            if self.show_rename_modal {
+                focus_viewport(
+                    ctx,
+                    egui::ViewportId::from_hash_of("mcw_vp_rename_instance"),
+                    Some(&format!("Rename Instance - {}", inst.name)),
+                );
+            } else {
+                self.rename_input = inst.name.clone();
+                self.show_rename_modal = true;
+            }
         }
         if open_delete {
-            self.show_delete_modal = true;
+            if self.show_delete_modal {
+                focus_viewport(
+                    ctx,
+                    egui::ViewportId::from_hash_of("mcw_vp_delete_instance"),
+                    Some(&format!("Delete Instance - {}", inst.name)),
+                );
+            } else {
+                self.show_delete_modal = true;
+            }
         }
     }
 
@@ -596,7 +621,17 @@ impl McwApp {
                             let hidden = total_tasks - 2;
                             let btn_label = format!("View All ({total_tasks}, +{hidden} more)");
                             if ui.button(btn_label).clicked() {
-                                self.show_all_tasks_modal = !self.show_all_tasks_modal;
+                                if self.show_all_tasks_modal {
+                                    focus_viewport(
+                                        ctx,
+                                        egui::ViewportId::from_hash_of("mcw_vp_all_tasks"),
+                                        Some(&format!(
+                                            "All Active Tasks ({total_tasks}) - MCW Launcher"
+                                        )),
+                                    );
+                                } else {
+                                    self.show_all_tasks_modal = true;
+                                }
                             }
                         });
                     }
@@ -659,7 +694,7 @@ impl McwApp {
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_all_tasks");
             let builder = centered_viewport_builder(
                 ctx,
-                format!("All Active Tasks ({total_tasks}) — MCW Launcher"),
+                format!("All Active Tasks ({total_tasks}) - MCW Launcher"),
                 [560.0, 420.0],
                 [380.0, 260.0],
             );

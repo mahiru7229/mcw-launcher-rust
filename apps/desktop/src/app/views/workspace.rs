@@ -1068,10 +1068,9 @@ impl McwApp {
         let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
         let tracked_pack = detect_installed_pack(&inst_dir);
         let optifine_state = OptiFineManager::state(&inst_dir);
-        let browse_lbl = self.t("common.browse").to_string();
+        let browse_lbl = self.t("instance_defaults.java.browse").to_string();
         let optifine_title_lbl = self.t("optifine.title").to_string();
         let optifine_choose_lbl = self.t("optifine.file.choose_title").to_string();
-        let lan_log_btn_lbl = self.t("lan.agent.log.view").to_string();
         let save_inst_lbl = self.t("instance_settings.save").to_string();
         let is_forge_family = matches!(
             inst.mod_loader.name.to_ascii_lowercase().as_str(),
@@ -1092,8 +1091,6 @@ impl McwApp {
         let mut optifine_install_mods = false;
         let mut optifine_launch_installer = false;
         let mut optifine_uninstall = false;
-        let mut open_lan_log_window = false;
-        let mut prepare_lan_provider: Option<String> = None;
 
         ScrollArea::vertical()
             .id_salt("instance_settings_scroll")
@@ -1171,15 +1168,16 @@ impl McwApp {
                                 });
                             ui.add_space(6.0);
                             ui.label("Mod Loader:");
+                            let loader_disp = display_loader_name(&self.edit_runtime_loader);
                             egui::ComboBox::from_id_salt("inst_settings_loader_combo")
-                                .selected_text(&self.edit_runtime_loader)
+                                .selected_text(&loader_disp)
                                 .width(120.0)
                                 .show_ui(ui, |ui| {
                                     for l in ["vanilla", "fabric", "quilt", "forge", "neoforge"] {
                                         ui.selectable_value(
                                             &mut self.edit_runtime_loader,
                                             l.to_string(),
-                                            l,
+                                            display_loader_name(l),
                                         );
                                     }
                                 });
@@ -1234,7 +1232,7 @@ impl McwApp {
                                 );
                                 for j in &self.java_installations {
                                     let label = format!(
-                                        "Java {} ({}) — {}",
+                                        "Java {} ({}) - {}",
                                         j.major,
                                         j.version_string,
                                         j.path.display()
@@ -1313,77 +1311,7 @@ impl McwApp {
                                 .font(egui::TextStyle::Monospace),
                         );
 
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
 
-                        ui.label(RichText::new("MCW LAN Agent (Offline LAN Hosting)").strong());
-                        ui.add_space(4.0);
-                        let mut lan_on = LanAgentManager::is_enabled(
-                            settings.offline_multiplayer_enabled,
-                            &settings.lan_auth_mode,
-                        );
-                        if ui
-                            .checkbox(
-                                &mut lan_on,
-                                "Enable MCW LAN Agent (allow offline players to join your LAN worlds)",
-                            )
-                            .changed()
-                        {
-                            settings.offline_multiplayer_enabled = lan_on;
-                            settings.lan_auth_mode = if lan_on {
-                                "private_offline".to_string()
-                            } else {
-                                "microsoft_only".to_string()
-                            };
-                        }
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(
-                                    "Attaches the verified embedded mcw-lan-agent.jar (-javaagent) on launch.",
-                                )
-                                .size(11.5)
-                                .color(p.text_muted),
-                            );
-                            if ui.button(&lan_log_btn_lbl).clicked() {
-                                open_lan_log_window = true;
-                            }
-                        });
-                        ui.add_space(6.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("LAN Connection Provider:");
-                            let is_e4mc =
-                                settings.lan_connection_provider.eq_ignore_ascii_case("e4mc");
-                            let lan_provider_text = if is_e4mc {
-                                "e4mc (Public Tunnel — auto-installs e4mc mod)"
-                            } else {
-                                "Manual (Local LAN / VPN)"
-                            };
-                            egui::ComboBox::from_id_salt("inst_lan_provider_combo")
-                                .selected_text(lan_provider_text)
-                                .width(320.0)
-                                .show_ui(ui, |ui| {
-                                    if ui
-                                        .selectable_label(!is_e4mc, "Manual (Local LAN / VPN)")
-                                        .clicked()
-                                        && is_e4mc
-                                    {
-                                        settings.lan_connection_provider = "manual".to_string();
-                                        prepare_lan_provider = Some("manual".to_string());
-                                    }
-                                    if ui
-                                        .selectable_label(
-                                            is_e4mc,
-                                            "e4mc (Public Tunnel — auto-installs e4mc mod)",
-                                        )
-                                        .clicked()
-                                        && !is_e4mc
-                                    {
-                                        settings.lan_connection_provider = "e4mc".to_string();
-                                        prepare_lan_provider = Some("e4mc".to_string());
-                                    }
-                                });
-                        });
 
                         ui.add_space(10.0);
                         ui.separator();
@@ -1464,9 +1392,6 @@ impl McwApp {
                     });
             });
 
-        if open_lan_log_window {
-            self.open_lan_agent_log_window(&inst.instance_id);
-        }
         if optifine_uninstall {
             match OptiFineManager::uninstall(&self.paths, inst) {
                 Ok(true) => {
@@ -1555,7 +1480,9 @@ impl McwApp {
                     self.notice_banner = Some((
                         format!(
                             "Updated '{}' to Minecraft {} ({}).",
-                            inst.name, self.edit_runtime_version, self.edit_runtime_loader
+                            inst.name,
+                            self.edit_runtime_version,
+                            display_loader_name(&self.edit_runtime_loader)
                         ),
                         false,
                     ));
@@ -1598,15 +1525,6 @@ impl McwApp {
         }
         if let Some(major) = install_java_major {
             self.start_java_install(major, ctx);
-        }
-        if let Some(provider) = prepare_lan_provider {
-            if let Some(ref s) = self.selected_settings {
-                let store = InstanceStore::new(&self.paths);
-                let _ = store.save_settings(&inst.instance_id, s);
-                self.settings_cache
-                    .insert(inst.instance_id.clone(), s.clone());
-            }
-            self.start_prepare_lan_hosting(provider, ctx);
         }
     }
 }

@@ -13,7 +13,6 @@ pub(crate) const RAIL_W: f32 = 70.0;
 enum NavTarget {
     Home,
     Mods,
-    Servers,
     Versions,
     Logs,
 }
@@ -44,12 +43,18 @@ impl McwApp {
     }
 
     pub(crate) fn paint_background(&mut self, ctx: &egui::Context) {
-        if let Some(err) = self.background.ensure(
+        if let Some((key, path)) = self.background.ensure_or_request(
             ctx,
             self.prefs.background_enabled,
             &self.prefs.background_image_path,
         ) {
-            self.notice_banner = Some((err, true));
+            let tx = self.tx.clone();
+            let ctx = ctx.clone();
+            self.runtime.spawn_blocking(move || {
+                let result = decode_user_image(&path);
+                let _ = tx.send(AppEvent::BackgroundImageLoaded { key, result });
+                ctx.request_repaint();
+            });
         }
         if self.background.is_active() {
             self.background
@@ -63,7 +68,15 @@ impl McwApp {
         }
     }
 
-    pub(crate) fn open_create_instance_dialog(&mut self) {
+    pub(crate) fn open_create_instance_dialog(&mut self, ctx: &egui::Context) {
+        if self.show_create_modal {
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_create_instance"),
+                Some("Create Instance - MCW Launcher"),
+            );
+            return;
+        }
         self.create_tab = CreateInstanceTab::Custom;
         self.create_name.clear();
         self.create_error = None;
@@ -151,17 +164,18 @@ impl McwApp {
     pub(crate) fn render_top_bar(&mut self, ctx: &egui::Context) {
         let p = self.palette;
         let home_lbl = self.t("navigation.home").to_string();
-        let mods_lbl = self.t("navigation.mods").to_string();
+        let mods_lbl = "Mod & Modpacks".to_string();
         let logs_lbl = self.t("navigation.logs").to_string();
         let items = [
             (NavTarget::Home, home_lbl),
             (NavTarget::Mods, mods_lbl),
-            (NavTarget::Servers, self.t("Servers").to_string()),
             (NavTarget::Versions, self.t("Versions").to_string()),
             (NavTarget::Logs, logs_lbl),
         ];
         let mut clicked: Option<NavTarget> = None;
         let mut toggle_flyout = false;
+        let mut open_accounts = false;
+        let mut open_about = false;
 
         egui::TopBottomPanel::top("mcw_top_bar")
             .exact_height(TOP_BAR_H)
@@ -197,7 +211,6 @@ impl McwApp {
                                     let active = match target {
                                         NavTarget::Home => self.active_page == AppPage::Home,
                                         NavTarget::Mods => self.show_content_browser,
-                                        NavTarget::Servers => self.active_page == AppPage::Servers,
                                         NavTarget::Versions => {
                                             self.active_page == AppPage::Versions
                                         }
@@ -250,7 +263,7 @@ impl McwApp {
                             let clicked_label = ui.add(chip).clicked();
                             self.render_account_avatar(ui, &acc.uuid, 26.0);
                             if clicked_label {
-                                self.show_account_modal = true;
+                                open_accounts = true;
                             }
                         } else if ui
                             .add(
@@ -260,7 +273,7 @@ impl McwApp {
                             )
                             .clicked()
                         {
-                            self.show_account_modal = true;
+                            open_accounts = true;
                         }
                         ui.add_space(6.0);
 
@@ -335,7 +348,7 @@ impl McwApp {
                             .selectable_label(self.show_about_window, self.t("navigation.about"))
                             .clicked()
                         {
-                            self.show_about_window = !self.show_about_window;
+                            open_about = true;
                         }
                     });
                 });
@@ -344,6 +357,12 @@ impl McwApp {
         if toggle_flyout {
             self.show_instance_flyout = !self.show_instance_flyout;
         }
+        if open_accounts {
+            self.open_accounts_window(ctx);
+        }
+        if open_about {
+            self.open_about_window(ctx);
+        }
         if let Some(target) = clicked {
             match target {
                 NavTarget::Home => {
@@ -351,13 +370,7 @@ impl McwApp {
                     self.ensure_active_tab_loaded(ctx);
                 }
                 NavTarget::Mods => {
-                    self.open_content_browser(BrowserCategory::Mods, None, ctx);
-                }
-                NavTarget::Servers => {
-                    self.active_page = AppPage::Servers;
-                    if let Some(id) = self.selected_instance_id.clone() {
-                        self.load_servers_async(&id, ctx, false);
-                    }
+                    self.open_content_browser_mode(BrowserCategory::Mods, None, true, ctx);
                 }
                 NavTarget::Versions => {
                     self.active_page = AppPage::Versions;
@@ -457,7 +470,7 @@ impl McwApp {
             });
 
         if open_create {
-            self.open_create_instance_dialog();
+            self.open_create_instance_dialog(ctx);
         }
         if toggle_settings {
             self.show_launcher_settings = !self.show_launcher_settings;
@@ -536,8 +549,10 @@ impl McwApp {
         }
 
         let tip = format!(
-            "{}\n{} · {}",
-            inst.name, inst.version_id, inst.mod_loader.name
+            "{}\n{} - {}",
+            inst.name,
+            inst.version_id,
+            display_loader_name(&inst.mod_loader.name)
         );
         if resp.on_hover_text(tip).clicked() {
             *select = Some(inst.instance_id.clone());

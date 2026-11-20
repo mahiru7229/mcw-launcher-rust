@@ -23,6 +23,7 @@ pub(crate) fn matches_quick_query(query: &str, fields: &[&str]) -> bool {
 enum QuickAction {
     SelectInstance(String),
     GoPage(AppPage),
+    OpenServersTab,
     OpenContent(BrowserCategory),
     CreateInstance,
     OpenSettings,
@@ -107,11 +108,6 @@ impl McwApp {
                 "Instance overview & launch",
             ),
             (
-                AppPage::Servers,
-                "Servers".to_string(),
-                "Saved servers & LAN/e4mc hosting",
-            ),
-            (
                 AppPage::Versions,
                 "Versions".to_string(),
                 "Cached Minecraft versions & manifests",
@@ -149,6 +145,11 @@ impl McwApp {
                 QuickAction::CreateInstance,
                 self.t("instance.create.title").to_string(),
                 "New custom instance or modpack archive",
+            ),
+            (
+                QuickAction::OpenServersTab,
+                "Servers & LAN".to_string(),
+                "Saved servers & manual LAN hosting for selected instance",
             ),
             (
                 QuickAction::OpenSettings,
@@ -336,8 +337,9 @@ impl McwApp {
                                                 );
                                                 ui.label(
                                                     RichText::new(format!(
-                                                        "MC {} · {}",
-                                                        inst.version_id, inst.mod_loader.name
+                                                        "MC {} - {}",
+                                                        inst.version_id,
+                                                        display_loader_name(&inst.mod_loader.name)
                                                     ))
                                                     .monospace()
                                                     .size(11.0)
@@ -448,11 +450,6 @@ impl McwApp {
                     self.active_page = page;
                     match page {
                         AppPage::Home => self.ensure_active_tab_loaded(ctx),
-                        AppPage::Servers => {
-                            if let Some(id) = self.selected_instance_id.clone() {
-                                self.load_servers_async(&id, ctx, false);
-                            }
-                        }
                         AppPage::Versions => {
                             if self.cached_versions.is_empty() {
                                 self.load_cached_versions_async(ctx);
@@ -461,34 +458,31 @@ impl McwApp {
                         AppPage::Logs => {}
                     }
                 }
+                QuickAction::OpenServersTab => {
+                    self.active_page = AppPage::Home;
+                    self.active_tab = DetailTab::Servers;
+                    self.ensure_active_tab_loaded(ctx);
+                }
                 QuickAction::OpenContent(cat) => {
-                    self.open_content_browser(cat, None, ctx);
+                    self.open_content_browser_mode(cat, None, true, ctx);
                 }
                 QuickAction::CreateInstance => {
-                    self.create_tab = CreateInstanceTab::Custom;
-                    self.create_name.clear();
-                    self.create_error = None;
-                    self.modpack_manual_downloads.clear();
-                    let latest = self.latest_mc_version(self.create_show_snapshots);
-                    if !latest.is_empty() {
-                        self.create_version = latest;
-                    }
-                    self.show_create_modal = true;
+                    self.open_create_instance_dialog(ctx);
                 }
                 QuickAction::OpenSettings => {
                     self.show_launcher_settings = true;
                 }
                 QuickAction::OpenAccounts => {
-                    self.show_account_modal = true;
+                    self.open_accounts_window(ctx);
                 }
                 QuickAction::RepairSelected(id) => {
                     self.open_repair_center(&id, ctx);
                 }
                 QuickAction::OpenGlobalLogs => {
-                    self.show_global_logs_window = true;
+                    self.open_global_logs_window(ctx);
                 }
                 QuickAction::OpenAbout => {
-                    self.show_about_window = true;
+                    self.open_about_window(ctx);
                 }
             }
         } else if !open {
