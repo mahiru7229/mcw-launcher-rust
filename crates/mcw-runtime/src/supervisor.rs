@@ -180,9 +180,18 @@ impl SupervisedProcess {
             "Spawning supervised Minecraft process"
         );
 
+        let instance_dir = spec.working_dir.parent().unwrap_or(&spec.working_dir);
+        let raw_args = spec.full_command_args();
+        let compacted_args = crate::compactor::JavaCommandCompactor::prepare(
+            &resolved_java,
+            &raw_args,
+            instance_dir,
+            false,
+        );
+
         let mut cmd = Command::new(&resolved_java);
         cmd.current_dir(&spec.working_dir)
-            .args(spec.full_command_args())
+            .args(compacted_args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

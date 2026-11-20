@@ -32,9 +32,17 @@ impl ProcessLauncher {
             main_class = %spec.main_class,
             "Spawning Minecraft process"
         );
+        let instance_dir = spec.working_dir.parent().unwrap_or(&spec.working_dir);
+        let raw_args = spec.full_command_args();
+        let compacted_args = crate::compactor::JavaCommandCompactor::prepare(
+            &spec.java_executable,
+            &raw_args,
+            instance_dir,
+            false,
+        );
         let child = Command::new(&spec.java_executable)
             .current_dir(&spec.working_dir)
-            .args(spec.full_command_args())
+            .args(compacted_args)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())

@@ -1,5 +1,7 @@
 pub mod bytecode;
+pub mod compactor;
 pub mod java;
+pub mod jvm_presets;
 pub mod lan_agent;
 pub mod launcher;
 pub mod mclogs;
@@ -7,8 +9,12 @@ pub mod provisioner;
 pub mod supervisor;
 
 pub use bytecode::{detect_jar_required_java, detect_mods_required_java};
+pub use compactor::JavaCommandCompactor;
 pub use java::{
     prefer_javaw_on_windows, JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver,
+};
+pub use jvm_presets::{
+    detect_preset, get_preset_flags, JvmPresetId, AIKAR_FLAGS, SHENANDOAH_FLAGS, ZGC_FLAGS,
 };
 pub use lan_agent::LanAgentManager;
 pub use launcher::{LaunchSpec, ProcessLauncher};

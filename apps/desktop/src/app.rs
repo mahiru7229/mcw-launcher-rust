@@ -27,9 +27,9 @@ use mcw_providers::{
     ModrinthClient, ModrinthSearchHit, ModrinthSearchParams,
 };
 use mcw_runtime::{
-    detect_total_memory_mb, recommended_modpack_ram_mb, ExitClassification, JavaDiscovery,
-    JavaInstallation, JavaProvisioner, LanAgentManager, LogLine, LogStream, McLogsClient,
-    ProcessControl, SupervisedProcess,
+    detect_preset, detect_total_memory_mb, get_preset_flags, recommended_modpack_ram_mb,
+    ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, JvmPresetId,
+    LanAgentManager, LogLine, LogStream, McLogsClient, ProcessControl, SupervisedProcess,
 };
 use mcw_storage::{BackupInfo, BackupManager, InstanceRunLock, InstanceStore, LauncherPaths};
 use std::collections::{HashMap, HashSet};
@@ -225,10 +225,22 @@ pub struct McwApp {
     show_launcher_settings: bool,
     launcher_settings_tab: LauncherSettingsTab,
 
-    // Rename & Delete modals
+    // Rename, Clone & Delete modals
     show_rename_modal: bool,
     rename_input: String,
+    show_clone_modal: bool,
+    clone_name_input: String,
+    clone_include_saves: bool,
     show_delete_modal: bool,
+
+    // Sidebar filter & Instance runtime/metadata/arguments edit buffers
+    sidebar_search_query: String,
+    edit_runtime_version: String,
+    edit_runtime_loader: String,
+    edit_group_input: String,
+    edit_tags_input: String,
+    edit_jvm_args_text: String,
+    edit_game_args_text: String,
 
     // Account modal
     show_account_modal: bool,
@@ -391,7 +403,17 @@ impl McwApp {
             launcher_settings_tab: LauncherSettingsTab::General,
             show_rename_modal: false,
             rename_input: String::new(),
+            show_clone_modal: false,
+            clone_name_input: String::new(),
+            clone_include_saves: false,
             show_delete_modal: false,
+            sidebar_search_query: String::new(),
+            edit_runtime_version: String::new(),
+            edit_runtime_loader: "vanilla".to_string(),
+            edit_group_input: String::new(),
+            edit_tags_input: String::new(),
+            edit_jvm_args_text: String::new(),
+            edit_game_args_text: String::new(),
             show_account_modal: false,
             offline_username_input: String::new(),
             ms_login_in_progress: false,
@@ -594,6 +616,19 @@ impl McwApp {
             .get(&(id.clone(), self.packs_kind))
             .cloned()
             .unwrap_or_default();
+        if let Some(inst) = self.instances.iter().find(|i| &i.instance_id == id) {
+            self.edit_runtime_version = inst.version_id.clone();
+            self.edit_runtime_loader = inst.mod_loader.name.to_ascii_lowercase();
+            self.edit_group_input = inst.group.clone();
+            self.edit_tags_input = inst.tags.join(", ");
+        }
+        if let Some(ref s) = self.selected_settings {
+            self.edit_jvm_args_text = s.jvm_arguments.join("\n");
+            self.edit_game_args_text = s.game_arguments.join("\n");
+        } else {
+            self.edit_jvm_args_text.clear();
+            self.edit_game_args_text.clear();
+        }
     }
 
     fn ensure_active_tab_loaded(&mut self, ctx: &egui::Context) {
@@ -3084,6 +3119,13 @@ impl McwApp {
                 }
 
                 ui.add_space(6.0);
+                let search_hint = self.t("workspace.library.search_placeholder").to_string();
+                ui.add(
+                    TextEdit::singleline(&mut self.sidebar_search_query)
+                        .hint_text(search_hint)
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_space(6.0);
                 ui.separator();
                 ui.add_space(6.0);
 
@@ -3110,9 +3152,23 @@ impl McwApp {
                     self.ensure_instance_icon(inst_snap, ctx);
                 }
 
+                let q = self.sidebar_search_query.trim().to_ascii_lowercase();
                 let mut newly_selected: Option<String> = None;
+                let mut toggle_fav: Option<(String, bool)> = None;
                 ScrollArea::vertical().show(ui, |ui| {
                     for inst in &self.instances {
+                        if !q.is_empty() {
+                            let match_name = inst.name.to_ascii_lowercase().contains(&q);
+                            let match_ver = inst.version_id.to_ascii_lowercase().contains(&q);
+                            let match_grp = inst.group.to_ascii_lowercase().contains(&q);
+                            let match_tag = inst
+                                .tags
+                                .iter()
+                                .any(|t| t.to_ascii_lowercase().contains(&q));
+                            if !(match_name || match_ver || match_grp || match_tag) {
+                                continue;
+                            }
+                        }
                         let is_selected =
                             self.selected_instance_id.as_deref() == Some(inst.instance_id.as_str());
                         let missing_manual = self
@@ -3177,21 +3233,55 @@ impl McwApp {
                                     self.render_instance_icon(ui, inst, 28.0);
                                     ui.add_space(4.0);
                                     ui.vertical(|ui| {
-                                        ui.label(
-                                            RichText::new(&inst.name)
-                                                .strong()
-                                                .size(13.5)
-                                                .color(p.text),
-                                        );
                                         ui.horizontal(|ui| {
+                                            let star = if inst.favorite { "★" } else { "☆" };
+                                            let star_col = if inst.favorite {
+                                                p.warning
+                                            } else {
+                                                p.text_muted
+                                            };
+                                            if ui
+                                                .add(
+                                                    Button::new(
+                                                        RichText::new(star)
+                                                            .size(12.0)
+                                                            .color(star_col),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .clicked()
+                                            {
+                                                toggle_fav = Some((
+                                                    inst.instance_id.clone(),
+                                                    !inst.favorite,
+                                                ));
+                                            }
                                             ui.label(
-                                                RichText::new(format!(
+                                                RichText::new(&inst.name)
+                                                    .strong()
+                                                    .size(13.5)
+                                                    .color(p.text),
+                                            );
+                                        });
+                                        ui.horizontal(|ui| {
+                                            let meta_txt = if inst.group.is_empty() {
+                                                format!(
                                                     "{} · {}",
                                                     inst.version_id, inst.mod_loader.name
-                                                ))
-                                                .monospace()
-                                                .size(11.0)
-                                                .color(p.text_muted),
+                                                )
+                                            } else {
+                                                format!(
+                                                    "{} · {} · [{}]",
+                                                    inst.version_id,
+                                                    inst.mod_loader.name,
+                                                    inst.group
+                                                )
+                                            };
+                                            ui.label(
+                                                RichText::new(meta_txt)
+                                                    .monospace()
+                                                    .size(11.0)
+                                                    .color(p.text_muted),
                                             );
                                             ui.with_layout(
                                                 Layout::right_to_left(Align::Center),
@@ -3217,6 +3307,15 @@ impl McwApp {
                     }
                 });
 
+                if let Some((fav_id, new_fav)) = toggle_fav {
+                    let store = InstanceStore::new(&self.paths);
+                    if store
+                        .set_library_metadata(&fav_id, Some(new_fav), None, None)
+                        .is_ok()
+                    {
+                        self.reload_instances();
+                    }
+                }
                 if let Some(id) = newly_selected {
                     self.selected_instance_id = Some(id);
                     self.sync_selected_from_cache();
@@ -3662,6 +3761,13 @@ impl McwApp {
                         self.show_rename_modal = true;
                     }
 
+                    let clone_lbl = self.t("workspace.action.clone").to_string();
+                    if ui.button(clone_lbl).clicked() {
+                        self.clone_name_input = format!("{} (Copy)", inst.name);
+                        self.clone_include_saves = false;
+                        self.show_clone_modal = true;
+                    }
+
                     let del_btn = Button::new(RichText::new("Delete Instance").color(p.danger))
                         .stroke(Stroke::new(1.0_f32, p.danger));
                     let del_resp = ui.add_enabled(!busy, del_btn);
@@ -3674,6 +3780,44 @@ impl McwApp {
                 if open_export {
                     self.show_export_modal = true;
                 }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Group:").color(p.text_muted));
+                    ui.add(
+                        TextEdit::singleline(&mut self.edit_group_input)
+                            .hint_text("e.g. Survival, Modded")
+                            .desired_width(140.0),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Tags (comma-separated):").color(p.text_muted));
+                    ui.add(
+                        TextEdit::singleline(&mut self.edit_tags_input)
+                            .hint_text("e.g. RPG, Tech, 1.21")
+                            .desired_width(200.0),
+                    );
+                    if ui.button("Save Group & Tags").clicked() {
+                        let store = InstanceStore::new(&self.paths);
+                        match store.set_library_metadata(
+                            &inst.instance_id,
+                            None,
+                            Some(&self.edit_group_input),
+                            Some(&self.edit_tags_input),
+                        ) {
+                            Ok(_) => {
+                                self.reload_instances();
+                                self.notice_banner =
+                                    Some(("Updated instance group and tags.".to_string(), false));
+                            }
+                            Err(e) => {
+                                self.notice_banner =
+                                    Some((format!("Failed to update tags: {e}"), true));
+                            }
+                        }
+                    }
+                });
             });
 
         if trigger_repair {
@@ -4852,11 +4996,36 @@ impl McwApp {
 
     fn render_settings_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, inst: &Instance) {
         let p = self.palette;
+        let preset_lbl = self.t("jvm_preset.label").to_string();
+        let preset_options: [(JvmPresetId, String); 5] = [
+            (
+                JvmPresetId::Default,
+                self.t(JvmPresetId::Default.i18n_key()).to_string(),
+            ),
+            (
+                JvmPresetId::Aikar,
+                self.t(JvmPresetId::Aikar.i18n_key()).to_string(),
+            ),
+            (
+                JvmPresetId::Zgc,
+                self.t(JvmPresetId::Zgc.i18n_key()).to_string(),
+            ),
+            (
+                JvmPresetId::Shenandoah,
+                self.t(JvmPresetId::Shenandoah.i18n_key()).to_string(),
+            ),
+            (
+                JvmPresetId::Custom,
+                self.t(JvmPresetId::Custom.i18n_key()).to_string(),
+            ),
+        ];
+
         let Some(ref mut settings) = self.selected_settings else {
             return;
         };
 
         let mut save_clicked = false;
+        let mut apply_runtime = false;
         let mut install_java_major: Option<u32> = None;
         let mut optifine_install_mods = false;
         let mut optifine_launch_installer = false;
@@ -4878,6 +5047,48 @@ impl McwApp {
                     .inner_margin(egui::Margin::same(12))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
+                        ui.label(RichText::new("Target Minecraft & Mod Loader").strong());
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Minecraft Version:");
+                            egui::ComboBox::from_id_salt("inst_settings_mc_ver_combo")
+                                .selected_text(&self.edit_runtime_version)
+                                .width(150.0)
+                                .show_ui(ui, |ui| {
+                                    for (vid, vtype) in &self.available_versions {
+                                        if !self.prefs.show_snapshots && vtype != "release" {
+                                            continue;
+                                        }
+                                        ui.selectable_value(
+                                            &mut self.edit_runtime_version,
+                                            vid.clone(),
+                                            vid,
+                                        );
+                                    }
+                                });
+                            ui.add_space(6.0);
+                            ui.label("Mod Loader:");
+                            egui::ComboBox::from_id_salt("inst_settings_loader_combo")
+                                .selected_text(&self.edit_runtime_loader)
+                                .width(120.0)
+                                .show_ui(ui, |ui| {
+                                    for l in ["vanilla", "fabric", "quilt", "forge", "neoforge"] {
+                                        ui.selectable_value(
+                                            &mut self.edit_runtime_loader,
+                                            l.to_string(),
+                                            l,
+                                        );
+                                    }
+                                });
+                            if ui.button("Apply Version / Loader").clicked() {
+                                apply_runtime = true;
+                            }
+                        });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
                         ui.label(RichText::new("Memory & Window").strong());
                         ui.add_space(6.0);
 
@@ -4934,36 +5145,59 @@ impl McwApp {
                             });
 
                         ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            let installing_21 = self.installing_java_majors.contains(&21);
-                            if ui
-                                .add_enabled(
-                                    !installing_21,
-                                    Button::new(if installing_21 {
-                                        "Installing Java 21..."
-                                    } else {
-                                        "Install Temurin Java 21"
-                                    }),
-                                )
-                                .clicked()
-                            {
-                                install_java_major = Some(21);
-                            }
-                            let installing_17 = self.installing_java_majors.contains(&17);
-                            if ui
-                                .add_enabled(
-                                    !installing_17,
-                                    Button::new(if installing_17 {
-                                        "Installing Java 17..."
-                                    } else {
-                                        "Install Temurin Java 17"
-                                    }),
-                                )
-                                .clicked()
-                            {
-                                install_java_major = Some(17);
+                        ui.horizontal_wrapped(|ui| {
+                            for major in [25u32, 21, 17, 8] {
+                                let installing = self.installing_java_majors.contains(&major);
+                                let lbl = if installing {
+                                    format!("Installing Java {major}...")
+                                } else {
+                                    format!("Install Temurin Java {major}")
+                                };
+                                if ui.add_enabled(!installing, Button::new(lbl)).clicked() {
+                                    install_java_major = Some(major);
+                                }
                             }
                         });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        // JVM Preset + Custom JVM & Game Arguments (matching Python instance_settings_page.py)
+                        let current_jvm_lines: Vec<String> = self
+                            .edit_jvm_args_text
+                            .lines()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        let detected_preset = detect_preset(&current_jvm_lines);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(&preset_lbl).strong());
+                            for (preset, p_text) in &preset_options {
+                                let active = detected_preset == *preset;
+                                if ui.selectable_label(active, p_text).clicked()
+                                    && *preset != JvmPresetId::Custom
+                                {
+                                    self.edit_jvm_args_text = get_preset_flags(*preset).join("\n");
+                                }
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("JVM Arguments (one flag per line):").size(11.5).color(p.text_muted));
+                        ui.add(
+                            TextEdit::multiline(&mut self.edit_jvm_args_text)
+                                .desired_rows(3)
+                                .desired_width(520.0)
+                                .font(egui::TextStyle::Monospace),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Game Arguments (one flag per line):").size(11.5).color(p.text_muted));
+                        ui.add(
+                            TextEdit::multiline(&mut self.edit_game_args_text)
+                                .desired_rows(2)
+                                .desired_width(520.0)
+                                .font(egui::TextStyle::Monospace),
+                        );
 
                         ui.add_space(10.0);
                         ui.separator();
@@ -4986,7 +5220,7 @@ impl McwApp {
                             settings.lan_auth_mode = if lan_on {
                                 "private_offline".to_string()
                             } else {
-                                "mojang".to_string()
+                                "microsoft_only".to_string()
                             };
                         }
                         ui.horizontal(|ui| {
@@ -5099,8 +5333,54 @@ impl McwApp {
             }
         }
 
+        if apply_runtime {
+            let new_loader = if self.edit_runtime_loader == "vanilla" {
+                ModLoader::vanilla()
+            } else {
+                ModLoader {
+                    name: self.edit_runtime_loader.clone(),
+                    version: String::new(),
+                }
+            };
+            let store = InstanceStore::new(&self.paths);
+            match store.set_runtime_profile(
+                &inst.instance_id,
+                &self.edit_runtime_version,
+                new_loader,
+            ) {
+                Ok(_) => {
+                    self.reload_instances();
+                    self.notice_banner = Some((
+                        format!(
+                            "Updated '{}' to Minecraft {} ({}).",
+                            inst.name, self.edit_runtime_version, self.edit_runtime_loader
+                        ),
+                        false,
+                    ));
+                }
+                Err(e) => {
+                    self.notice_banner =
+                        Some((format!("Failed to update version/loader: {e}"), true));
+                }
+            }
+        }
+
         if save_clicked {
-            if let Some(ref s) = self.selected_settings {
+            let jvm_args: Vec<String> = self
+                .edit_jvm_args_text
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let game_args: Vec<String> = self
+                .edit_game_args_text
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if let Some(ref mut s) = self.selected_settings {
+                s.jvm_arguments = jvm_args;
+                s.game_arguments = game_args;
                 let store = InstanceStore::new(&self.paths);
                 match store.save_settings(&inst.instance_id, s) {
                     Ok(()) => {
@@ -5428,12 +5708,22 @@ impl McwApp {
                             }
                         }
                         CreateInstanceTab::ImportArchive => {
-                            ui.label("Modpack Archive Path (.mrpack or CurseForge .zip):");
-                            ui.add(
-                                TextEdit::singleline(&mut self.modpack_path_input)
-                                    .hint_text(r"C:\Users\...\Downloads\modpack.mrpack")
-                                    .desired_width(430.0),
-                            );
+                            ui.label("Modpack / Instance Archive Path (.mcwpack, .mrpack, or CurseForge .zip):");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    TextEdit::singleline(&mut self.modpack_path_input)
+                                        .hint_text(r"C:\Users\...\Downloads\modpack.mcwpack / .mrpack / .zip")
+                                        .desired_width(400.0),
+                                );
+                                if ui.button(self.t("common.browse")).clicked() {
+                                    if let Some(p) = pick_file_dialog(
+                                        "Select Modpack / Instance Package",
+                                        "MCW & Modpack Archives (*.mcwpack;*.mrpack;*.zip)|*.mcwpack;*.mrpack;*.zip|All Files (*.*)|*.*",
+                                    ) {
+                                        self.modpack_path_input = p.display().to_string();
+                                    }
+                                }
+                            });
                             ui.add_space(6.0);
                             ui.label("Instance Name Override (optional):");
                             ui.add(
@@ -6233,6 +6523,52 @@ impl McwApp {
                             }
                             if ui.button("Cancel").clicked() {
                                 self.show_rename_modal = false;
+                            }
+                        });
+                    });
+            }
+        }
+
+        // 2b. Clone / Duplicate Instance Modal
+        if self.show_clone_modal {
+            if let Some(inst) = self.selected_instance().cloned() {
+                let clone_title = self.t("workspace.clone.title").to_string();
+                let include_saves_lbl = self.t("workspace.clone.include_saves").to_string();
+                egui::Window::new(clone_title)
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                    .show(ctx, |ui| {
+                        ui.label(format!("New cloned instance name (from '{}'):", inst.name));
+                        ui.text_edit_singleline(&mut self.clone_name_input);
+                        ui.add_space(4.0);
+                        ui.checkbox(&mut self.clone_include_saves, include_saves_lbl);
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(self.t("workspace.clone.action")).clicked() {
+                                let store = InstanceStore::new(&self.paths);
+                                match store.clone_instance(
+                                    &inst.instance_id,
+                                    &self.clone_name_input,
+                                    self.clone_include_saves,
+                                ) {
+                                    Ok(cloned) => {
+                                        self.selected_instance_id = Some(cloned.instance_id);
+                                        self.show_clone_modal = false;
+                                        self.reload_instances();
+                                        self.notice_banner = Some((
+                                            format!("Cloned instance to '{}'.", cloned.name),
+                                            false,
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        self.notice_banner =
+                                            Some((format!("Clone failed: {e}"), true));
+                                    }
+                                }
+                            }
+                            if ui.button(self.t("common.cancel")).clicked() {
+                                self.show_clone_modal = false;
                             }
                         });
                     });

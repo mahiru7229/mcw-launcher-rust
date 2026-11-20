@@ -366,6 +366,151 @@ impl<'a> InstanceStore<'a> {
         self.save_instance(&instance)?;
         Ok(instance)
     }
+
+    /// Update an existing instance's target Minecraft version and ModLoader
+    /// (port of `InstanceManager.set_runtime_profile` / `set_mod_loader`).
+    pub fn set_runtime_profile(
+        &self,
+        instance_id: &str,
+        version_id: &str,
+        mod_loader: ModLoader,
+    ) -> Result<Instance> {
+        if !self.paths.instance_json(instance_id).is_file() {
+            return Err(StorageError::InstanceNotFound(instance_id.to_string()));
+        }
+        if InstanceRunLock::is_running(self.paths, instance_id) {
+            return Err(StorageError::InstanceAlreadyRunning(
+                instance_id.to_string(),
+            ));
+        }
+        let mut instance = self.load_instance(instance_id)?;
+        let trimmed_ver = version_id.trim();
+        if !trimmed_ver.is_empty() {
+            instance.version_id = trimmed_ver.to_string();
+        }
+        instance.mod_loader = mod_loader;
+        self.save_instance(&instance)?;
+        Ok(instance)
+    }
+
+    /// Update favorite flag, group, and comma-separated tags on an instance
+    /// (port of `InstanceManager.set_library_metadata` and `_normalize_tags`).
+    pub fn set_library_metadata(
+        &self,
+        instance_id: &str,
+        favorite: Option<bool>,
+        group: Option<&str>,
+        tags_csv: Option<&str>,
+    ) -> Result<Instance> {
+        let mut instance = self.load_instance(instance_id)?;
+        if let Some(fav) = favorite {
+            instance.favorite = fav;
+        }
+        if let Some(grp) = group {
+            instance.group = grp.trim().to_string();
+        }
+        if let Some(raw_tags) = tags_csv {
+            let mut normalized = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for item in raw_tags.split(',') {
+                let tag = item.trim();
+                if tag.is_empty() {
+                    continue;
+                }
+                let lower = tag.to_ascii_lowercase();
+                if seen.insert(lower) {
+                    normalized.push(tag.to_string());
+                }
+            }
+            instance.tags = normalized;
+        }
+        self.save_instance(&instance)?;
+        Ok(instance)
+    }
+
+    /// Clone/duplicate an existing instance (port of `InstanceManager.clone`).
+    /// Copies the instance tree while omitting `logs/`, `crash-reports/`, `.mcw/run.lock`
+    /// (and `saves/` when `include_saves == false`), and resets runtime play counters.
+    pub fn clone_instance(
+        &self,
+        source_id: &str,
+        new_name: &str,
+        include_saves: bool,
+    ) -> Result<Instance> {
+        if !self.paths.instance_json(source_id).is_file() {
+            return Err(StorageError::InstanceNotFound(source_id.to_string()));
+        }
+        let new_id = Self::validate_instance_name(new_name)?;
+        let source_dir = self.paths.instance_dir(source_id);
+        let target_dir = self.paths.instance_dir(&new_id);
+        if target_dir.exists() {
+            return Err(StorageError::InstanceAlreadyExists(new_id));
+        }
+
+        copy_instance_tree_filtered(&source_dir, &source_dir, &target_dir, include_saves).map_err(
+            |source| StorageError::Io {
+                path: target_dir.display().to_string(),
+                source,
+            },
+        )?;
+
+        let mut cloned = self.load_instance(&new_id)?;
+        cloned.instance_id = new_id.clone();
+        cloned.name = new_id;
+        cloned.last_played.clear();
+        cloned.total_playtime_seconds = 0;
+        cloned.last_exit_code = None;
+        cloned.last_launch_crashed = false;
+        cloned.last_launch_state = "ready".to_string();
+        self.save_instance(&cloned)?;
+        Ok(cloned)
+    }
+}
+
+fn copy_instance_tree_filtered(
+    root: &std::path::Path,
+    current: &std::path::Path,
+    dest_root: &std::path::Path,
+    include_saves: bool,
+) -> std::io::Result<()> {
+    fs::create_dir_all(dest_root)?;
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        // Skip volatile runtime logs/crash-reports/locks and optionally saves
+        if rel_str == "run.lock"
+            || rel_str == ".mcw/run.lock"
+            || rel_str == ".mcw/runtime-history.json"
+            || rel_str == ".mcw/last-repair.json"
+            || rel_str == ".minecraft/logs"
+            || rel_str.starts_with(".minecraft/logs/")
+            || rel_str == ".minecraft/crash-reports"
+            || rel_str.starts_with(".minecraft/crash-reports/")
+        {
+            continue;
+        }
+        if !include_saves
+            && (rel_str == ".minecraft/saves" || rel_str.starts_with(".minecraft/saves/"))
+        {
+            continue;
+        }
+        let target = dest_root.join(rel);
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            fs::create_dir_all(&target)?;
+            copy_instance_tree_filtered(root, &path, dest_root, include_saves)?;
+        } else if file_type.is_file() {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn detect_image_extension(bytes: &[u8]) -> Option<&'static str> {
@@ -446,5 +591,62 @@ mod tests {
         // Delete
         store.delete_instance("beta").unwrap();
         assert!(store.list_instances().unwrap().is_empty());
+    }
+
+    #[test]
+    fn clones_and_updates_runtime_and_library_metadata() {
+        let dir = tempdir().unwrap();
+        let paths = LauncherPaths::portable(dir.path());
+        paths.initialize().unwrap();
+        let store = InstanceStore::new(&paths);
+
+        store
+            .create_instance("source", "1.20.1", ModLoader::vanilla())
+            .unwrap();
+        let mc_dir = paths.minecraft_dir("source");
+        fs::create_dir_all(mc_dir.join("mods")).unwrap();
+        fs::create_dir_all(mc_dir.join("saves/world1")).unwrap();
+        fs::write(mc_dir.join("mods/a.jar"), b"mod").unwrap();
+        fs::write(mc_dir.join("saves/world1/level.dat"), b"world").unwrap();
+
+        let updated = store
+            .set_runtime_profile(
+                "source",
+                "1.21.4",
+                ModLoader {
+                    name: "fabric".to_string(),
+                    version: "0.16.10".to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.version_id, "1.21.4");
+        assert_eq!(updated.mod_loader.name, "fabric");
+
+        let meta = store
+            .set_library_metadata(
+                "source",
+                Some(true),
+                Some("Modded"),
+                Some(" RPG, tech, rpg "),
+            )
+            .unwrap();
+        assert!(meta.favorite);
+        assert_eq!(meta.group, "Modded");
+        assert_eq!(meta.tags, vec!["RPG".to_string(), "tech".to_string()]);
+
+        let cloned_no_saves = store.clone_instance("source", "cloned_a", false).unwrap();
+        assert_eq!(cloned_no_saves.instance_id, "cloned_a");
+        assert!(paths.minecraft_dir("cloned_a").join("mods/a.jar").is_file());
+        assert!(!paths
+            .minecraft_dir("cloned_a")
+            .join("saves/world1/level.dat")
+            .exists());
+
+        let cloned_with_saves = store.clone_instance("source", "cloned_b", true).unwrap();
+        assert_eq!(cloned_with_saves.instance_id, "cloned_b");
+        assert!(paths
+            .minecraft_dir("cloned_b")
+            .join("saves/world1/level.dat")
+            .is_file());
     }
 }

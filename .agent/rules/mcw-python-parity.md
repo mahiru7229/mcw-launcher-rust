@@ -1,0 +1,10 @@
+---
+trigger: always_on
+---
+
+# MCW Launcher Python Parity & Reuse Rule
+
+1. **100% Reference Alignment**: Mọi tính năng, logic nghiệp vụ, schema dữ liệu, luồng xử lý và hành vi UI/UX trong **MCW Launcher: Rust Edition** phải dựa trên **100% (hoặc gần giống nhất có thể)** codebase của **MCW Launcher Python** (`d:\WORKBASE\mcw-launcher`).
+2. **Reuse First — Không tự tạo code/cơ chế mới**: Luôn kiểm tra codebase Python trước khi code. Tái sử dụng tối đa logic, công thức, tài nguyên (`lang/en-US.json`, `lang/vi-VN.json`, `assets/`, `tools/mcw_lan_agent/`), schema (`instance.json`, `settings.json`) và các edge-case đã được kiểm chứng. Không tự bịa dictionary dịch mới hay luồng nghiệp vụ mới nếu bản Python đã có.
+3. **Ngoại lệ duy nhất**: Chỉ được viết mới hoặc điều chỉnh khác đi khi cách làm của Python **không phù hợp** với Rust hoặc môi trường native (ví dụ: khác biệt giữa `egui` và `PySide6`, dùng Win32 API thay cho gọi PowerShell, hoặc tối ưu bất đồng bộ/bộ nhớ của Rust), nhưng vẫn phải giữ nguyên hành vi và kết quả đầu ra tương đương bản Python.
+4. **Không dùng hệ thống Hotfix riêng — Dùng SemVer tag bình thường, chỉ số cuối xác định Build**: MCW Launcher: Rust Edition **không** xây dựng cơ chế `hotfix` tách rời; dùng tag SemVer chuẩn (`v0.6.0-beta.1` → `v0.6.0-beta.2`, hoặc `v0.6.0` → `v0.6.1` → `v0.6.2`), trong đó **chỉ số cuối** dùng để xác định số build/bản vá tăng dần (có thể kèm nhãn hiển thị `Build 001`, `Build 002`...).

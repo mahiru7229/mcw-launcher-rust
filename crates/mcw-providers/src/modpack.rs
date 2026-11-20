@@ -148,6 +148,10 @@ impl ModpackInstaller {
         let mut archive = ZipArchive::new(file)
             .map_err(|e| ProviderError::Io(io::Error::other(format!("Invalid archive: {e}"))))?;
 
+        if archive.by_name("mcw_package.json").is_ok() {
+            drop(archive);
+            return Self::install_mcwpack(paths, archive_path, instance_name_override, on_progress);
+        }
         if archive.by_name("modrinth.index.json").is_ok() {
             drop(archive);
             return Self::install_mrpack(
@@ -173,8 +177,78 @@ impl ModpackInstaller {
         }
 
         Err(ProviderError::Io(io::Error::other(
-            "Unsupported modpack archive: missing modrinth.index.json or manifest.json",
+            "Unsupported modpack archive: missing mcw_package.json, modrinth.index.json, or manifest.json",
         )))
+    }
+
+    fn install_mcwpack(
+        paths: &LauncherPaths,
+        archive_path: &Path,
+        name_override: Option<&str>,
+        on_progress: Option<ModpackProgressCallback>,
+    ) -> Result<ModpackInstallReport> {
+        let pkg_val: serde_json::Value = {
+            let file = File::open(archive_path)?;
+            let mut archive = ZipArchive::new(file)
+                .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+            let entry = archive
+                .by_name("mcw_package.json")
+                .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+            serde_json::from_reader(entry)?
+        };
+
+        let inst_meta: mcw_models::instance::Instance = pkg_val
+            .get("instance")
+            .cloned()
+            .ok_or_else(|| {
+                ProviderError::Io(io::Error::other("mcw_package.json is missing 'instance'"))
+            })
+            .and_then(|v| serde_json::from_value(v).map_err(ProviderError::from))?;
+        let pkg_settings: Option<mcw_models::instance::InstanceSettings> = pkg_val
+            .get("settings")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok());
+
+        let base_name = name_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&inst_meta.name);
+        let store = InstanceStore::new(paths);
+        let mut target_name = base_name.to_string();
+        let mut idx = 2usize;
+        while store.load_instance(&target_name).is_ok() {
+            target_name = format!("{base_name} ({idx})");
+            idx += 1;
+        }
+
+        let loader = normalize_modloader(
+            &inst_meta.mod_loader.name,
+            &inst_meta.mod_loader.version,
+            &inst_meta.version_id,
+        );
+        let (inst, _) = store
+            .create_instance(&target_name, &inst_meta.version_id, loader.clone())
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        if let Some(settings) = pkg_settings {
+            let _ = store.save_settings(&inst.instance_id, &settings);
+        }
+
+        let mc_dir = paths.minecraft_dir(&inst.instance_id);
+        if let Some(ref cb) = on_progress {
+            cb(0, 1, "Extracting .mcwpack portable package...".to_string());
+        }
+        let extracted_overrides =
+            extract_overrides(archive_path, &["overrides/", ".minecraft/"], &mc_dir)?;
+        extract_embedded_instance_icon(archive_path, &store, &inst.instance_id);
+
+        Ok(ModpackInstallReport {
+            instance_id: inst.instance_id,
+            game_version: inst_meta.version_id,
+            loader,
+            downloaded_files: 0,
+            extracted_overrides,
+            manual_downloads: Vec::new(),
+        })
     }
 
     async fn install_mrpack(
@@ -249,6 +323,7 @@ impl ModpackInstaller {
         }
         let extracted_overrides =
             extract_overrides(archive_path, &["overrides/", "client-overrides/"], &mc_dir)?;
+        extract_embedded_instance_icon(archive_path, &store, &inst.instance_id);
 
         Ok(ModpackInstallReport {
             instance_id: inst.instance_id,
@@ -278,7 +353,6 @@ impl ModpackInstaller {
             serde_json::from_reader(entry)?
         };
 
-        let cf_client = curseforge.ok_or(ProviderError::MissingApiKey)?;
         let game_version = manifest.minecraft.version.clone();
         let mut cf_loaders = manifest.minecraft.mod_loaders.clone();
         if cf_loaders.is_empty() {
@@ -299,41 +373,45 @@ impl ModpackInstaller {
         let mods_dir = mc_dir.join("mods");
         fs::create_dir_all(&mods_dir)?;
 
-        if let Some(ref cb) = on_progress {
-            cb(
-                0,
-                manifest.files.len() as u64,
-                format!("Resolving {} CurseForge mod files...", manifest.files.len()),
-            );
-        }
-        let file_ids: Vec<u64> = manifest.files.iter().map(|f| f.file_id).collect();
-        let resolved = cf_client.get_files_batch(&file_ids).await?;
-
-        // Batch-resolve project websiteUrl/slug for any files with third-party distribution disabled
-        // so manual download links go directly to CurseForge's `/download/{file_id}` countdown page.
-        let opt_out_mod_ids: Vec<u64> = resolved
-            .iter()
-            .filter(|f| {
-                f.download_url
-                    .as_deref()
-                    .map(str::trim)
-                    .unwrap_or("")
-                    .is_empty()
-            })
-            .map(|f| f.mod_id)
-            .collect();
+        let mut resolved = Vec::new();
         let mut mod_urls: HashMap<u64, String> = HashMap::new();
-        if !opt_out_mod_ids.is_empty() {
-            if let Ok(mods_meta) = cf_client.get_mods_batch(&opt_out_mod_ids).await {
-                for m in mods_meta {
-                    let best = m
-                        .links
-                        .as_ref()
-                        .and_then(|l| l.website_url.clone())
-                        .filter(|u| !u.trim().is_empty())
-                        .unwrap_or_else(|| m.slug.clone());
-                    if !best.is_empty() {
-                        mod_urls.insert(m.id, best);
+        if !manifest.files.is_empty() {
+            let cf_client = curseforge.ok_or(ProviderError::MissingApiKey)?;
+            if let Some(ref cb) = on_progress {
+                cb(
+                    0,
+                    manifest.files.len() as u64,
+                    format!("Resolving {} CurseForge mod files...", manifest.files.len()),
+                );
+            }
+            let file_ids: Vec<u64> = manifest.files.iter().map(|f| f.file_id).collect();
+            resolved = cf_client.get_files_batch(&file_ids).await?;
+
+            // Batch-resolve project websiteUrl/slug for any files with third-party distribution disabled
+            // so manual download links go directly to CurseForge's `/download/{file_id}` countdown page.
+            let opt_out_mod_ids: Vec<u64> = resolved
+                .iter()
+                .filter(|f| {
+                    f.download_url
+                        .as_deref()
+                        .map(str::trim)
+                        .unwrap_or("")
+                        .is_empty()
+                })
+                .map(|f| f.mod_id)
+                .collect();
+            if !opt_out_mod_ids.is_empty() {
+                if let Ok(mods_meta) = cf_client.get_mods_batch(&opt_out_mod_ids).await {
+                    for m in mods_meta {
+                        let best = m
+                            .links
+                            .as_ref()
+                            .and_then(|l| l.website_url.clone())
+                            .filter(|u| !u.trim().is_empty())
+                            .unwrap_or_else(|| m.slug.clone());
+                        if !best.is_empty() {
+                            mod_urls.insert(m.id, best);
+                        }
                     }
                 }
             }
@@ -391,6 +469,7 @@ impl ModpackInstaller {
                 .trim_matches('/')
         );
         let extracted_overrides = extract_overrides(archive_path, &[&override_prefix], &mc_dir)?;
+        extract_embedded_instance_icon(archive_path, &store, &inst.instance_id);
 
         // Persist pending manual downloads inside the instance folder so the user can resume later.
         let pending_path = paths
@@ -975,6 +1054,42 @@ pub fn parse_cf_loader_id(raw_id: &str, game_version: &str) -> ModLoader {
     }
 }
 
+/// Extract an embedded instance icon from an imported archive if present
+/// (matching Python's `apply_embedded_archive_artwork`).
+fn extract_embedded_instance_icon(archive_path: &Path, store: &InstanceStore, instance_id: &str) {
+    let Ok(file) = File::open(archive_path) else {
+        return;
+    };
+    let Ok(mut archive) = ZipArchive::new(file) else {
+        return;
+    };
+    const PREFIXES: &[&str] = &[
+        ".mcw/instance-icon.",
+        "mcw/instance-icon.",
+        "overrides/.mcw/instance-icon.",
+        "overrides/mcw/instance-icon.",
+    ];
+    for i in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index(i) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().replace('\\', "/");
+        let is_icon = PREFIXES.iter().any(|p| name.starts_with(p))
+            || name == "icon.png"
+            || name == "overrides/icon.png";
+        if is_icon {
+            let mut buf = Vec::new();
+            if io::Read::read_to_end(&mut entry, &mut buf).is_ok() && !buf.is_empty() {
+                let _ = store.set_instance_icon_bytes(instance_id, &buf);
+                return;
+            }
+        }
+    }
+}
+
 fn extract_overrides(archive_path: &Path, prefixes: &[&str], mc_dir: &Path) -> Result<usize> {
     let file = File::open(archive_path)?;
     let mut archive =
@@ -1206,5 +1321,56 @@ mod tests {
         let l7 = parse_cf_loader_id("forge", "1.20.1");
         assert_eq!(l7.name, "forge");
         assert_eq!(l7.version, "");
+    }
+
+    #[tokio::test]
+    async fn exports_and_imports_mcwpack_portable() {
+        let dir = tempdir().unwrap();
+        let paths = LauncherPaths::portable(dir.path());
+        paths.initialize().unwrap();
+
+        let store = InstanceStore::new(&paths);
+        store
+            .create_instance(
+                "portable-src",
+                "1.21.4",
+                ModLoader {
+                    name: "fabric".to_string(),
+                    version: "0.16.10".to_string(),
+                },
+            )
+            .unwrap();
+        let mc = paths.minecraft_dir("portable-src");
+        fs::create_dir_all(mc.join("mods")).unwrap();
+        fs::write(mc.join("mods/sodium.jar"), b"sodium-bytes").unwrap();
+
+        let out = dir.path().join("portable-src.mcwpack");
+        ModpackInstaller::export_instance(
+            &paths,
+            "portable-src",
+            &out,
+            &ModpackExportOptions {
+                mode: ModpackExportMode::Portable { full: false },
+                include_saves: false,
+            },
+        )
+        .unwrap();
+
+        let dl = DownloadClient::new().unwrap();
+        let rep = ModpackInstaller::install_from_archive(
+            &paths,
+            &out,
+            Some("portable-imported"),
+            &dl,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rep.instance_id, "portable-imported");
+        assert_eq!(rep.loader.name, "fabric");
+        assert!(paths
+            .minecraft_dir("portable-imported")
+            .join("mods/sodium.jar")
+            .is_file());
     }
 }
