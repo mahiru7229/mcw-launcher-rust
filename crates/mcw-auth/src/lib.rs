@@ -1,10 +1,12 @@
 pub mod account_store;
+pub mod integrity;
 pub mod microsoft;
 pub mod offline;
 pub mod pkce;
 pub mod skin;
 
 pub use account_store::{AccountStore, StoredAccount};
+pub use integrity::AccountIntegrity;
 pub use microsoft::{
     DeviceCodeResponse, MicrosoftAuthClient, MicrosoftLoginResult, MicrosoftOAuthToken,
     MinecraftProfile,

@@ -405,6 +405,7 @@ impl McwApp {
         let rst_icon_lbl = self.t("workspace.action.reset_icon").to_string();
 
         let mut trigger_repair = false;
+        let mut open_repair_center = false;
         let mut open_export = false;
         let mut change_icon_clicked = false;
         let mut reset_icon_clicked = false;
@@ -457,6 +458,10 @@ impl McwApp {
                                             .clicked()
                                         {
                                             trigger_repair = true;
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Repair Center / Health Check...").clicked() {
+                                            open_repair_center = true;
                                             ui.close_menu();
                                         }
                                         ui.separator();
@@ -681,6 +686,9 @@ impl McwApp {
         if trigger_repair {
             self.start_repair(ctx);
         }
+        if open_repair_center {
+            self.open_repair_center(&inst.instance_id, ctx);
+        }
         if change_icon_clicked {
             if let Some(chosen) = pick_file_dialog(
                 self.t("workspace.icon.choose_title"),
@@ -893,11 +901,65 @@ impl McwApp {
                     let _ = std::fs::create_dir_all(&mods_dir);
                     open_external(&mods_dir.display().to_string());
                 }
+                if ui
+                    .add_enabled(can_install, Button::new("Import Local .jar..."))
+                    .clicked()
+                {
+                    if let Some(chosen) = pick_file_dialog(
+                        "Import Mod JAR",
+                        "Mod JAR (*.jar;*.jar.disabled)|*.jar;*.jar.disabled|All Files (*.*)|*.*",
+                    ) {
+                        self.import_local_mod_files(&inst.instance_id, &[chosen], ctx);
+                    }
+                }
                 if ui.button("Refresh Local").clicked() {
                     self.load_mods_async(&inst.instance_id, ctx, true);
                 }
             });
         });
+        let mut open_compat_repair = false;
+        if let Some(ref compat_rep) = self.mod_compat_report {
+            if !compat_rep.issues.is_empty() {
+                ui.add_space(4.0);
+                let frame_col = if compat_rep.error_count > 0 {
+                    p.danger
+                } else {
+                    p.warning
+                };
+                Frame::new()
+                    .fill(p.elevated)
+                    .stroke(Stroke::new(1.0_f32, frame_col))
+                    .corner_radius(CornerRadius::same(3))
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Compatibility Check: {} error(s), {} warning(s)",
+                                    compat_rep.error_count, compat_rep.warning_count
+                                ))
+                                .strong()
+                                .size(11.5)
+                                .color(frame_col),
+                            );
+                            if ui.button("Open Repair Center...").clicked() {
+                                open_compat_repair = true;
+                            }
+                        });
+                        for issue in compat_rep.issues.iter().take(2) {
+                            ui.label(
+                                RichText::new(format!("• {}", issue.message))
+                                    .size(11.0)
+                                    .color(p.text_muted),
+                            );
+                        }
+                    });
+            }
+        }
+        if open_compat_repair {
+            self.open_repair_center(&inst.instance_id, ctx);
+        }
         ui.add_space(6.0);
 
         if self.selected_mods.is_empty() {
@@ -1103,6 +1165,19 @@ impl McwApp {
                 if ui.button("Open Folder").clicked() {
                     let _ = std::fs::create_dir_all(&folder_dir);
                     open_external(&folder_dir.display().to_string());
+                }
+                if ui.button("Import Local .zip...").clicked() {
+                    if let Some(chosen) = pick_file_dialog(
+                        "Import Pack Archive (.zip)",
+                        "Pack Archive (*.zip;*.zip.disabled)|*.zip;*.zip.disabled|All Files (*.*)|*.*",
+                    ) {
+                        self.import_local_pack_files(
+                            &inst.instance_id,
+                            self.packs_kind,
+                            &[chosen],
+                            ctx,
+                        );
+                    }
                 }
                 if ui.button("Refresh").clicked() {
                     self.load_content_packs_async(&inst.instance_id, self.packs_kind, ctx, true);

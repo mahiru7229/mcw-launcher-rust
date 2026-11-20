@@ -30,6 +30,8 @@ pub struct ModInfo {
     pub loader: ModLoaderTag,
     pub required_java_major: u32,
     pub embedded_mod_ids: Vec<String>,
+    #[serde(default)]
+    pub depends: Vec<String>,
 }
 
 pub struct ModScanner;
@@ -98,6 +100,7 @@ impl ModScanner {
             loader: ModLoaderTag::Unknown,
             required_java_major,
             embedded_mod_ids: Vec::new(),
+            depends: Vec::new(),
         };
 
         let Ok(file) = File::open(path) else {
@@ -182,6 +185,13 @@ fn apply_fabric_metadata(info: &mut ModInfo, raw: &str) {
             })
             .collect();
     }
+    if let Some(deps) = val.get("depends").and_then(|v| v.as_object()) {
+        info.depends = deps
+            .keys()
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .collect();
+    }
 }
 
 fn apply_quilt_metadata(info: &mut ModInfo, raw: &str) {
@@ -211,6 +221,24 @@ fn apply_quilt_metadata(info: &mut ModInfo, raw: &str) {
         }
         if let Some(contribs) = meta.get("contributors").and_then(|v| v.as_object()) {
             info.authors = contribs.keys().cloned().collect();
+        }
+    }
+    if let Some(deps) = ql.get("depends").and_then(|v| v.as_array()) {
+        for dep in deps {
+            if let Some(id) = dep.as_str() {
+                if !id.trim().is_empty() {
+                    info.depends.push(id.trim().to_string());
+                }
+            } else if let Some(obj) = dep.as_object() {
+                if obj.get("optional").and_then(|v| v.as_bool()) == Some(true) {
+                    continue;
+                }
+                if let Some(id) = obj.get("id").and_then(|v| v.as_str()) {
+                    if !id.trim().is_empty() {
+                        info.depends.push(id.trim().to_string());
+                    }
+                }
+            }
         }
     }
 }
@@ -249,6 +277,29 @@ fn apply_toml_metadata(info: &mut ModInfo, raw: &str, loader: ModLoaderTag) {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+    }
+    if let Some(deps_table) = val.get("dependencies").and_then(|d| d.as_table()) {
+        for dep_list in deps_table.values() {
+            let Some(arr) = dep_list.as_array() else {
+                continue;
+            };
+            for dep in arr {
+                let is_required = dep.get("mandatory").and_then(|v| v.as_bool()) == Some(true)
+                    || dep
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|t| t.eq_ignore_ascii_case("required"));
+                if !is_required {
+                    continue;
+                }
+                if let Some(id) = dep.get("modId").and_then(|v| v.as_str()) {
+                    let clean = id.trim();
+                    if !clean.is_empty() && !info.depends.iter().any(|d| d == clean) {
+                        info.depends.push(clean.to_string());
+                    }
+                }
+            }
+        }
     }
 }
 

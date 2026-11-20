@@ -143,6 +143,30 @@ impl InstanceRunLock {
         Self::read_info(&lock_path)
     }
 
+    /// Reconcile and remove stale `.lock` files whose owning launcher/game process has exited.
+    pub fn reconcile_stale_locks(paths: &LauncherPaths) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(&paths.instance_locks_root) else {
+            return Vec::new();
+        };
+        let mut stale = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("lock") {
+                continue;
+            }
+            if !Self::is_lock_file_active(&path) && fs::remove_file(&path).is_ok() {
+                let id = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                stale.push(id);
+            }
+        }
+        stale.sort();
+        stale
+    }
+
     fn read_info(lock_path: &Path) -> Option<RunningInstanceInfo> {
         let raw = fs::read_to_string(lock_path).ok()?;
         serde_json::from_str(&raw).ok()

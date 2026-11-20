@@ -1,6 +1,6 @@
-use crate::{AuthError, Result};
+use crate::{AccountIntegrity, AuthError, Result};
 use mcw_models::account::AccountSource;
-use mcw_storage::{atomic_write_bytes, atomic_write_json, LauncherPaths};
+use mcw_storage::{atomic_write_bytes, atomic_write_json, atomic_write_text, LauncherPaths};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -36,6 +36,10 @@ impl<'a> AccountStore<'a> {
 
     fn accounts_file_path(&self) -> PathBuf {
         self.paths.accounts_root.join("accounts.json")
+    }
+
+    fn accounts_sig_path(&self) -> PathBuf {
+        self.paths.accounts_root.join("accounts.sig")
     }
 
     #[cfg(windows)]
@@ -132,8 +136,41 @@ impl<'a> AccountStore<'a> {
             schema_version: 1,
             accounts: accounts.to_vec(),
         };
-        atomic_write_json(&self.accounts_file_path(), &file)?;
+        let path = self.accounts_file_path();
+        atomic_write_json(&path, &file)?;
+        if let (Ok(raw_bytes), Ok(key)) = (
+            fs::read(&path),
+            AccountIntegrity::load_or_create_key(&self.paths.accounts_root),
+        ) {
+            let sig = AccountIntegrity::sign_bytes(&key, &raw_bytes);
+            let _ = atomic_write_text(&self.accounts_sig_path(), &sig);
+        }
         Ok(())
+    }
+
+    /// Verify HMAC-SHA256 integrity of `accounts.json` against `accounts.sig`.
+    /// Legacy stores without `accounts.sig` are signed cleanly on first verification.
+    pub fn verify_integrity(&self) -> bool {
+        let path = self.accounts_file_path();
+        if !path.is_file() {
+            return true;
+        }
+        let Ok(raw_bytes) = fs::read(&path) else {
+            return false;
+        };
+        let sig_path = self.accounts_sig_path();
+        let Ok(key) = AccountIntegrity::load_or_create_key(&self.paths.accounts_root) else {
+            return true;
+        };
+        if !sig_path.is_file() {
+            let sig = AccountIntegrity::sign_bytes(&key, &raw_bytes);
+            let _ = atomic_write_text(&sig_path, &sig);
+            return true;
+        }
+        let Ok(expected) = fs::read_to_string(&sig_path) else {
+            return false;
+        };
+        AccountIntegrity::verify_bytes(&key, &raw_bytes, &expected)
     }
 
     /// Store Microsoft refresh token encrypted with Windows DPAPI (no 2560-byte Credential Manager
@@ -197,7 +234,7 @@ impl<'a> AccountStore<'a> {
 }
 
 #[cfg(windows)]
-fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>> {
     use std::ptr;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
@@ -239,7 +276,7 @@ fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[cfg(windows)]
-fn dpapi_unprotect(ciphertext: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn dpapi_unprotect(ciphertext: &[u8]) -> Result<Vec<u8>> {
     use std::ptr;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
@@ -300,12 +337,22 @@ mod tests {
             active: true,
         };
         store.upsert(acc.clone(), true).unwrap();
+        assert!(store.verify_integrity());
 
         let found = store.find("player").unwrap();
         assert_eq!(found.uuid, acc.uuid);
         assert!(found.active);
 
-        store.remove("Player").unwrap();
+        // Tampering with accounts.json breaks integrity verification
+        let orig = fs::read_to_string(store.accounts_file_path()).unwrap();
+        fs::write(
+            store.accounts_file_path(),
+            orig.replace("Player", "Tampered"),
+        )
+        .unwrap();
+        assert!(!store.verify_integrity());
+
+        store.remove("Tampered").unwrap();
         assert!(store.list().unwrap().is_empty());
     }
 

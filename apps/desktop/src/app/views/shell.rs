@@ -26,19 +26,21 @@ impl McwApp {
                             .size(11.0)
                             .color(p.text_muted),
                     );
-                    if let Some(ref upd) = self.last_update_check {
-                        if upd.update_available {
-                            if let Some(ref latest) = upd.latest {
-                                let badge_btn = Button::new(
-                                    RichText::new(format!("Update v{}", latest.version))
-                                        .size(11.0)
-                                        .strong()
-                                        .color(p.accent_text),
-                                )
-                                .fill(p.accent)
-                                .corner_radius(CornerRadius::same(3));
-                                if ui.add(badge_btn).clicked() {
-                                    self.show_update_dialog = true;
+                    if mcw_updater::UPDATES_ENABLED {
+                        if let Some(ref upd) = self.last_update_check {
+                            if upd.update_available {
+                                if let Some(ref latest) = upd.latest {
+                                    let badge_btn = Button::new(
+                                        RichText::new(format!("Update v{}", latest.version))
+                                            .size(11.0)
+                                            .strong()
+                                            .color(p.accent_text),
+                                    )
+                                    .fill(p.accent)
+                                    .corner_radius(CornerRadius::same(3));
+                                    if ui.add(badge_btn).clicked() {
+                                        self.show_update_dialog = true;
+                                    }
                                 }
                             }
                         }
@@ -51,6 +53,18 @@ impl McwApp {
                             .clicked()
                         {
                             self.show_launcher_settings = !self.show_launcher_settings;
+                        }
+                        if ui
+                            .selectable_label(self.show_about_window, "About")
+                            .clicked()
+                        {
+                            self.show_about_window = !self.show_about_window;
+                        }
+                        if ui
+                            .selectable_label(self.show_global_logs_window, "Logs")
+                            .clicked()
+                        {
+                            self.show_global_logs_window = !self.show_global_logs_window;
                         }
 
                         ui.separator();

@@ -232,12 +232,10 @@ pub struct LauncherPrefs {
     pub default_fullscreen: bool,
     #[serde(default = "default_notification_timeout")]
     pub notification_timeout_secs: u32,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub auto_check_updates: bool,
     #[serde(default = "default_update_channel")]
     pub update_channel: String,
-    #[serde(default = "default_update_source")]
-    pub update_source: String,
     #[serde(default)]
     pub first_run_completed: bool,
     #[serde(default = "default_true")]
@@ -250,6 +248,18 @@ pub struct LauncherPrefs {
     pub custom_accent_hex: String,
     #[serde(default = "default_motion_mode")]
     pub motion_mode: String,
+    #[serde(default)]
+    pub download_limit_mbps: f64,
+    #[serde(default)]
+    pub prefer_dedicated_gpu: bool,
+    #[serde(default)]
+    pub minimize_on_launch: bool,
+    #[serde(default = "default_true")]
+    pub remember_window_size: bool,
+    #[serde(default = "default_window_width")]
+    pub window_width: f32,
+    #[serde(default = "default_window_height")]
+    pub window_height: f32,
 }
 
 fn default_theme() -> String {
@@ -288,16 +298,20 @@ fn default_update_channel() -> String {
     "beta".to_string()
 }
 
-fn default_update_source() -> String {
-    "auto".to_string()
-}
-
 fn default_retention_days() -> u32 {
     14
 }
 
 fn default_motion_mode() -> String {
     "full".to_string()
+}
+
+fn default_window_width() -> f32 {
+    1080.0
+}
+
+fn default_window_height() -> f32 {
+    680.0
 }
 
 impl Default for LauncherPrefs {
@@ -317,15 +331,20 @@ impl Default for LauncherPrefs {
             default_height: default_height(),
             default_fullscreen: false,
             notification_timeout_secs: default_notification_timeout(),
-            auto_check_updates: true,
+            auto_check_updates: false,
             update_channel: default_update_channel(),
-            update_source: default_update_source(),
             first_run_completed: false,
             discord_rpc_enabled: true,
             discord_client_id: String::new(),
             unused_version_retention_days: default_retention_days(),
             custom_accent_hex: String::new(),
             motion_mode: default_motion_mode(),
+            download_limit_mbps: 0.0,
+            prefer_dedicated_gpu: false,
+            minimize_on_launch: false,
+            remember_window_size: true,
+            window_width: default_window_width(),
+            window_height: default_window_height(),
         }
     }
 }

@@ -614,12 +614,59 @@ impl CurseForgeClient {
     }
 }
 
-/// Load `CURSEFORGE_API_KEY` from process environment or `.env` files.
+/// Path to custom CurseForge API key config under `config/curseforge.json`.
+pub fn custom_curseforge_key_path(config_root: &Path) -> PathBuf {
+    config_root.join("curseforge.json")
+}
+
+/// Load a user-saved custom CurseForge API key from `config/curseforge.json`.
+pub fn load_custom_curseforge_api_key(config_root: &Path) -> Option<String> {
+    let path = custom_curseforge_key_path(config_root);
+    let raw = fs::read_to_string(path).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    val.get("api_key")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.contains(['\r', '\n', '\0']))
+        .map(String::from)
+}
+
+/// Save or clear a custom CurseForge API key in `config/curseforge.json`.
+pub fn save_custom_curseforge_api_key(config_root: &Path, api_key: &str) -> Result<()> {
+    let clean = api_key.trim();
+    if clean.contains(['\r', '\n', '\0']) {
+        return Err(ProviderError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Invalid CurseForge API key.",
+        )));
+    }
+    let path = custom_curseforge_key_path(config_root);
+    if clean.is_empty() {
+        if path.is_file() {
+            let _ = fs::remove_file(path);
+        }
+        return Ok(());
+    }
+    let payload = serde_json::json!({
+        "schema_version": 1,
+        "api_key": clean,
+    });
+    let serialized = serde_json::to_string_pretty(&payload)?;
+    atomic_write_text(&path, &serialized).map_err(|e| ProviderError::Io(std::io::Error::other(e)))
+}
+
+/// Load `CURSEFORGE_API_KEY` from process environment, `config/curseforge.json`, or `.env` files.
 pub fn load_curseforge_api_key(project_root: Option<&Path>) -> Option<String> {
     if let Ok(val) = std::env::var("CURSEFORGE_API_KEY") {
         let trimmed = val.trim();
         if !trimmed.is_empty() {
             return Some(trimmed.to_string());
+        }
+    }
+
+    if let Some(root) = project_root {
+        if let Some(custom) = load_custom_curseforge_api_key(&root.join("config")) {
+            return Some(custom);
         }
     }
 
@@ -786,5 +833,21 @@ mod tests {
             fallback,
             "https://www.curseforge.com/minecraft/search?search=12345"
         );
+    }
+
+    #[test]
+    fn saves_loads_and_clears_custom_curseforge_api_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_root = dir.path().join("config");
+        assert!(load_custom_curseforge_api_key(&config_root).is_none());
+
+        save_custom_curseforge_api_key(&config_root, "$2a$10$customKeyValue").unwrap();
+        assert_eq!(
+            load_custom_curseforge_api_key(&config_root).as_deref(),
+            Some("$2a$10$customKeyValue")
+        );
+
+        save_custom_curseforge_api_key(&config_root, "").unwrap();
+        assert!(load_custom_curseforge_api_key(&config_root).is_none());
     }
 }

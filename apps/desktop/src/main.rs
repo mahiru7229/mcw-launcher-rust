@@ -22,12 +22,21 @@ fn main() -> eframe::Result {
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let paths = LauncherPaths::portable(root);
     let _ = paths.initialize();
+    let prefs = i18n::LauncherPrefs::load(&paths);
+    let init_size = if prefs.remember_window_size {
+        [
+            prefs.window_width.clamp(840.0, 3840.0),
+            prefs.window_height.clamp(560.0, 2160.0),
+        ]
+    } else {
+        [1080.0, 680.0]
+    };
 
     let options = eframe::NativeOptions {
         centered: true,
         viewport: egui::ViewportBuilder::default()
             .with_title("MCW Launcher: Rust Edition")
-            .with_inner_size([1080.0, 680.0])
+            .with_inner_size(init_size)
             .with_min_inner_size([840.0, 560.0]),
         ..Default::default()
     };

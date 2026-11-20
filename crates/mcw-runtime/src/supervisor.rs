@@ -172,7 +172,20 @@ impl SupervisedProcess {
         log_file_path: Option<&Path>,
         sink: Arc<dyn LogSink>,
     ) -> Result<Self> {
+        Self::spawn_with_gpu_preference(spec, log_file_path, sink, false)
+    }
+
+    pub fn spawn_with_gpu_preference(
+        spec: &LaunchSpec,
+        log_file_path: Option<&Path>,
+        sink: Arc<dyn LogSink>,
+        prefer_dedicated_gpu: bool,
+    ) -> Result<Self> {
         let resolved_java = crate::java::prefer_javaw_on_windows(&spec.java_executable);
+        crate::gpu::GpuPreferenceManager::apply_windows_java_preference(
+            &resolved_java,
+            prefer_dedicated_gpu,
+        );
         info!(
             java = %resolved_java.display(),
             cwd = %spec.working_dir.display(),
@@ -195,6 +208,10 @@ impl SupervisedProcess {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(target_os = "linux")]
+        for (k, v) in crate::gpu::GpuPreferenceManager::linux_gpu_env_vars(prefer_dedicated_gpu) {
+            cmd.env(k, v);
+        }
         #[cfg(windows)]
         {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;

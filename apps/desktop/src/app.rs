@@ -29,32 +29,32 @@ use mcw_models::account::AccountSource;
 use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
 use mcw_models::progress::ProgressEvent;
 use mcw_mods::{
-    is_loader_compatible, ContentKind, ContentPackInfo, ContentPackManager, ModInfo, ModManager,
+    is_loader_compatible, ContentKind, ContentPackInfo, ContentPackManager,
+    ModCompatibilityAnalyzer, ModCompatibilityReport, ModInfo, ModIssueSeverity, ModManager,
 };
 use mcw_net::{DownloadClient, TaskControl};
 use mcw_providers::{
-    load_curseforge_api_key, ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient,
-    CurseForgeMod, CurseForgeSearchParams, FtbClient, FtbPackSummary, LanHostingManager,
-    ManualDownloadItem, ModProvenanceRegistry, ModUpdateCandidate, ModUpdateManager,
-    ModpackExportMode, ModpackExportOptions, ModpackInstaller, ModpackProgressCallback,
-    ModrinthClient, ModrinthSearchHit, ModrinthSearchParams, TrackedModEntry,
+    load_curseforge_api_key, load_custom_curseforge_api_key, save_custom_curseforge_api_key,
+    ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient, CurseForgeMod,
+    CurseForgeSearchParams, FtbClient, FtbPackSummary, LanHostingManager, ManualDownloadItem,
+    ModProvenanceRegistry, ModUpdateCandidate, ModUpdateManager, ModpackExportMode,
+    ModpackExportOptions, ModpackInstaller, ModpackProgressCallback, ModrinthClient,
+    ModrinthSearchHit, ModrinthSearchParams, TrackedModEntry,
 };
 use mcw_runtime::{
     detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
     recommended_modpack_ram_mb, DiagnosticsExporter, DiscordRpcService, ExitClassification,
-    FirstRunRecommendation, FirstRunRecommendationService, JavaDiscovery, JavaInstallation,
-    JavaProvisioner, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine, LogStream,
-    McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
+    FirstRunRecommendation, FirstRunRecommendationService, GameWindowActivator, JavaDiscovery,
+    JavaInstallation, JavaProvisioner, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine,
+    LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
-    BackupInfo, BackupManager, InstanceRunLock, InstanceStore, LauncherPaths,
+    BackupInfo, BackupManager, HealthSeverity, InstanceHealthManager, InstanceHealthReport,
+    InstanceHealthState, InstanceRunLock, InstanceStore, LauncherPaths, StartupRecoveryService,
     StorageCleanupService, StorageSummary, UnusedVersionCandidate,
 };
-use mcw_updater::{
-    ReleaseInfo, UpdateChannel, UpdateCheckResult, UpdateChecker, UpdateInstaller,
-    UpdateSourcePreference,
-};
-use std::collections::{HashMap, HashSet};
+use mcw_updater::{ReleaseInfo, UpdateChannel, UpdateCheckResult, UpdateChecker, UpdateInstaller};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -355,12 +355,33 @@ pub struct McwApp {
     storage_cleaning: bool,
     storage_summary: Option<StorageSummary>,
     storage_unused_versions: Vec<UnusedVersionCandidate>,
+
+    // Stage 4: Startup recovery, Mod compatibility, Repair Center, Global Logs, About & Window tracking
+    global_logs: VecDeque<String>,
+    global_logs_filter: String,
+    show_global_logs_window: bool,
+    show_about_window: bool,
+    show_repair_center_window: bool,
+    repair_center_report: Option<InstanceHealthReport>,
+    mod_compat_report: Option<ModCompatibilityReport>,
+    account_integrity_ok: bool,
+    cf_api_key_input: String,
+    cf_api_key_revealed: bool,
+    last_window_size: [f32; 2],
 }
 
 impl McwApp {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: LauncherPaths) -> Self {
         configure_fonts(&cc.egui_ctx);
         let prefs = LauncherPrefs::load(&paths);
+        mcw_net::set_global_bandwidth_limit_mbps(prefs.download_limit_mbps);
+        let cf_api_key_input =
+            load_custom_curseforge_api_key(&paths.config_root).unwrap_or_default();
+        let account_integrity_ok = AccountStore::new(&paths).verify_integrity();
+        let last_window_size = [
+            prefs.window_width.clamp(840.0, 3840.0),
+            prefs.window_height.clamp(560.0, 2160.0),
+        ];
         let theme_catalog = ThemeCatalog::load(&paths.theme_root);
         let motion_mode = MotionMode::parse(&prefs.motion_mode);
         let custom_accent_input = prefs.custom_accent_hex.clone();
@@ -546,7 +567,11 @@ impl McwApp {
             account_avatars_loading: HashSet::new(),
             update_checking: false,
             update_downloading: false,
-            update_status_text: "Not checked yet".to_string(),
+            update_status_text: if mcw_updater::UPDATES_ENABLED {
+                "Not checked yet".to_string()
+            } else {
+                "Updates are currently disabled for MCW Launcher: Rust Edition.".to_string()
+            },
             last_update_check: None,
             show_update_dialog: false,
             show_first_run_wizard: false,
@@ -561,7 +586,36 @@ impl McwApp {
             storage_cleaning: false,
             storage_summary: None,
             storage_unused_versions: Vec::new(),
+            global_logs: VecDeque::with_capacity(256),
+            global_logs_filter: String::new(),
+            show_global_logs_window: false,
+            show_about_window: false,
+            show_repair_center_window: false,
+            repair_center_report: None,
+            mod_compat_report: None,
+            account_integrity_ok,
+            cf_api_key_input,
+            cf_api_key_revealed: false,
+            last_window_size,
         };
+
+        app.push_global_log(format!(
+            "MCW Launcher: Rust Edition v{} started.",
+            mcw_models::APP_VERSION
+        ));
+        let rec = StartupRecoveryService::reconcile(&app.paths);
+        if rec.recovered_count() > 0 {
+            app.push_global_log(format!(
+                "[INFO] Startup recovery reconciled {} stale lock(s) and {} orphan temp file(s).",
+                rec.stale_locks.len(),
+                rec.orphan_temp_files
+            ));
+        }
+        if !app.account_integrity_ok {
+            app.push_global_log(
+                "[WARN] Account store HMAC integrity signature mismatch detected.".to_string(),
+            );
+        }
 
         app.reload_instances();
         app.reload_accounts();
@@ -572,7 +626,7 @@ impl McwApp {
         if !app.prefs.first_run_completed && app.instances.is_empty() {
             app.open_first_run_wizard(&cc.egui_ctx);
         }
-        if app.prefs.auto_check_updates {
+        if mcw_updater::UPDATES_ENABLED && app.prefs.auto_check_updates {
             app.start_update_check(false, &cc.egui_ctx);
         }
         app
@@ -581,14 +635,29 @@ impl McwApp {
 
 impl Drop for McwApp {
     fn drop(&mut self) {
+        if self.prefs.remember_window_size
+            && self.last_window_size[0] >= 840.0
+            && self.last_window_size[1] >= 560.0
+        {
+            self.prefs.window_width = self.last_window_size[0];
+            self.prefs.window_height = self.last_window_size[1];
+            self.save_prefs();
+        }
         self.discord_rpc.shutdown();
     }
 }
 
 impl eframe::App for McwApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
+            let size = rect.size();
+            if size.x >= 840.0 && size.y >= 560.0 {
+                self.last_window_size = [size.x, size.y];
+            }
+        }
         self.poll_events(ctx);
         self.ensure_account_avatars_loaded(ctx);
+        self.handle_dropped_files(ctx);
 
         // Auto-dismiss notice_banner after `notification_timeout_secs` (default 8s; 0 = disabled)
         let current_notice_msg = self.notice_banner.as_ref().map(|(m, _)| m.clone());

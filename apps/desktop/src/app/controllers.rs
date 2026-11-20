@@ -184,6 +184,7 @@ impl McwApp {
             self.edit_game_args_text.clear();
         }
         self.mod_update_candidates.clear();
+        self.refresh_mod_compat_report();
     }
 
     pub(crate) fn ensure_active_tab_loaded(&mut self, ctx: &egui::Context) {
@@ -694,6 +695,7 @@ impl McwApp {
         );
 
         let paths = self.paths.clone();
+        let prefer_dedicated_gpu = self.prefs.prefer_dedicated_gpu;
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
@@ -779,9 +781,13 @@ impl McwApp {
                     tx: tx.clone(),
                     ctx: ctx.clone(),
                 });
-                let supervised =
-                    SupervisedProcess::spawn(&prepared.spec, Some(&log_path), log_sink)
-                        .map_err(|e| e.to_string())?;
+                let supervised = SupervisedProcess::spawn_with_gpu_preference(
+                    &prepared.spec,
+                    Some(&log_path),
+                    log_sink,
+                    prefer_dedicated_gpu,
+                )
+                .map_err(|e| e.to_string())?;
 
                 let pid = supervised.pid();
                 let _ = lock.mark_running(pid);
@@ -2211,6 +2217,7 @@ impl McwApp {
                         self.selected_mods = mods.clone();
                     }
                     self.mods_cache.insert(instance_id, mods);
+                    self.refresh_mod_compat_report();
                 }
                 AppEvent::BackupsLoaded {
                     instance_id,
@@ -2366,6 +2373,12 @@ impl McwApp {
                             inst.mod_loader.name.clone(),
                         );
                     }
+                    GameWindowActivator::allow_foreground(pid);
+                    GameWindowActivator::focus_process_window_delayed(pid);
+                    if self.prefs.minimize_on_launch {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                    self.push_global_log(format!("Launched instance '{instance_id}' (PID {pid})."));
                     self.launch_states
                         .insert(instance_id, LaunchState::Running { pid, control });
                 }
@@ -2383,15 +2396,33 @@ impl McwApp {
                     if let Some(tid) = self.launch_task_ids.remove(&instance_id) {
                         self.finish_task(tid);
                     }
-                    self.launch_states.insert(instance_id, LaunchState::Idle);
+                    self.launch_states
+                        .insert(instance_id.clone(), LaunchState::Idle);
                     let any_running = self
                         .launch_states
                         .values()
                         .any(|s| matches!(s, LaunchState::Running { .. }));
                     if !any_running {
                         self.discord_rpc.on_game_stopped();
+                        if self.prefs.minimize_on_launch {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        }
                     }
                     self.reload_instances();
+                    match &report {
+                        Ok(rep) => {
+                            self.push_global_log(format!(
+                                "Instance '{instance_id}' exited ({:?}, {}s).",
+                                rep.classification, rep.duration_secs
+                            ));
+                        }
+                        Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] Instance '{instance_id}' launch failed: {err}"
+                            ));
+                        }
+                    }
                     match report {
                         Ok(rep) => match rep.classification {
                             ExitClassification::Normal => {
@@ -3458,20 +3489,27 @@ impl McwApp {
     }
 
     pub(crate) fn start_update_check(&mut self, manual: bool, ctx: &egui::Context) {
+        if !mcw_updater::UPDATES_ENABLED {
+            let msg = "Updates are currently disabled for MCW Launcher: Rust Edition.".to_string();
+            self.update_status_text = msg.clone();
+            if manual {
+                self.notice_banner = Some((msg, false));
+            }
+            return;
+        }
         if self.update_checking {
             return;
         }
         self.update_checking = true;
         self.update_status_text = "Checking for updates...".to_string();
         let channel = UpdateChannel::parse(&self.prefs.update_channel);
-        let source = UpdateSourcePreference::parse(&self.prefs.update_source);
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
         self.runtime.spawn(async move {
             let res = match UpdateChecker::new() {
                 Ok(checker) => checker
-                    .check_with_source(mcw_models::APP_VERSION, channel, source)
+                    .check(mcw_models::APP_VERSION, channel)
                     .await
                     .map_err(|e| e.to_string()),
                 Err(e) => Err(e.to_string()),
@@ -3649,5 +3687,202 @@ impl McwApp {
             });
             ctx_c.request_repaint();
         });
+    }
+
+    // -------------------------------------------------------------------------
+    // Stage 4 Controllers: Global Logs, Mod Compatibility, Repair Center,
+    // Local Content Import & Drag-and-Drop
+    // -------------------------------------------------------------------------
+
+    pub(crate) fn push_global_log(&mut self, entry: impl Into<String>) {
+        if self.global_logs.len() >= 500 {
+            self.global_logs.pop_front();
+        }
+        self.global_logs.push_back(entry.into());
+    }
+
+    pub(crate) fn refresh_mod_compat_report(&mut self) {
+        if let Some(inst) = self.selected_instance() {
+            if inst.mod_loader.is_vanilla() || self.selected_mods.is_empty() {
+                self.mod_compat_report = None;
+            } else {
+                self.mod_compat_report = Some(ModCompatibilityAnalyzer::analyze(
+                    &inst.mod_loader.name,
+                    &self.selected_mods,
+                ));
+            }
+        } else {
+            self.mod_compat_report = None;
+        }
+    }
+
+    pub(crate) fn open_repair_center(&mut self, instance_id: &str, ctx: &egui::Context) {
+        if let Some(inst) = self
+            .instances
+            .iter()
+            .find(|i| i.instance_id == instance_id)
+            .cloned()
+        {
+            self.repair_center_report = Some(InstanceHealthManager::scan(&self.paths, &inst));
+            if !inst.mod_loader.is_vanilla() && !self.mods_cache.contains_key(instance_id) {
+                self.load_mods_async(instance_id, ctx, false);
+            } else {
+                self.refresh_mod_compat_report();
+            }
+            self.show_repair_center_window = true;
+        }
+    }
+
+    pub(crate) fn import_local_mod_files(
+        &mut self,
+        inst_id: &str,
+        files: &[PathBuf],
+        ctx: &egui::Context,
+    ) -> usize {
+        let mods_dir = self.paths.minecraft_dir(inst_id).join("mods");
+        if std::fs::create_dir_all(&mods_dir).is_err() {
+            return 0;
+        }
+        let mut copied = 0usize;
+        for src in files {
+            if !src.is_file() {
+                continue;
+            }
+            let Some(name) = src.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            if !(lower.ends_with(".jar") || lower.ends_with(".jar.disabled")) {
+                continue;
+            }
+            if std::fs::copy(src, mods_dir.join(name)).is_ok() {
+                copied += 1;
+            }
+        }
+        if copied > 0 {
+            self.mods_cache.remove(inst_id);
+            self.load_mods_async(inst_id, ctx, true);
+            self.push_global_log(format!(
+                "Imported {copied} local mod JAR(s) into '{inst_id}'."
+            ));
+            self.notice_banner = Some((format!("Imported {copied} mod file(s)."), false));
+        }
+        copied
+    }
+
+    pub(crate) fn import_local_pack_files(
+        &mut self,
+        inst_id: &str,
+        kind: ContentKind,
+        files: &[PathBuf],
+        ctx: &egui::Context,
+    ) -> usize {
+        let dir = self.paths.minecraft_dir(inst_id).join(kind.folder_name());
+        if std::fs::create_dir_all(&dir).is_err() {
+            return 0;
+        }
+        let mut copied = 0usize;
+        for src in files {
+            if !src.is_file() {
+                continue;
+            }
+            let Some(name) = src.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            if !(lower.ends_with(".zip") || lower.ends_with(".zip.disabled")) {
+                continue;
+            }
+            if std::fs::copy(src, dir.join(name)).is_ok() {
+                copied += 1;
+            }
+        }
+        if copied > 0 {
+            self.content_packs_cache
+                .remove(&(inst_id.to_string(), kind));
+            self.load_content_packs_async(inst_id, kind, ctx, true);
+            self.push_global_log(format!(
+                "Imported {copied} local {:?} archive(s) into '{inst_id}'.",
+                kind
+            ));
+            self.notice_banner = Some((format!("Imported {copied} pack file(s)."), false));
+        }
+        copied
+    }
+
+    pub(crate) fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        let paths: Vec<PathBuf> = dropped.into_iter().filter_map(|f| f.path).collect();
+        if paths.is_empty() {
+            return;
+        }
+
+        let mut modpack_archives = Vec::new();
+        let mut jar_files = Vec::new();
+        let mut zip_files = Vec::new();
+
+        for path in paths {
+            if !path.is_file() {
+                continue;
+            }
+            let lower = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if lower.ends_with(".mrpack") || lower.ends_with(".mcwpack") {
+                modpack_archives.push(path);
+            } else if lower.ends_with(".jar") || lower.ends_with(".jar.disabled") {
+                jar_files.push(path);
+            } else if lower.ends_with(".zip") || lower.ends_with(".zip.disabled") {
+                zip_files.push(path);
+            }
+        }
+
+        if let Some(archive) = modpack_archives.into_iter().next() {
+            self.modpack_path_input = archive.display().to_string();
+            self.create_tab = CreateInstanceTab::ImportArchive;
+            self.start_modpack_install(ctx);
+            return;
+        }
+
+        if !jar_files.is_empty() {
+            if let Some(inst) = self.selected_instance().cloned() {
+                if inst.mod_loader.is_vanilla() {
+                    self.notice_banner = Some((
+                        "Selected instance uses Vanilla; switch to a mod loader before importing .jar mods."
+                            .to_string(),
+                        true,
+                    ));
+                } else {
+                    self.import_local_mod_files(&inst.instance_id, &jar_files, ctx);
+                }
+            } else {
+                self.notice_banner = Some((
+                    "Select an instance before dropping .jar mod files.".to_string(),
+                    true,
+                ));
+            }
+        }
+
+        if !zip_files.is_empty() {
+            if self.active_tab == DetailTab::Packs {
+                if let Some(inst) = self.selected_instance().cloned() {
+                    self.import_local_pack_files(
+                        &inst.instance_id,
+                        self.packs_kind,
+                        &zip_files,
+                        ctx,
+                    );
+                }
+            } else if let Some(archive) = zip_files.into_iter().next() {
+                self.modpack_path_input = archive.display().to_string();
+                self.create_tab = CreateInstanceTab::ImportArchive;
+                self.start_modpack_install(ctx);
+            }
+        }
     }
 }

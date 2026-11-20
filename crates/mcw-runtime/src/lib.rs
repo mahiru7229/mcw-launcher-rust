@@ -3,6 +3,7 @@ pub mod compactor;
 pub mod diagnostics;
 pub mod discord_rpc;
 pub mod first_run;
+pub mod gpu;
 pub mod java;
 pub mod jvm_presets;
 pub mod lan_agent;
@@ -10,6 +11,7 @@ pub mod launcher;
 pub mod mclogs;
 pub mod provisioner;
 pub mod supervisor;
+pub mod window_activator;
 
 pub use bytecode::{detect_jar_required_java, detect_mods_required_java};
 pub use compactor::JavaCommandCompactor;
@@ -20,6 +22,7 @@ pub use discord_rpc::{DiscordActivity, DiscordRpcService, DEFAULT_DISCORD_CLIENT
 pub use first_run::{
     detect_available_memory_mb, FirstRunRecommendation, FirstRunRecommendationService,
 };
+pub use gpu::GpuPreferenceManager;
 pub use java::{
     prefer_javaw_on_windows, JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver,
 };
@@ -34,6 +37,7 @@ pub use supervisor::{
     detect_unsupported_class_version, ExitClassification, LogLine, LogSink, LogStream, NoopLogSink,
     ProcessControl, ProcessExitReport, SupervisedProcess,
 };
+pub use window_activator::GameWindowActivator;
 
 use thiserror::Error;
 

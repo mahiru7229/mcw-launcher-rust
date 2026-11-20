@@ -1,3 +1,7 @@
+pub mod bandwidth;
+
+pub use bandwidth::{global_bandwidth_limit_mbps, set_global_bandwidth_limit_mbps};
+
 use futures::stream::{self, StreamExt};
 use reqwest::header::{RANGE, USER_AGENT};
 use reqwest::StatusCode;
@@ -405,6 +409,7 @@ impl DownloadClient {
                 })?;
             written += chunk.len() as u64;
             GLOBAL_DOWNLOADED_BYTES.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            bandwidth::throttle_bytes(chunk.len()).await;
         }
         file.flush().await.map_err(|source| NetError::Io {
             path: part_path.display().to_string(),

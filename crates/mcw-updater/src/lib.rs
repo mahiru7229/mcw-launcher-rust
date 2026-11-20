@@ -8,19 +8,19 @@ use mcw_models::GITHUB_REPOSITORY;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
-use tracing::warn;
 
-pub const DEFAULT_CLOUDFLARE_MANIFEST_URL: &str =
-    "https://mcw-download.pages.dev/releases/manifest.json";
+/// Updater is intentionally disabled for MCW Launcher: Rust Edition until
+/// Rust Edition's own release pipeline replaces the legacy Python feed.
+pub const UPDATES_ENABLED: bool = false;
 
 #[derive(Debug, Error)]
 pub enum UpdateError {
+    #[error("Launcher updates are currently disabled for MCW Launcher: Rust Edition.")]
+    Disabled,
     #[error("Invalid version string: {0}")]
     InvalidVersion(String),
-    #[error("Both Cloudflare CDN and GitHub Releases failed: cloudflare=({cloudflare}), github=({github})")]
-    AllSourcesFailed { cloudflare: String, github: String },
-    #[error("Update source '{source_name}' failed: {reason}")]
-    SourceFailed { source_name: String, reason: String },
+    #[error("GitHub Releases update check failed: {0}")]
+    GithubFailed(String),
     #[error("Update installation failed: {0}")]
     InstallFailed(String),
     #[error("HTTP error: {0}")]
@@ -55,33 +55,6 @@ impl UpdateChannel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UpdateSourcePreference {
-    #[default]
-    Auto,
-    Cloudflare,
-    Github,
-}
-
-impl UpdateSourcePreference {
-    pub fn parse(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "cloudflare" => Self::Cloudflare,
-            "github" => Self::Github,
-            _ => Self::Auto,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Cloudflare => "cloudflare",
-            Self::Github => "github",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseInfo {
     pub tag_name: String,
@@ -107,7 +80,6 @@ pub struct UpdateCheckResult {
 
 pub struct UpdateChecker {
     http: reqwest::Client,
-    cloudflare_url: String,
     github_repo: String,
 }
 
@@ -117,101 +89,31 @@ impl UpdateChecker {
             .user_agent(mcw_models::user_agent())
             .timeout(Duration::from_secs(15))
             .build()?;
-        let cloudflare_url = std::env::var("MCW_CLOUDFLARE_RELEASES_URL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_CLOUDFLARE_MANIFEST_URL.to_string());
         let github_repo = std::env::var("MCW_GITHUB_REPOSITORY")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| GITHUB_REPOSITORY.to_string());
-        Ok(Self {
-            http,
-            cloudflare_url,
-            github_repo,
-        })
+        Ok(Self { http, github_repo })
     }
 
-    /// Check for updates on the requested channel using Auto failover (`Cloudflare -> GitHub`).
+    /// Check GitHub Releases (`mahiru7229/mcw-launcher-rust`) on the requested channel.
+    /// Returns `Err(UpdateError::Disabled)` while `UPDATES_ENABLED == false`.
     pub async fn check(
         &self,
         current_version: &str,
         channel: UpdateChannel,
     ) -> Result<UpdateCheckResult> {
-        self.check_with_source(current_version, channel, UpdateSourcePreference::Auto)
-            .await
-    }
-
-    /// Check for updates on the requested channel and preferred update source.
-    /// In `Auto` mode, if Cloudflare CDN fails or returns empty, BOTH `stable` and `beta`
-    /// channels automatically fall back to GitHub Releases API (Lesson #3).
-    pub async fn check_with_source(
-        &self,
-        current_version: &str,
-        channel: UpdateChannel,
-        source: UpdateSourcePreference,
-    ) -> Result<UpdateCheckResult> {
+        if !UPDATES_ENABLED {
+            return Err(UpdateError::Disabled);
+        }
         let current = LauncherVersion::parse(current_version)
             .ok_or_else(|| UpdateError::InvalidVersion(current_version.to_string()))?;
 
-        let best = match source {
-            UpdateSourcePreference::Cloudflare => {
-                let list = self.fetch_cloudflare_releases().await.map_err(|e| {
-                    UpdateError::SourceFailed {
-                        source_name: "cloudflare".to_string(),
-                        reason: e.to_string(),
-                    }
-                })?;
-                select_best_release(&list, channel)
-            }
-            UpdateSourcePreference::Github => {
-                let list =
-                    self.fetch_github_releases()
-                        .await
-                        .map_err(|e| UpdateError::SourceFailed {
-                            source_name: "github".to_string(),
-                            reason: e.to_string(),
-                        })?;
-                select_best_release(&list, channel)
-            }
-            UpdateSourcePreference::Auto => {
-                let mut cf_err: Option<String> = None;
-                let cf_releases = match self.fetch_cloudflare_releases().await {
-                    Ok(list) if !list.is_empty() => Some(list),
-                    Ok(_) => {
-                        warn!(
-                            "Cloudflare CDN release manifest was empty; falling back to GitHub Releases"
-                        );
-                        cf_err = Some("empty manifest".to_string());
-                        None
-                    }
-                    Err(err) => {
-                        warn!(error = %err, "Cloudflare CDN check failed; falling back to GitHub Releases");
-                        cf_err = Some(err.to_string());
-                        None
-                    }
-                };
-
-                let candidates = cf_releases.unwrap_or_default();
-                let mut selected = select_best_release(&candidates, channel);
-                if selected.is_none() {
-                    match self.fetch_github_releases().await {
-                        Ok(gh_list) => {
-                            selected = select_best_release(&gh_list, channel);
-                        }
-                        Err(gh_err) => {
-                            if let Some(cf) = cf_err {
-                                return Err(UpdateError::AllSourcesFailed {
-                                    cloudflare: cf,
-                                    github: gh_err.to_string(),
-                                });
-                            }
-                        }
-                    }
-                }
-                selected
-            }
-        };
+        let list = self
+            .fetch_github_releases()
+            .await
+            .map_err(|e| UpdateError::GithubFailed(e.to_string()))?;
+        let best = select_best_release(&list, channel);
 
         let update_available = best
             .as_ref()
@@ -225,23 +127,6 @@ impl UpdateChecker {
             update_available,
             latest: best,
         })
-    }
-
-    async fn fetch_cloudflare_releases(&self) -> Result<Vec<ReleaseInfo>> {
-        let resp = self
-            .http
-            .get(&self.cloudflare_url)
-            .header("Accept", "application/json")
-            .send()
-            .await?;
-        let resp = resp.error_for_status()?;
-        let val: serde_json::Value = resp.json().await?;
-        let items = val
-            .as_array()
-            .cloned()
-            .or_else(|| val.get("releases").and_then(|r| r.as_array()).cloned())
-            .unwrap_or_default();
-        Ok(parse_release_entries(&items, "cloudflare"))
     }
 
     async fn fetch_github_releases(&self) -> Result<Vec<ReleaseInfo>> {
@@ -425,13 +310,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn selects_highest_release_respecting_channel() {
+    fn selects_highest_rust_edition_release_respecting_channel() {
         let releases = vec![
             ReleaseInfo {
-                tag_name: "v1.8.7".to_string(),
-                version: "1.8.7".to_string(),
+                tag_name: "v0.8.0".to_string(),
+                version: "0.8.0".to_string(),
                 prerelease: false,
-                source: "cloudflare".to_string(),
+                source: "github".to_string(),
                 notes: String::new(),
                 html_url: String::new(),
                 download_url: None,
@@ -439,8 +324,8 @@ mod tests {
                 asset_size: None,
             },
             ReleaseInfo {
-                tag_name: "v2.0.0-beta.1".to_string(),
-                version: "2.0.0-beta.1".to_string(),
+                tag_name: "v0.9.0-beta.1".to_string(),
+                version: "0.9.0-beta.1".to_string(),
                 prerelease: true,
                 source: "github".to_string(),
                 notes: String::new(),
@@ -452,29 +337,29 @@ mod tests {
         ];
 
         let stable = select_best_release(&releases, UpdateChannel::Stable).unwrap();
-        assert_eq!(stable.version, "1.8.7");
+        assert_eq!(stable.version, "0.8.0");
 
         let beta = select_best_release(&releases, UpdateChannel::Beta).unwrap();
-        assert_eq!(beta.version, "2.0.0-beta.1");
+        assert_eq!(beta.version, "0.9.0-beta.1");
+    }
+
+    #[tokio::test]
+    async fn update_checker_returns_disabled_error_when_disabled() {
+        const {
+            assert!(!UPDATES_ENABLED);
+        }
+        let checker = UpdateChecker::new().unwrap();
+        let err = checker
+            .check("0.9.0-beta.1", UpdateChannel::Beta)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UpdateError::Disabled));
     }
 
     #[test]
-    fn parses_source_preference_and_semver_build_tags() {
-        assert_eq!(
-            UpdateSourcePreference::parse("cloudflare"),
-            UpdateSourcePreference::Cloudflare
-        );
-        assert_eq!(
-            UpdateSourcePreference::parse("github"),
-            UpdateSourcePreference::Github
-        );
-        assert_eq!(
-            UpdateSourcePreference::parse("anything_else"),
-            UpdateSourcePreference::Auto
-        );
-
-        let b1 = LauncherVersion::parse("v0.8.0-beta.1").unwrap();
-        let b2 = LauncherVersion::parse("v0.8.0-beta.2").unwrap();
+    fn compares_semver_build_tags_cleanly() {
+        let b1 = LauncherVersion::parse("v0.9.0-beta.1").unwrap();
+        let b2 = LauncherVersion::parse("v0.9.0-beta.2").unwrap();
         assert!(b2 > b1);
     }
 
@@ -482,12 +367,12 @@ mod tests {
     fn prefers_current_platform_archive_asset() {
         let assets = vec![
             json!({
-                "name": "mcw-launcher-linux-x64.tar.gz",
+                "name": "mcw-launcher-rust-linux-x64.tar.gz",
                 "browser_download_url": "https://example.com/linux.tar.gz",
                 "size": 100
             }),
             json!({
-                "name": "mcw-launcher-windows-x64.zip",
+                "name": "mcw-launcher-rust-windows-x64.zip",
                 "browser_download_url": "https://example.com/win.zip",
                 "size": 200
             }),
@@ -496,13 +381,13 @@ mod tests {
         #[cfg(target_os = "windows")]
         {
             assert_eq!(url, "https://example.com/win.zip");
-            assert_eq!(name.as_deref(), Some("mcw-launcher-windows-x64.zip"));
+            assert_eq!(name.as_deref(), Some("mcw-launcher-rust-windows-x64.zip"));
             assert_eq!(size, Some(200));
         }
         #[cfg(target_os = "linux")]
         {
             assert_eq!(url, "https://example.com/linux.tar.gz");
-            assert_eq!(name.as_deref(), Some("mcw-launcher-linux-x64.tar.gz"));
+            assert_eq!(name.as_deref(), Some("mcw-launcher-rust-linux-x64.tar.gz"));
             assert_eq!(size, Some(100));
         }
     }

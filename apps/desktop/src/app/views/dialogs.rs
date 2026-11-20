@@ -299,12 +299,15 @@ impl McwApp {
             }
         }
 
-        // 1a-0. Dedicated Isolated OS Windows for Online Resource Browsers, Updater & First-Run Setup
+        // 1a-0. Dedicated Isolated OS Windows for Online Resource Browsers, Updater, First-Run, Repair, Logs & About
         self.render_modpack_provider_window(ctx);
         self.render_mod_browser_window(ctx);
         self.render_pack_browser_window(ctx);
         self.render_update_dialog(ctx);
         self.render_first_run_wizard(ctx);
+        self.render_repair_center_window(ctx);
+        self.render_global_logs_window(ctx);
+        self.render_about_window(ctx);
 
         // 1a. Modpack Install Configuration Isolated OS Window (Version + Beta/Alpha + RAM + Java + Open Web)
         self.render_modpack_install_dialog(ctx);
@@ -1692,6 +1695,33 @@ impl McwApp {
                                                 {
                                                     prefs_dirty = true;
                                                 }
+                                                if ui
+                                                    .checkbox(
+                                                        &mut self.prefs.minimize_on_launch,
+                                                        "Minimize launcher window when Minecraft launches",
+                                                    )
+                                                    .changed()
+                                                {
+                                                    prefs_dirty = true;
+                                                }
+                                                if ui
+                                                    .checkbox(
+                                                        &mut self.prefs.remember_window_size,
+                                                        "Remember launcher window size across sessions",
+                                                    )
+                                                    .changed()
+                                                {
+                                                    prefs_dirty = true;
+                                                }
+                                                if ui
+                                                    .checkbox(
+                                                        &mut self.prefs.prefer_dedicated_gpu,
+                                                        "Prefer dedicated GPU for Java / Minecraft launches",
+                                                    )
+                                                    .changed()
+                                                {
+                                                    prefs_dirty = true;
+                                                }
                                                 ui.add_space(4.0);
                                                 ui.horizontal_wrapped(|ui| {
                                                     ui.label(
@@ -1958,21 +1988,123 @@ impl McwApp {
                                                         {
                                                             prefs_dirty = true;
                                                         }
-                                                        for v in [2u32, 4, 6, 8, 12, 16] {
-                                                            if ui
-                                                                .selectable_value(
-                                                                    &mut self
-                                                                        .prefs
-                                                                        .download_concurrency,
-                                                                    v,
-                                                                    format!("{v} concurrent"),
-                                                                )
-                                                                .changed()
-                                                            {
-                                                                prefs_dirty = true;
+                                                            for v in [2u32, 4, 6, 8, 12, 16] {
+                                                                if ui
+                                                                    .selectable_value(
+                                                                        &mut self
+                                                                            .prefs
+                                                                            .download_concurrency,
+                                                                        v,
+                                                                        format!("{v} concurrent"),
+                                                                    )
+                                                                    .changed()
+                                                                {
+                                                                    prefs_dirty = true;
+                                                                }
+                                                            }
+                                                        });
+                                                ui.add_space(6.0);
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label(
+                                                        "Speed limit (MB/s, 0 = Unlimited):",
+                                                    );
+                                                    if ui
+                                                        .add(
+                                                            egui::DragValue::new(
+                                                                &mut self.prefs.download_limit_mbps,
+                                                            )
+                                                            .range(0.0..=1024.0)
+                                                            .speed(0.5),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        let normalized =
+                                                            mcw_net::set_global_bandwidth_limit_mbps(
+                                                                self.prefs.download_limit_mbps,
+                                                            );
+                                                        self.prefs.download_limit_mbps = normalized;
+                                                        prefs_dirty = true;
+                                                    }
+                                                });
+                                            });
+
+                                        ui.add_space(8.0);
+
+                                        // Card 1b: Custom CurseForge API Key
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new("CurseForge API Key (Optional Override)")
+                                                        .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(
+                                                        "Leave blank to use the built-in bundled key, or save a custom key into config/curseforge.json.",
+                                                    )
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(6.0);
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.add(
+                                                        TextEdit::singleline(
+                                                            &mut self.cf_api_key_input,
+                                                        )
+                                                        .password(!self.cf_api_key_revealed)
+                                                        .hint_text("$2a$10$...")
+                                                        .desired_width(240.0),
+                                                    );
+                                                    let reveal_lbl = if self.cf_api_key_revealed {
+                                                        "Hide"
+                                                    } else {
+                                                        "Reveal"
+                                                    };
+                                                    if ui.button(reveal_lbl).clicked() {
+                                                        self.cf_api_key_revealed =
+                                                            !self.cf_api_key_revealed;
+                                                    }
+                                                    if ui.button("Save Key").clicked() {
+                                                        match save_custom_curseforge_api_key(
+                                                            &self.paths.config_root,
+                                                            &self.cf_api_key_input,
+                                                        ) {
+                                                            Ok(()) => {
+                                                                self.notice_banner = Some((
+                                                                    "Saved custom CurseForge API key."
+                                                                        .to_string(),
+                                                                    false,
+                                                                ));
+                                                            }
+                                                            Err(e) => {
+                                                                self.notice_banner = Some((
+                                                                    format!(
+                                                                        "Failed to save key: {e}"
+                                                                    ),
+                                                                    true,
+                                                                ));
                                                             }
                                                         }
-                                                    });
+                                                    }
+                                                    if !self.cf_api_key_input.trim().is_empty()
+                                                        && ui.button("Use Bundled Key").clicked()
+                                                    {
+                                                        self.cf_api_key_input.clear();
+                                                        let _ = save_custom_curseforge_api_key(
+                                                            &self.paths.config_root,
+                                                            "",
+                                                        );
+                                                        self.notice_banner = Some((
+                                                            "Cleared custom CurseForge API key; reverted to default."
+                                                                .to_string(),
+                                                            false,
+                                                        ));
+                                                    }
+                                                });
                                             });
 
                                         ui.add_space(8.0);
@@ -2105,7 +2237,7 @@ impl McwApp {
                                                     if ui.button(scan_lbl).clicked() {
                                                         scan_java = true;
                                                     }
-                                                    for major in [8u32, 17, 21] {
+                                                    for major in [8u32, 17, 21, 25] {
                                                         let busy = self
                                                             .installing_java_majors
                                                             .contains(&major);
@@ -2278,6 +2410,7 @@ impl McwApp {
                     self.prefs.discord_client_id.clone(),
                 );
                 self.save_prefs();
+                mcw_net::set_global_bandwidth_limit_mbps(self.prefs.download_limit_mbps);
                 self.notice_banner =
                     Some(("Launcher settings restored to defaults.".to_string(), false));
             } else if prefs_dirty {

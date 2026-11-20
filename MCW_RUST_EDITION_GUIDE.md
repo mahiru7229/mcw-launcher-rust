@@ -26,7 +26,7 @@
 - **Định danh thế hệ**: **MCW Launcher 2.0 (Rust Edition)** — viết lại toàn bộ cả **Core (Rust)** và **GUI mới** trên một repository độc lập.
 - **Lộ trình đánh số phiên bản**: Bắt đầu bài bản từ **`v0.1.0-alpha.1` → `v0.2.x` → `v0.3.x` → ...** theo đúng kỷ luật phát triển của nhánh Python (mỗi phiên bản giải quyết gọn 1–2 phân hệ, có unit test + chạy kiểm chứng thật trước khi sang bước tiếp theo).
 - **Nguồn đặc tả sống (Reference Spec)**: Repo Python hiện tại tại `d:\WORKBASE\mcw-launcher` (nhánh `1.8.7`) đóng vai trò là **tài liệu đặc tả nghiệp vụ và bộ kiểm thử chuẩn** (chứa toàn bộ edge-case đã được kiểm chứng thực tế).
-- **Hạ tầng phân phối dùng chung**: `https://mcw-download.pages.dev` (repo `mahiru7229/mcw-download`).
+- **Kênh phân phối tách biệt hoàn toàn khỏi bản Python**: Toàn bộ nhánh cập nhật của MCW Launcher Python (bao gồm Cloudflare CDN `mcw-download.pages.dev`) đã được gỡ sạch; `mcw-updater` chỉ nhắm repo Rust Edition (`mahiru7229/mcw-launcher-rust`) và đang tắt mặc định (`UPDATES_ENABLED = false`).
 
 ---
 
@@ -49,7 +49,7 @@ mcw-launcher-rs/
 │   ├── mcw-minecraft/          # Mojang Manifest, Client/Libs/Assets, 4 Mod Loaders, OptiFine, Launch Builder
 │   ├── mcw-mods/               # Quét .jar song song (rayon + zip), Jar-in-Jar, đọc bytecode .class chọn Java
 │   ├── mcw-providers/          # Modrinth v2, CurseForge API v1, FTB, ATLauncher + SQLite cache
-│   └── mcw-updater/            # Kiểm tra & áp dụng cập nhật (Cloudflare CDN + GitHub failover)
+│   └── mcw-updater/            # Kiểm tra & áp dụng cập nhật (GitHub Releases Rust Edition — hiện đang tắt)
 └── apps/
     ├── cli/                    # CLI nhỏ (mcw-cli) dùng để test Core ngay từ v0.1.0-alpha.1
     └── desktop/                # Giao diện GUI mới (Tauri v2 + Web UI hoặc Slint/Iced) — bắt đầu từ v0.3
@@ -77,7 +77,7 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 | **`mcw-minecraft`** | - [`src/core/minecraft/version_manifest_manager.py`](file:///d:/WORKBASE/mcw-launcher/src/core/minecraft/version_manifest_manager.py)<br>- [`src/core/minecraft/library_manager.py`](file:///d:/WORKBASE/mcw-launcher/src/core/minecraft/library_manager.py)<br>- [`src/core/minecraft/library_rule_manager.py`](file:///d:/WORKBASE/mcw-launcher/src/core/minecraft/library_rule_manager.py)<br>- [`src/core/minecraft/asset_manager.py`](file:///d:/WORKBASE/mcw-launcher/src/core/minecraft/asset_manager.py)<br>- [`src/core/minecraft/argument_builder.py`](file:///d:/WORKBASE/mcw-launcher/src/core/minecraft/argument_builder.py)<br>- [`src/core/minecraft/classpath_builder.py`](file:///d:/WORKBASE/mcw-launcher/src/core/minecraft/classpath_builder.py)<br>- [`src/core/modloader/`](file:///d:/WORKBASE/mcw-launcher/src/core/modloader) | - Parsing `version_manifest_v2.json`, rules OS/arch/features, giải nén natives, xây dựng classpath & JVM/Game arguments (kể cả Quick Play, Windows command-line length limit `@argfile`).<br>- Cách cài đặt & hợp nhất profile cho **Fabric, Quilt, Forge (1.12.2 / 1.16.5 / 1.17+), NeoForge** và **OptiFine**. |
 | **`mcw-mods`** | - [`src/core/mod/mod_manager.py`](file:///d:/WORKBASE/mcw-launcher/src/core/mod/mod_manager.py)<br>- [`src/core/mod/mod_capability_index.py`](file:///d:/WORKBASE/mcw-launcher/src/core/mod/mod_capability_index.py)<br>- [`src/core/mod/modpack_dependency_resolver.py`](file:///d:/WORKBASE/mcw-launcher/src/core/mod/modpack_dependency_resolver.py) | - Đọc `fabric.mod.json`, `quilt.mod.json`, `META-INF/mods.toml`, `META-INF/neoforge.mods.toml`, `mcmod.info` và Jar-in-Jar (`META-INF/jars/*.jar`, `META-INF/jarjar/*.jar`).<br>- Cách xếp hạng & kiểm tra tương thích loader (ví dụ Fabric-on-Quilt). |
 | **`mcw-providers`** | - [`src/core/modrinth/`](file:///d:/WORKBASE/mcw-launcher/src/core/modrinth)<br>- [`src/core/curseforge/curseforge_client.py`](file:///d:/WORKBASE/mcw-launcher/src/core/curseforge/curseforge_client.py)<br>- [`src/core/ftb/ftb_client.py`](file:///d:/WORKBASE/mcw-launcher/src/core/ftb/ftb_client.py)<br>- [`src/core/atlauncher/atlauncher_client.py`](file:///d:/WORKBASE/mcw-launcher/src/core/atlauncher/atlauncher_client.py) | - Endpoints, query params, sort field, loader mapping, phân trang, tải batch 50 file, xử lý file bị tắt third-party distribution (manual download fallback) và lọc `gameVersion` cho mod >50 file trên CurseForge API v1. |
-| **`mcw-updater`** | - [`src/core/update/update_manager.py`](file:///d:/WORKBASE/mcw-launcher/src/core/update/update_manager.py)<br>- [`src/core/update/cloudflare_release_client.py`](file:///d:/WORKBASE/mcw-launcher/src/core/update/cloudflare_release_client.py)<br>- [`src/core/update/github_release_client.py`](file:///d:/WORKBASE/mcw-launcher/src/core/update/github_release_client.py) | - Quy tắc kiểm tra phiên bản (`LauncherVersion`), Cloudflare CDN (`mcw-download.pages.dev`) + GitHub Releases failover trên mọi kênh (`stable` và `beta`). |
+| **`mcw-updater`** | - [`src/core/update/update_manager.py`](file:///d:/WORKBASE/mcw-launcher/src/core/update/update_manager.py)<br>- [`src/core/update/github_release_client.py`](file:///d:/WORKBASE/mcw-launcher/src/core/update/github_release_client.py) | - Quy tắc kiểm tra phiên bản (`LauncherVersion`) dành riêng cho repo Rust Edition (đã gỡ bỏ hoàn toàn nhánh Cloudflare/Python, đang tắt mặc định `UPDATES_ENABLED = false`). |
 
 ---
 
@@ -100,7 +100,7 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 | **`v0.3.0-alpha.1`** | Dựng **GUI thế hệ mới (`apps/desktop`)** bản đầu tiên gắn trực tiếp lên Core Rust (Danh sách Instance, Tạo Instance, Tài khoản, Cài đặt Instance, Nút Play + Progress stream mượt, Tab Logs). | Người dùng sử dụng hoàn toàn bằng giao diện đồ họa, không cần mở CLI. |
 | **`v0.4.0-alpha.1`** | Thêm `mcw-mods` (`rayon` + `zip`) và `mcw-providers` (**Modrinth v2** + **CurseForge API v1** + SQLite cache), trình duyệt Mod/Modpack & Resource/Shader Pack, hộp thoại tải thủ công. | Cài được mod lẻ & modpack lớn (>300 mod) từ Modrinth và CurseForge nhanh, mượt, không khựng UI. |
 | **`v0.5.0-beta.1`** | Hỗ trợ đầy đủ **Forge (1.12.2 / 1.16.5 / 1.17+), NeoForge, OptiFine**, **FTB & ATLauncher**, **Backup/Restore**, **Repair**, và **MCW LAN Agent**. | Đạt đầy đủ 100% tính năng của nhánh Python `1.8.7`. |
-| **`v0.6.0-rc.1` → `2.0`** | **Migration tự động từ `1.8.x`**, **Auto-Updater** (Cloudflare CDN + GitHub failover + chữ ký số), hoàn thiện đa ngôn ngữ EN/VI, CI/CD đóng gói Windows & Linux. | Sẵn sàng phát hành chính thức **MCW Launcher 2.0 (Rust Edition)**. |
+| **`v0.6.0-rc.1` → `2.0`** | **Migration tự động từ `1.8.x`**, hoàn thiện đa ngôn ngữ EN/VI, CI/CD đóng gói Windows & Linux, tách biệt kênh phát hành riêng của Rust Edition. | Sẵn sàng phát hành chính thức **MCW Launcher 2.0 (Rust Edition)**. |
 
 ---
 
@@ -127,14 +127,14 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 - [x] **JVM GC Presets** (`src/core/java/jvm_presets.py` → `crates/mcw-runtime/src/jvm_presets.rs`): Bộ preset cờ GC (`default`, `aikar`, `zgc`, `shenandoah`, `custom`), tự phát hiện preset (`detect_preset`) và đồng bộ 2 chiều với ô JVM arguments.
 - [x] **UI chỉnh sửa JVM Arguments & Game Arguments tùy chỉnh**: Đã thêm vào tab *Instance Settings* trong `apps/desktop/src/app.rs`.
 - [x] **Windows Long Command-Line Compactor** (`src/core/java/java_command_compactor.py` → `crates/mcw-runtime/src/compactor.rs`): Nén classpath dài (`META-INF/MANIFEST.MF` vào `.mcw/launch/classpath-<hash>.jar`) để tránh lỗi giới hạn 32 KB `WinError 206` trên Windows với các modpack rất lớn (>300–500 mod).
-- [ ] **Ưu tiên GPU rời (Dedicated GPU Preference)** (`src/core/hardware/gpu_preference_manager.py`): Dò GPU và áp dụng cấu hình `launch.prefer_dedicated_gpu` trên Windows/Linux.
-- [ ] **Thu nhỏ Launcher khi vào game & tự focus cửa sổ game** (`src/core/runtime/game_window_activator.py`, `launch.minimize_on_launch`).
-- [ ] **Giới hạn băng thông tải, Download Journal/Recovery & Connectivity Monitor** (`download_bandwidth_limiter.py`, `download_journal.py`, `download_recovery.py`, `connectivity_monitor.py`): Bản Rust đã có `TaskControl` (Pause/Resume/Cancel) và chỉnh `download_concurrency`, nhưng chưa có giới hạn tốc độ (`download_limit_mbps`), chưa có journal khôi phục khi tắt app đột ngột và chưa có bộ theo dõi trạng thái mạng.
+- [x] **Ưu tiên GPU rời (Dedicated GPU Preference)** (`gpu_preference_manager.py` → `GpuPreferenceManager` trong `crates/mcw-runtime/src/gpu.rs` + `prefer_dedicated_gpu` trên Windows Registry / Linux env).
+- [x] **Thu nhỏ Launcher khi vào game & tự focus cửa sổ game** (`game_window_activator.py` → `GameWindowActivator` trong `crates/mcw-runtime/src/window_activator.rs` + `minimize_on_launch` trong *Launcher Settings → General*).
+- [x] **Giới hạn băng thông tải (`download_limit_mbps`)** (`download_bandwidth_limiter.py` → `crates/mcw-net/src/bandwidth.rs` + cài đặt trong *Launcher Settings → Downloads*; còn `DownloadJournal` khôi phục download giữa chừng là tùy chọn nâng cao).
 - [ ] **Java Diagnostics & Recovery Diagnostics** (`java_diagnostics_manager.py`, `java_recovery_diagnostics.py`): Dò chi tiết vendor/kiến trúc/bitness, chuẩn đoán lỗi Java và quản lý gỡ/dọn runtime đã cài.
-- [ ] **Startup Recovery** (`startup_recovery_manager.py`, `instance_operation_journal.py`): Tự dọn lock treo, khôi phục các tác vụ/journal bị ngắt giữa chừng khi mở lại launcher.
+- [x] **Startup Recovery** (`startup_recovery_manager.py` → `StartupRecoveryService::reconcile` trong `crates/mcw-storage/src/health.rs` tự dọn lock treo `.lock` và file tạm mồ côi khi mở lại launcher).
 
 **Khác biệt logic / chưa đồng bộ hoàn toàn:**
-- [ ] **UI tải Java quản lý**: `JavaMajorPolicy` hỗ trợ `[8, 17, 21, 25]`, nhưng Launcher Settings → Runtime hiện mới có nút tải Temurin `8 / 17 / 21` (thiếu `25`), còn Instance Settings mới có nút `17 / 21` (thiếu `8 / 25`).
+- [x] **UI tải Java quản lý**: Đã đồng bộ đủ `[8, 17, 21, 25]` ở cả *Launcher Settings → Runtime* lẫn *Instance Settings*.
 
 ---
 
@@ -155,7 +155,7 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 - [x] **Nhân bản (Clone / Duplicate) Instance** (`InstanceManager.clone()` → `InstanceStore::clone_instance` + modal trong *Overview*).
 - [x] **UI Quản lý Favorites, Groups, Tags & Tìm kiếm/Lọc Sidebar** (`InstanceStore::set_library_metadata` + ngôi sao `★`, nhãn Group/Tag và ô tìm kiếm Sidebar).
 - [x] **Import định dạng `.mcwpack` & `-MCW-Profile.zip`** (`ModpackInstaller::install_mcwpack` + hỗ trợ `-MCW-Profile.zip` không cần khóa CurseForge + trích xuất ảnh icon nhúng `.mcw/instance-icon.*`).
-- [ ] **Instance Health Manager, Verification Cache & Repair Center** (`instance_health_manager.py`, `verification_cache.py`, `repair_center_dialog.py`): Bản Rust mới có nút "Repair Files" đơn giản, chưa có cache xác thực `(path, mtime, size)` và bảng trạng thái sức khỏe instance.
+- [x] **Instance Health Manager, Verification Cache & Repair Center** (`InstanceHealthManager` trong `crates/mcw-storage/src/health.rs` + `VerificationCache` trong `crates/mcw-net` + cửa sổ *Repair Center* trong `stage4_dialogs.rs`).
 
 **Khác biệt logic / chưa đồng bộ hoàn toàn:**
 - [ ] **Instance Icon nâng cao** (`instance_artwork_manager.py`): Bản Rust đã tự tải icon từ modpack (CurseForge/Modrinth/FTB/ATLauncher), hiển thị ở sidebar + header và có nút Đổi/Đặt lại icon; còn thiếu lưu trường `icon_origin`, tự trích xuất ảnh nhúng (`.mcw/instance-icon.*`) khi import archive cục bộ và menu chuột phải trên thẻ instance.
@@ -166,13 +166,13 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 
 **Chưa làm trong bản Rust:**
 - [x] **Hệ thống Registry & Kiểm tra/Cập nhật Mod 1 chạm + Khóa phiên bản (Version Lock)** (`ModProvenanceRegistry` & `ModUpdateManager` trong `crates/mcw-providers/src/mod_updates.rs` + UI trong tab *Mods*).
-- [ ] **Bộ phân tích tương thích & xung đột Mod** (`mod_compatibility_manager.py`, `mod_capability_index.py`, `mod_provider_alias_registry.py`, `compatible_instance_dialog.py`): Phát hiện thiếu dependency, trùng mod ID, lệch loader/MC version và gợi ý tạo/chọn instance tương thích.
+- [x] **Bộ phân tích tương thích & xung đột Mod** (`mod_compatibility_manager.py` → `ModCompatibilityAnalyzer` trong `crates/mcw-mods/src/compat.rs` kiểm tra lệch loader, trùng `mod_id`, thiếu dependency kể cả `Jar-in-Jar` và mod bị disable, hiển thị ngay ở tab *Mods* & *Repair Center*).
 - [x] **Tự động giải quyết Dependency đệ quy cho CurseForge** (`CurseForgeClient::install_mod` & `install_required_dependencies_for_file` tải đệ quy mọi mod `relationType == 3`).
 - [ ] **Chọn lọc các file tùy chọn (Optional Files) khi cài Modpack**: Cho phép tick chọn/bỏ chọn optional mods trong Modrinth / CurseForge / ATLauncher modpack ngay trên dialog cài đặt.
 - [ ] **Thư viện nội dung đã cài & Kho chống trùng lặp (Content Store Deduplication)** (`installed_content_library.py`, `content_store.py`, `shared_file_materializer.py`): Quản lý nội dung dùng chung xuyên suốt các instance và tối ưu dung lượng ổ cứng bằng hardlink/content-addressing.
 - [ ] **Chính sách xử lý lỗi nội dung khi Launch** (`managed_content_policy.py`): Cấu hình `modrinth_failure_policy` / `curseforge_failure_policy` (`block` hoặc `warn`).
-- [ ] **Quản lý CurseForge API Key ngay trong Launcher Settings** (`curseforge_config_manager.py`, `protected_value_reveal_dialog.py`): Đồng bộ mục quản lý khóa API vào cài đặt chung kèm hộp thoại ẩn/hiện khóa an toàn.
-- [ ] **Import file `.jar` / Resource Pack / Shader Pack cục bộ & Kéo thả (Drag-and-Drop)** trực tiếp vào danh sách Mod/Packs.
+- [x] **Quản lý CurseForge API Key ngay trong Launcher Settings** (`curseforge_config_manager.py` → `save_custom_curseforge_api_key` trong `crates/mcw-providers/src/curseforge.rs` + hộp nhập ẩn/hiện khóa ngay trong *Launcher Settings → Downloads*).
+- [x] **Import file `.jar` / Resource Pack / Shader Pack cục bộ & Kéo thả (Drag-and-Drop)** trực tiếp vào cửa sổ Launcher (`Import Local .jar...`, `Import Local .zip...`, OS Drag-and-Drop `.mrpack`/`.mcwpack`/`.jar`/`.zip`).
 
 **Khác biệt logic / chưa đồng bộ hoàn toàn:**
 - [ ] **FTB & ATLauncher Pack Registry**: Bản Rust đã duyệt, chọn phiên bản (Beta/Alpha), và cài trực tiếp FTB/ATLauncher, nhưng chưa có registry lưu metadata gói đã cài để hỗ trợ cập nhật/sửa chữa gói về sau (`ftb_pack_registry.py`, `atlauncher_pack_registry.py`).
@@ -185,7 +185,7 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 - [x] **World Backup, Restore & Import** (`WorldManager::backup_world`, `restore_world`, `import_world` trong `crates/mcw-minecraft/src/worlds.rs` + nút *Import World (.zip)* và *Backup (.zip)* trong tab *Worlds*).
 - [x] **Tự phát hiện Crash Report & Trình diễn giải lỗi Launch thân thiện** (`LaunchErrorPresenter` & `find_latest_crash_report` trong `crates/mcw-runtime/src/diagnostics.rs` + nút *Open Latest Crash Report* trong tab *Logs*).
 - [x] **Xuất gói chẩn đoán ẩn danh (Diagnostic Support Bundle)** (`DiagnosticsExporter::export_bundle` trong `crates/mcw-runtime/src/diagnostics.rs` + nút *Export Diagnostic Bundle (.zip)* trong tab *Logs*).
-- [ ] **Trang Global Launcher Logs** (`logs_page.py`): Xem log hoạt động chung của toàn bộ launcher (hiện bản Rust mới có tab `Logs` theo từng instance).
+- [x] **Trang Global Launcher Logs** (`logs_page.py` → cửa sổ *Global Launcher Logs* tách rời ở Top Bar hỗ trợ lọc, Copy và xuất file `.log` qua `SaveFileDialog`).
 
 ---
 
@@ -205,19 +205,19 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 
 **Chưa làm trong bản Rust:**
 - [x] **Hiển thị Avatar / Skin 2D cho tài khoản** (`account_skin_manager.py`, `minecraft_skin.py` → `AccountSkinManager` trong `crates/mcw-auth/src/skin.rs` + `apps/desktop/src/skin_render.rs` với đầu Steve/Alex nhúng sẵn, lọc mũ `(40,8,8,8)` + Nearest-Neighbor hiển thị ở Top Bar & cửa sổ Accounts).
-- [ ] **Kiểm tra toàn vẹn dữ liệu tài khoản (Account Integrity Manifest)** (`account_integrity.py`, `account_security_manager.py`): Ký HMAC xác thực file lưu tài khoản bên cạnh lớp mã hóa DPAPI cho refresh token.
+- [x] **Kiểm tra toàn vẹn dữ liệu tài khoản (Account Integrity Manifest)** (`account_integrity.py` → `AccountIntegrity` HMAC-SHA256 + khóa DPAPI trong `crates/mcw-auth/src/integrity.rs` ký xác thực `accounts.json` / `accounts.sig`).
 
 ---
 
 ### 7.8. Launcher Settings, Theme, i18n, Auto-Updater & Tích hợp hệ thống
 
 **Chưa làm trong bản Rust:**
-- [x] **Giao diện Auto-Updater & Tự động cài bản cập nhật theo Build** (`update_manager.py`, `windows_update_installer.py`, `linux_update_installer.py`, `update_dialog.py` → `UpdateChecker` & `UpdateInstaller` trong `crates/mcw-updater/` + gắn vào Desktop GUI, tab *Updates*, tự kiểm tra khi mở app, chọn kênh `stable`/`beta`, nguồn `Auto`/`Cloudflare`/`GitHub`, cửa sổ cài đặt cập nhật tách rời và cơ chế tự tải/thay thế binary theo tag SemVer chuẩn, không dùng hotfix riêng).
+- [x] **Giao diện Auto-Updater (Đã tắt theo yêu cầu & Gỡ sạch nhánh Python)** (`UpdateChecker` & `UpdateInstaller` trong `crates/mcw-updater/` chỉ dùng nguồn Rust Edition GitHub Releases, đã xóa hoàn toàn kênh Cloudflare/Python và đặt `UPDATES_ENABLED = false` cho đến khi phát hành kênh cập nhật riêng của Rust Edition).
 - [x] **Discord Rich Presence** (`discord_rpc.py` → `DiscordRpcService` native Windows Named Pipe / Unix Socket trong `crates/mcw-runtime/src/discord_rpc.rs`, tự hiển thị trạng thái duyệt Launcher hoặc đang chơi Instance nào, kèm cấu hình bật/tắt & Client ID trong *Launcher Settings → General*).
 - [x] **Trình hướng dẫn lần đầu (First-Run Setup Wizard) & Gợi ý phần cứng** (`first_run_recommendation_service.py`, `first_run_setup_dialog.py` → `FirstRunRecommendationService` trong `crates/mcw-runtime/src/first_run.rs` + cửa sổ *First-Run Setup Wizard* tự đo RAM/Java lần chạy đầu và cho phép chạy lại từ *Launcher Settings → General*).
 - [x] **Hệ thống Theme mở rộng & Tùy biến màu sắc / chuyển động** (`src/core/theme/*` → `ThemeCatalog`, `apply_custom_accent`, `MotionMode` trong `apps/desktop/src/theme.rs` + `themes/mcw-default/theme.json`, nạp `themes/*.json` & `themes/*/theme.json`, đổi màu Accent `#RRGGBB` có tính độ tương phản chữ, reload nóng và chế độ giảm chuyển động `Full`/`Reduced`/`Off`).
 - [x] **Tab Storage trong Launcher Settings & Dọn dẹp Cache cũ** (`storage_controller.py`, `legacy_storage_cleanup` → `StorageCleanupService` trong `crates/mcw-storage/src/cleanup.rs` + tab *Storage* đo dung lượng theo thư mục, cấu hình `unused_version_retention_days`, dọn API/temp cache an toàn và xóa cache version không còn instance tham chiếu).
-- [ ] **Trang About, Màn hình khởi động (Startup Splash) & Các tiện ích GUI phụ**: Trang About, lưu kích thước/vị trí cửa sổ (`remember_window_size`), chọn trang khởi đầu (`start_page`), cảnh báo chưa lưu thay đổi (`unsaved_changes_dialog.py`), và hệ thống Toast Notification thay cho 1 banner đơn phía trên.
+- [x] **Trang About & Lưu kích thước cửa sổ (`remember_window_size`)**: Cửa sổ OS độc lập *About* trên Top Bar và tự động khôi phục kích thước cửa sổ (`window_width`, `window_height`). *(Phần Startup Splash / Unsaved-changes cảnh báo thêm là tùy chọn sau này.)*
 
 **Khác biệt logic / cần rà soát:**
 - [ ] **Phủ 100% i18n cho mọi chuỗi UI trong `apps/desktop/src/app.rs`**: Cơ chế `LanguageManager` đã đồng bộ với Python (`en-US.json` & `vi-VN.json`), nhưng nhiều nhãn phụ viết nhanh trong *Instance Settings*, *Overview*, tiêu đề modal vẫn đang là chuỗi tiếng Anh cứng chưa bọc qua `self.t(...)`.

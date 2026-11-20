@@ -86,7 +86,7 @@ enum Commands {
         #[command(subcommand)]
         action: ModrinthCommands,
     },
-    /// Check for launcher updates (Cloudflare CDN + GitHub Releases failover)
+    /// Check for MCW Launcher: Rust Edition updates (currently disabled)
     Update {
         /// Update channel: stable or beta
         #[arg(long, default_value = "stable")]
@@ -625,6 +625,10 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Update { channel } => {
+            if !mcw_updater::UPDATES_ENABLED {
+                println!("Launcher updates are currently disabled for MCW Launcher: Rust Edition.");
+                return Ok(());
+            }
             let checker = UpdateChecker::new()?;
             let ch = UpdateChannel::parse(&channel);
             let res = checker.check(mcw_models::APP_VERSION, ch).await?;

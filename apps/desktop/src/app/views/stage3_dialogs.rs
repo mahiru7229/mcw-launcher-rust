@@ -385,95 +385,89 @@ impl McwApp {
                 );
                 ui.add_space(6.0);
 
+                if !mcw_updater::UPDATES_ENABLED {
+                    Frame::new()
+                        .fill(p.elevated)
+                        .stroke(Stroke::new(1.0_f32, p.warning))
+                        .corner_radius(CornerRadius::same(3))
+                        .inner_margin(egui::Margin::same(8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(
+                                RichText::new("Launcher updates are currently disabled.")
+                                    .strong()
+                                    .color(p.warning),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "The legacy MCW Launcher Python update feed has been completely removed. MCW Launcher: Rust Edition updates will be re-enabled once dedicated Rust Edition releases are published.",
+                                )
+                                .size(11.5)
+                                .color(p.text_muted),
+                            );
+                        });
+                    ui.add_space(6.0);
+                }
+
                 let auto_lbl = self.t("launcher_settings.update.auto_check").to_string();
                 if ui
-                    .checkbox(&mut self.prefs.auto_check_updates, auto_lbl)
+                    .add_enabled(
+                        mcw_updater::UPDATES_ENABLED,
+                        egui::Checkbox::new(&mut self.prefs.auto_check_updates, auto_lbl),
+                    )
                     .changed()
                 {
                     *prefs_dirty = true;
                 }
 
                 ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(self.t("launcher_settings.update.channel"));
-                    let mut chan = UpdateChannel::parse(&self.prefs.update_channel);
-                    let chan_lbl = match chan {
-                        UpdateChannel::Stable => self.t("update.channel.stable").to_string(),
-                        UpdateChannel::Beta => self.t("update.channel.beta").to_string(),
-                    };
-                    egui::ComboBox::from_id_salt("launcher_settings_update_channel")
-                        .selected_text(&chan_lbl)
-                        .width(auto_combo_width(ui, &chan_lbl, 120.0, 200.0))
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut chan,
-                                UpdateChannel::Stable,
-                                self.t("update.channel.stable"),
-                            );
-                            ui.selectable_value(
-                                &mut chan,
-                                UpdateChannel::Beta,
-                                self.t("update.channel.beta"),
-                            );
-                        });
-                    if chan.as_str() != self.prefs.update_channel {
-                        self.prefs.update_channel = chan.as_str().to_string();
-                        *prefs_dirty = true;
-                    }
-
-                    ui.separator();
-                    ui.label("Update source:");
-                    let mut src = UpdateSourcePreference::parse(&self.prefs.update_source);
-                    let src_label = |s: UpdateSourcePreference| match s {
-                        UpdateSourcePreference::Auto => "Auto (Cloudflare -> GitHub)",
-                        UpdateSourcePreference::Cloudflare => "Cloudflare CDN",
-                        UpdateSourcePreference::Github => "GitHub Releases",
-                    };
-                    let cur_src_lbl = src_label(src);
-                    egui::ComboBox::from_id_salt("launcher_settings_update_source")
-                        .selected_text(cur_src_lbl)
-                        .width(auto_combo_width(ui, cur_src_lbl, 160.0, 250.0))
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for opt in [
-                                UpdateSourcePreference::Auto,
-                                UpdateSourcePreference::Cloudflare,
-                                UpdateSourcePreference::Github,
-                            ] {
-                                ui.selectable_value(&mut src, opt, src_label(opt));
-                            }
-                        });
-                    if src.as_str() != self.prefs.update_source {
-                        self.prefs.update_source = src.as_str().to_string();
-                        *prefs_dirty = true;
-                    }
+                ui.add_enabled_ui(mcw_updater::UPDATES_ENABLED, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(self.t("launcher_settings.update.channel"));
+                        let mut chan = UpdateChannel::parse(&self.prefs.update_channel);
+                        let chan_lbl = match chan {
+                            UpdateChannel::Stable => self.t("update.channel.stable").to_string(),
+                            UpdateChannel::Beta => self.t("update.channel.beta").to_string(),
+                        };
+                        egui::ComboBox::from_id_salt("launcher_settings_update_channel")
+                            .selected_text(&chan_lbl)
+                            .width(auto_combo_width(ui, &chan_lbl, 120.0, 200.0))
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut chan,
+                                    UpdateChannel::Stable,
+                                    self.t("update.channel.stable"),
+                                );
+                                ui.selectable_value(
+                                    &mut chan,
+                                    UpdateChannel::Beta,
+                                    self.t("update.channel.beta"),
+                                );
+                            });
+                        if chan.as_str() != self.prefs.update_channel {
+                            self.prefs.update_channel = chan.as_str().to_string();
+                            *prefs_dirty = true;
+                        }
+                    });
                 });
-
-                if self.prefs.update_channel == "beta" {
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new(self.t("launcher_settings.update.tester_warning"))
-                            .size(11.0)
-                            .color(p.warning),
-                    );
-                }
 
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
-                            !self.update_checking,
+                            mcw_updater::UPDATES_ENABLED && !self.update_checking,
                             Button::new(self.t("launcher_settings.update.check")),
                         )
                         .clicked()
                     {
                         self.start_update_check(true, ctx);
                     }
-                    if self
-                        .last_update_check
-                        .as_ref()
-                        .is_some_and(|r| r.update_available && r.latest.is_some())
+                    if mcw_updater::UPDATES_ENABLED
+                        && self
+                            .last_update_check
+                            .as_ref()
+                            .is_some_and(|r| r.update_available && r.latest.is_some())
                     {
                         let open_btn = Button::new(
                             RichText::new("View & Install Update...")
@@ -843,9 +837,21 @@ impl McwApp {
                                     });
 
                                     ui.add_space(6.0);
-                                    let auto_upd_lbl =
-                                        self.t("launcher_settings.update.auto_check").to_string();
-                                    ui.checkbox(&mut self.first_run_auto_updates, auto_upd_lbl);
+                                    let auto_upd_lbl = if mcw_updater::UPDATES_ENABLED {
+                                        self.t("launcher_settings.update.auto_check").to_string()
+                                    } else {
+                                        format!(
+                                            "{} (currently disabled)",
+                                            self.t("launcher_settings.update.auto_check")
+                                        )
+                                    };
+                                    ui.add_enabled(
+                                        mcw_updater::UPDATES_ENABLED,
+                                        egui::Checkbox::new(
+                                            &mut self.first_run_auto_updates,
+                                            auto_upd_lbl,
+                                        ),
+                                    );
                                     ui.checkbox(
                                         &mut self.first_run_discord_rpc,
                                         "Enable Discord Rich Presence",
