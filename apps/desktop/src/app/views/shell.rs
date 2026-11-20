@@ -213,6 +213,8 @@ impl McwApp {
                                     self.render_instance_icon(ui, inst, 28.0);
                                     ui.add_space(4.0);
                                     ui.vertical(|ui| {
+                                        ui.set_width(ui.available_width());
+                                        // Row 1: Star + Instance Name (left) + Status (right)
                                         ui.horizontal(|ui| {
                                             if star_icon_button(ui, p, inst.favorite)
                                                 .on_hover_text("Toggle favorite")
@@ -224,44 +226,58 @@ impl McwApp {
                                                     !inst.favorite,
                                                 ));
                                             }
-                                            ui.label(
-                                                RichText::new(&inst.name)
-                                                    .strong()
-                                                    .size(13.5)
-                                                    .color(p.text),
-                                            );
-                                        });
-                                        ui.horizontal(|ui| {
-                                            let meta_txt = if inst.group.is_empty() {
-                                                format!(
-                                                    "{} · {}",
-                                                    inst.version_id, inst.mod_loader.name
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(&inst.name)
+                                                        .strong()
+                                                        .size(13.5)
+                                                        .color(p.text),
                                                 )
-                                            } else {
-                                                format!(
-                                                    "{} · {} · [{}]",
-                                                    inst.version_id,
-                                                    inst.mod_loader.name,
-                                                    inst.group
-                                                )
-                                            };
-                                            ui.label(
-                                                RichText::new(meta_txt)
-                                                    .monospace()
-                                                    .size(11.0)
-                                                    .color(p.text_muted),
+                                                .truncate(),
                                             );
                                             ui.with_layout(
                                                 Layout::right_to_left(Align::Center),
                                                 |ui| {
                                                     ui.label(
                                                         RichText::new(status_text)
-                                                            .size(11.0)
+                                                            .size(10.5)
                                                             .color(status_color),
                                                     );
                                                 },
                                             );
                                         });
+                                        // Row 2: Minecraft version · Loader
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} · {}",
+                                                inst.version_id, inst.mod_loader.name
+                                            ))
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(p.text_muted),
+                                        );
+                                        // Row 3: Responsive auto-sized Group & Tag pill badges (wraps automatically)
+                                        let has_group = !inst.group.trim().is_empty();
+                                        let has_tags =
+                                            inst.tags.iter().any(|t| !t.trim().is_empty());
+                                        if has_group || has_tags {
+                                            ui.add_space(2.0);
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.spacing_mut().item_spacing = Vec2::new(4.0, 3.0);
+                                                if has_group {
+                                                    render_badge_pill(
+                                                        ui,
+                                                        &inst.group,
+                                                        true,
+                                                        true,
+                                                        p,
+                                                    );
+                                                }
+                                                for tag in &inst.tags {
+                                                    render_badge_pill(ui, tag, false, true, p);
+                                                }
+                                            });
+                                        }
                                     });
                                 });
                             });

@@ -45,6 +45,61 @@ pub(crate) fn centered_viewport_builder(
         .with_position(egui::pos2(x, y))
 }
 
+/// Renders a responsive pill badge for Group or Tag that automatically sizes to the exact width of its text.
+pub(crate) fn render_badge_pill(
+    ui: &mut egui::Ui,
+    text: &str,
+    is_group: bool,
+    small: bool,
+    p: ThemePalette,
+) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let font_size = if small { 10.0 } else { 11.0 };
+    let pad_x = if small { 5.5 } else { 7.5 };
+    let pad_y = if small { 1.5 } else { 2.5 };
+    let text_col = if is_group { p.accent } else { p.text };
+    let bg_col = if is_group {
+        p.accent.gamma_multiply(0.15)
+    } else {
+        p.elevated
+    };
+    let border_col = if is_group { p.accent } else { p.border };
+
+    let galley = ui.painter().layout_no_wrap(
+        trimmed.to_string(),
+        egui::FontId::monospace(font_size),
+        text_col,
+    );
+    let desired = Vec2::new(galley.size().x + pad_x * 2.0, galley.size().y + pad_y * 2.0);
+    let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            CornerRadius::same(3),
+            bg_col,
+            Stroke::new(1.0_f32, border_col),
+            egui::StrokeKind::Inside,
+        );
+        let text_pos = egui::pos2(rect.min.x + pad_x, rect.center().y - galley.size().y * 0.5);
+        painter.galley(text_pos, galley, text_col);
+    }
+}
+
+/// Computes a responsive width for an `egui::ComboBox` that automatically expands/shrinks
+/// to fit `selected_text` (plus the dropdown arrow), clamped between `min_w` and `max_w`.
+pub(crate) fn auto_combo_width(ui: &egui::Ui, selected_text: &str, min_w: f32, max_w: f32) -> f32 {
+    let galley = ui.painter().layout_no_wrap(
+        selected_text.to_string(),
+        egui::FontId::proportional(13.0),
+        egui::Color32::WHITE,
+    );
+    (galley.size().x + 34.0).clamp(min_w, max_w.max(min_w))
+}
+
 pub(crate) fn pick_file_dialog(title: &str, filter: &str) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {

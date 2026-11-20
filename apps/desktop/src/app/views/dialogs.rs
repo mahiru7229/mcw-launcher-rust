@@ -573,7 +573,7 @@ impl McwApp {
                         ui.separator();
                         ui.add_space(6.0);
 
-                        // Row 1: Release channels (Include Beta / Include Alpha) + MC Version & Loader dropdowns
+                        // Row 1: Release channels (Include Beta / Include Alpha) + auto-sized MC Version & Loader dropdowns
                         ui.horizontal_wrapped(|ui| {
                             if ui
                                 .checkbox(&mut self.version_picker_include_beta, &beta_lbl)
@@ -589,9 +589,16 @@ impl McwApp {
                             }
                             ui.separator();
                             ui.label("MC Version:");
+                            let mc_w = auto_combo_width(
+                                ui,
+                                &self.version_picker_mc_filter,
+                                68.0,
+                                150.0,
+                            );
                             egui::ComboBox::from_id_salt("mod_vp_mc_filter_combo")
                                 .selected_text(&self.version_picker_mc_filter)
-                                .width(110.0)
+                                .width(mc_w)
+                                .truncate()
                                 .show_ui(ui, |ui| {
                                     for gv in &all_mc_versions {
                                         if ui
@@ -607,9 +614,16 @@ impl McwApp {
                                     }
                                 });
                             ui.label("Loader:");
+                            let loader_w = auto_combo_width(
+                                ui,
+                                &self.version_picker_loader_filter,
+                                68.0,
+                                130.0,
+                            );
                             egui::ComboBox::from_id_salt("mod_vp_loader_filter_combo")
                                 .selected_text(&self.version_picker_loader_filter)
-                                .width(100.0)
+                                .width(loader_w)
+                                .truncate()
                                 .show_ui(ui, |ui| {
                                     for l in ["all", "fabric", "forge", "neoforge", "quilt"] {
                                         if ui
@@ -648,7 +662,7 @@ impl McwApp {
                                 .color(p.warning),
                             );
                         } else {
-                            // Row 2: Selected Version Dropdown (same pattern as Modpack Install Dialog)
+                            // Row 2: Responsive Auto-Sized Selected Version Dropdown
                             let selected_item = filtered_items
                                 .iter()
                                 .find(|v| v.id == self.version_picker_selected_id)
@@ -691,9 +705,13 @@ impl McwApp {
 
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new("Selected Version:").strong());
+                                let max_combo_w = (ui.available_width() - 4.0).max(160.0);
+                                let combo_w =
+                                    auto_combo_width(ui, &selected_label, 180.0, max_combo_w);
                                 egui::ComboBox::from_id_salt("mod_version_picker_combo")
-                                    .selected_text(selected_label)
-                                    .width((ui.available_width() - 8.0).max(260.0))
+                                    .selected_text(&selected_label)
+                                    .width(combo_w)
+                                    .truncate()
                                     .show_ui(ui, |ui| {
                                         for item in &filtered_items {
                                             let badge = match item.channel {
@@ -773,6 +791,7 @@ impl McwApp {
                                 .id_salt("version_picker_scroll")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
+                                    let inner_card_w = (ui.available_width() - 24.0).max(200.0);
                                     for item in &filtered_items {
                                         let is_selected =
                                             item.id == self.version_picker_selected_id;
@@ -795,10 +814,13 @@ impl McwApp {
                                             .corner_radius(CornerRadius::same(3))
                                             .inner_margin(egui::Margin::symmetric(8, 6))
                                             .show(ui, |ui| {
-                                                ui.set_width(ui.available_width());
+                                                ui.set_width(inner_card_w);
                                                 ui.horizontal(|ui| {
+                                                    let text_max_w =
+                                                        (inner_card_w - 92.0).max(120.0);
                                                     ui.vertical(|ui| {
-                                                        ui.horizontal(|ui| {
+                                                        ui.set_max_width(text_max_w);
+                                                        ui.horizontal_wrapped(|ui| {
                                                             ui.label(
                                                                 RichText::new(badge)
                                                                     .monospace()
@@ -2551,9 +2573,12 @@ impl McwApp {
                                     .find(|v| v.id == self.modpack_dialog.selected_version_id)
                                     .map(|v| v.label.as_str())
                                     .unwrap_or("Select version...");
+                                let max_w = (ui.available_width() - 8.0).max(200.0);
+                                let combo_w = auto_combo_width(ui, selected_label, 220.0, max_w);
                                 egui::ComboBox::from_id_salt("modpack_install_version_combo")
                                     .selected_text(selected_label)
-                                    .width((ui.available_width() - 8.0).max(240.0))
+                                    .width(combo_w)
+                                    .truncate()
                                     .show_ui(ui, |ui| {
                                         for opt in &filtered_options {
                                             let badge = match opt.channel {
@@ -2901,6 +2926,7 @@ impl McwApp {
                                 .id_salt("vp_mr_packs_scroll")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
+                                    let inner_card_w = (ui.available_width() - 24.0).max(200.0);
                                     if self.mr_pack_results.is_empty() {
                                         ui.label(
                                             RichText::new(
@@ -2918,7 +2944,7 @@ impl McwApp {
                                                 .corner_radius(CornerRadius::same(3))
                                                 .inner_margin(egui::Margin::same(8))
                                                 .show(ui, |ui| {
-                                                    ui.set_width(ui.available_width());
+                                                    ui.set_width(inner_card_w);
                                                     ui.horizontal(|ui| {
                                                         self.render_thumbnail(
                                                             ui,
@@ -2926,8 +2952,11 @@ impl McwApp {
                                                             40.0,
                                                         );
                                                         ui.add_space(6.0);
+                                                        let text_max_w =
+                                                            (inner_card_w - 150.0).max(120.0);
                                                         ui.vertical(|ui| {
-                                                            ui.horizontal(|ui| {
+                                                            ui.set_max_width(text_max_w);
+                                                            ui.horizontal_wrapped(|ui| {
                                                                 ui.label(
                                                                     RichText::new(&hit.title)
                                                                         .strong(),
@@ -3024,6 +3053,7 @@ impl McwApp {
                                 .id_salt("vp_cf_packs_scroll")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
+                                    let inner_card_w = (ui.available_width() - 24.0).max(200.0);
                                     if self.cf_pack_results.is_empty() {
                                         ui.label(
                                             RichText::new(
@@ -3039,7 +3069,7 @@ impl McwApp {
                                                 .corner_radius(CornerRadius::same(3))
                                                 .inner_margin(egui::Margin::same(8))
                                                 .show(ui, |ui| {
-                                                    ui.set_width(ui.available_width());
+                                                    ui.set_width(inner_card_w);
                                                     ui.horizontal(|ui| {
                                                         self.render_thumbnail(
                                                             ui,
@@ -3047,16 +3077,34 @@ impl McwApp {
                                                             40.0,
                                                         );
                                                         ui.add_space(6.0);
-                                                        ui.label(RichText::new(&pack.name).strong());
-                                                        ui.label(
-                                                            RichText::new(format!(
-                                                                "#{} · {} downloads",
-                                                                pack.id, pack.download_count
-                                                            ))
-                                                            .monospace()
-                                                            .size(11.0)
-                                                            .color(p.text_muted),
-                                                        );
+                                                        let text_max_w =
+                                                            (inner_card_w - 160.0).max(120.0);
+                                                        ui.vertical(|ui| {
+                                                            ui.set_max_width(text_max_w);
+                                                            ui.horizontal_wrapped(|ui| {
+                                                                ui.label(
+                                                                    RichText::new(&pack.name)
+                                                                        .strong(),
+                                                                );
+                                                                ui.label(
+                                                                    RichText::new(format!(
+                                                                        "#{} · {} downloads",
+                                                                        pack.id,
+                                                                        pack.download_count
+                                                                    ))
+                                                                    .monospace()
+                                                                    .size(11.0)
+                                                                    .color(p.text_muted),
+                                                                );
+                                                            });
+                                                            if !pack.summary.is_empty() {
+                                                                ui.label(
+                                                                    RichText::new(&pack.summary)
+                                                                        .size(11.5)
+                                                                        .color(p.text_muted),
+                                                                );
+                                                            }
+                                                        });
                                                         ui.with_layout(
                                                             Layout::right_to_left(Align::Center),
                                                             |ui| {
@@ -3104,13 +3152,6 @@ impl McwApp {
                                                             },
                                                         );
                                                     });
-                                                    if !pack.summary.is_empty() {
-                                                        ui.label(
-                                                            RichText::new(&pack.summary)
-                                                                .size(11.5)
-                                                                .color(p.text_muted),
-                                                        );
-                                                    }
                                                 });
                                             ui.add_space(4.0);
                                         }
@@ -3366,9 +3407,11 @@ impl McwApp {
                     };
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("Provider:").strong());
+                        let prov_w = auto_combo_width(ui, provider_lbl, 95.0, 140.0);
                         egui::ComboBox::from_id_salt("mod_browser_provider_combo")
                             .selected_text(provider_lbl)
-                            .width(130.0)
+                            .width(prov_w)
+                            .truncate()
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.mod_provider_tab,
@@ -3382,9 +3425,12 @@ impl McwApp {
                                 );
                             });
                         ui.label("Loader:");
+                        let loader_w =
+                            auto_combo_width(ui, &self.mod_loader_filter, 72.0, 120.0);
                         egui::ComboBox::from_id_salt("mod_browser_loader_filter")
                             .selected_text(&self.mod_loader_filter)
-                            .width(96.0)
+                            .width(loader_w)
+                            .truncate()
                             .show_ui(ui, |ui| {
                                 for l in ["fabric", "forge", "neoforge", "quilt", "all"] {
                                     ui.selectable_value(
@@ -3402,10 +3448,11 @@ impl McwApp {
                                 "Search CurseForge mods (e.g. jei, create)..."
                             }
                         };
+                        let search_w = (ui.available_width() - 80.0).clamp(140.0, 320.0);
                         let te = ui.add(
                             TextEdit::singleline(&mut self.mod_search_query)
                                 .hint_text(hint)
-                                .desired_width(250.0),
+                                .desired_width(search_w),
                         );
                         let search_clicked = ui
                             .add_enabled(!self.mod_searching, Button::new("Search"))
@@ -3440,6 +3487,7 @@ impl McwApp {
                                 .id_salt("modrinth_results_scroll")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
+                                    let inner_card_w = (ui.available_width() - 24.0).max(200.0);
                                     if self.modrinth_results.is_empty() {
                                         ui.label(
                                             RichText::new(
@@ -3455,7 +3503,7 @@ impl McwApp {
                                                 .corner_radius(CornerRadius::same(3))
                                                 .inner_margin(egui::Margin::same(8))
                                                 .show(ui, |ui| {
-                                                    ui.set_width(ui.available_width());
+                                                    ui.set_width(inner_card_w);
                                                     ui.horizontal(|ui| {
                                                         self.render_thumbnail(
                                                             ui,
@@ -3463,8 +3511,11 @@ impl McwApp {
                                                             44.0,
                                                         );
                                                         ui.add_space(6.0);
+                                                        let text_max_w =
+                                                            (inner_card_w - 150.0).max(120.0);
                                                         ui.vertical(|ui| {
-                                                            ui.horizontal(|ui| {
+                                                            ui.set_max_width(text_max_w);
+                                                            ui.horizontal_wrapped(|ui| {
                                                                 ui.label(
                                                                     RichText::new(&hit.title)
                                                                         .strong()
@@ -3538,6 +3589,7 @@ impl McwApp {
                                 .id_salt("curseforge_results_scroll")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
+                                    let inner_card_w = (ui.available_width() - 24.0).max(200.0);
                                     if self.curseforge_results.is_empty() {
                                         ui.label(
                                             RichText::new(
@@ -3553,7 +3605,7 @@ impl McwApp {
                                                 .corner_radius(CornerRadius::same(3))
                                                 .inner_margin(egui::Margin::same(8))
                                                 .show(ui, |ui| {
-                                                    ui.set_width(ui.available_width());
+                                                    ui.set_width(inner_card_w);
                                                     ui.horizontal(|ui| {
                                                         self.render_thumbnail(
                                                             ui,
@@ -3561,8 +3613,11 @@ impl McwApp {
                                                             44.0,
                                                         );
                                                         ui.add_space(6.0);
+                                                        let text_max_w =
+                                                            (inner_card_w - 200.0).max(120.0);
                                                         ui.vertical(|ui| {
-                                                            ui.horizontal(|ui| {
+                                                            ui.set_max_width(text_max_w);
+                                                            ui.horizontal_wrapped(|ui| {
                                                                 ui.label(
                                                                     RichText::new(&cf_mod.name)
                                                                         .strong()
@@ -3682,9 +3737,11 @@ impl McwApp {
                     };
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("Type:").strong());
+                        let kind_w = auto_combo_width(ui, kind_label, 110.0, 160.0);
                         egui::ComboBox::from_id_salt("pack_browser_kind_combo")
                             .selected_text(kind_label)
-                            .width(150.0)
+                            .width(kind_w)
+                            .truncate()
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.packs_kind,
@@ -3698,9 +3755,11 @@ impl McwApp {
                                 );
                             });
                         ui.label(RichText::new("Provider:").strong());
+                        let prov_w = auto_combo_width(ui, provider_lbl, 95.0, 140.0);
                         egui::ComboBox::from_id_salt("pack_browser_provider_combo")
                             .selected_text(provider_lbl)
-                            .width(130.0)
+                            .width(prov_w)
+                            .truncate()
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.packs_provider,
@@ -3721,10 +3780,11 @@ impl McwApp {
                                 "Search shaders (e.g. Complementary, BSL)..."
                             }
                         };
+                        let search_w = (ui.available_width() - 80.0).clamp(140.0, 320.0);
                         let te = ui.add(
                             TextEdit::singleline(&mut self.packs_query)
                                 .hint_text(hint)
-                                .desired_width(250.0),
+                                .desired_width(search_w),
                         );
                         let go = ui
                             .add_enabled(!self.packs_searching, Button::new("Search"))
@@ -3764,6 +3824,7 @@ impl McwApp {
                                 .id_salt("packs_mr_scroll")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
+                                    let inner_card_w = (ui.available_width() - 24.0).max(200.0);
                                     if self.packs_mr_results.is_empty() {
                                         ui.label(
                                             RichText::new(
@@ -3779,10 +3840,13 @@ impl McwApp {
                                                 .corner_radius(CornerRadius::same(3))
                                                 .inner_margin(egui::Margin::same(8))
                                                 .show(ui, |ui| {
-                                                    ui.set_width(ui.available_width());
+                                                    ui.set_width(inner_card_w);
                                                     ui.horizontal(|ui| {
+                                                        let text_max_w =
+                                                            (inner_card_w - 100.0).max(120.0);
                                                         ui.vertical(|ui| {
-                                                            ui.horizontal(|ui| {
+                                                            ui.set_max_width(text_max_w);
+                                                            ui.horizontal_wrapped(|ui| {
                                                                 ui.label(
                                                                     RichText::new(&hit.title)
                                                                         .strong(),
@@ -3849,6 +3913,7 @@ impl McwApp {
                                 .id_salt("packs_cf_scroll")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
+                                    let inner_card_w = (ui.available_width() - 24.0).max(200.0);
                                     if self.packs_cf_results.is_empty() {
                                         ui.label(
                                             RichText::new(
@@ -3864,10 +3929,13 @@ impl McwApp {
                                                 .corner_radius(CornerRadius::same(3))
                                                 .inner_margin(egui::Margin::same(8))
                                                 .show(ui, |ui| {
-                                                    ui.set_width(ui.available_width());
+                                                    ui.set_width(inner_card_w);
                                                     ui.horizontal(|ui| {
+                                                        let text_max_w =
+                                                            (inner_card_w - 100.0).max(120.0);
                                                         ui.vertical(|ui| {
-                                                            ui.horizontal(|ui| {
+                                                            ui.set_max_width(text_max_w);
+                                                            ui.horizontal_wrapped(|ui| {
                                                                 ui.label(
                                                                     RichText::new(&cf.name)
                                                                         .strong(),

@@ -101,6 +101,20 @@ impl McwApp {
                             .size(11.5)
                             .color(p.text_muted),
                         );
+                        let has_group = !inst.group.trim().is_empty();
+                        let has_tags = inst.tags.iter().any(|t| !t.trim().is_empty());
+                        if has_group || has_tags {
+                            ui.add_space(2.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::new(5.0, 3.0);
+                                if has_group {
+                                    render_badge_pill(ui, &inst.group, true, false, p);
+                                }
+                                for tag in &inst.tags {
+                                    render_badge_pill(ui, tag, false, false, p);
+                                }
+                            });
+                        }
                     });
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -547,16 +561,6 @@ impl McwApp {
                             Some(code) => format!("{} (exit code: {code})", inst.last_launch_state),
                             None => inst.last_launch_state.clone(),
                         };
-                        let group_text = if inst.group.trim().is_empty() {
-                            "None".to_string()
-                        } else {
-                            inst.group.clone()
-                        };
-                        let tags_text = if inst.tags.is_empty() {
-                            "None".to_string()
-                        } else {
-                            inst.tags.join(", ")
-                        };
                         let mods_count = self
                             .mods_cache
                             .get(&inst.instance_id)
@@ -602,11 +606,26 @@ impl McwApp {
                                 ui.end_row();
 
                                 ui.label(RichText::new("Group:").color(p.text_muted));
-                                ui.label(RichText::new(group_text).monospace());
+                                if inst.group.trim().is_empty() {
+                                    ui.label(RichText::new("None").monospace().color(p.text_muted));
+                                } else {
+                                    ui.horizontal_wrapped(|ui| {
+                                        render_badge_pill(ui, &inst.group, true, false, p);
+                                    });
+                                }
                                 ui.end_row();
 
                                 ui.label(RichText::new("Tags:").color(p.text_muted));
-                                ui.label(RichText::new(tags_text).monospace());
+                                if inst.tags.iter().all(|t| t.trim().is_empty()) {
+                                    ui.label(RichText::new("None").monospace().color(p.text_muted));
+                                } else {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing = Vec2::new(5.0, 4.0);
+                                        for tag in &inst.tags {
+                                            render_badge_pill(ui, tag, false, false, p);
+                                        }
+                                    });
+                                }
                                 ui.end_row();
 
                                 ui.label(RichText::new("Game Directory:").color(p.text_muted));
