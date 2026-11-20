@@ -1,19 +1,20 @@
 use eframe::egui::Context;
 use mcw_auth::{DeviceCodeResponse, StoredAccount};
-use mcw_minecraft::{RepairReport, ScreenshotInfo, WorldInfo};
+use mcw_minecraft::{OptiFineState, RepairReport, ScreenshotInfo, WorldInfo};
 use mcw_models::progress::{ProgressEvent, ProgressSink};
 use mcw_mods::{ContentKind, ContentPackInfo, ModInfo};
 use mcw_net::TaskControl;
 use mcw_providers::{
     AtLauncherPack, CurseForgeMod, FtbPackSummary, ModUpdateCandidate, ModpackInstallReport,
-    ModrinthSearchHit,
+    ModpackOptionalFile, ModrinthSearchHit,
 };
 use mcw_runtime::{
-    FirstRunRecommendation, JavaInstallation, LogLine, LogSink, McLogsUploadResult, ProcessControl,
-    ProcessExitReport,
+    FirstRunRecommendation, JavaDiagnostic, JavaInstallation, LogLine, LogSink, McLogsUploadResult,
+    ProcessControl, ProcessExitReport,
 };
 use mcw_storage::{
-    BackupInfo, RestoreOutcome, StorageCleanupReport, StorageSummary, UnusedVersionCandidate,
+    BackupInfo, ContentStoreStats, RestoreOutcome, StorageCleanupReport, StorageSummary,
+    UnusedVersionCandidate,
 };
 use mcw_updater::{StagedUpdate, UpdateCheckResult};
 use std::sync::mpsc::Sender;
@@ -229,6 +230,20 @@ pub enum AppEvent {
     StorageCleanupFinished {
         kind: String,
         report: StorageCleanupReport,
+    },
+    JavaDiagnosticsScanned(Vec<JavaDiagnostic>),
+    OptiFineInstallFinished {
+        task_id: u64,
+        instance_id: String,
+        result: Result<OptiFineState, String>,
+    },
+    ContentStoreDedupFinished {
+        task_id: u64,
+        result: Result<ContentStoreStats, String>,
+    },
+    ModpackOptionalFilesLoaded {
+        request_id: u64,
+        files: Result<Vec<ModpackOptionalFile>, String>,
     },
 }
 

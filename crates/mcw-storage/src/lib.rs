@@ -1,6 +1,7 @@
 pub mod atomic_fs;
 pub mod backup;
 pub mod cleanup;
+pub mod content_store;
 pub mod health;
 pub mod instance_store;
 pub mod migration;
@@ -11,6 +12,9 @@ pub use atomic_fs::{atomic_write_bytes, atomic_write_json, atomic_write_text};
 pub use backup::{BackupInfo, BackupManager, RestoreOutcome};
 pub use cleanup::{
     StorageCleanupReport, StorageCleanupService, StorageSummary, UnusedVersionCandidate,
+};
+pub use content_store::{
+    ContentStore, ContentStoreStats, MaterializationResult, SharedFileMaterializer,
 };
 pub use health::{
     HealthSeverity, InstanceHealthIssue, InstanceHealthManager, InstanceHealthReport,

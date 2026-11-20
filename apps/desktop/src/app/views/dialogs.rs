@@ -212,19 +212,25 @@ impl McwApp {
                                     );
                                     ui.add_space(6.0);
                                     ui.horizontal(|ui| {
-                                        ui.add(
-                                            TextEdit::singleline(&mut self.modpack_path_input)
-                                                .hint_text(
-                                                    r"C:\Users\...\Downloads\modpack.mcwpack / .mrpack / .zip",
-                                                )
-                                                .desired_width(380.0),
-                                        );
+                                        if ui
+                                            .add(
+                                                TextEdit::singleline(&mut self.modpack_path_input)
+                                                    .hint_text(
+                                                        r"C:\Users\...\Downloads\modpack.mcwpack / .mrpack / .zip",
+                                                    )
+                                                    .desired_width(380.0),
+                                            )
+                                            .changed()
+                                        {
+                                            self.inspect_local_archive_optional_files();
+                                        }
                                         if ui.button(self.t("common.browse")).clicked() {
                                             if let Some(p) = pick_file_dialog(
                                                 "Select Modpack / Instance Package",
                                                 "MCW & Modpack Archives (*.mcwpack;*.mrpack;*.zip)|*.mcwpack;*.mrpack;*.zip|All Files (*.*)|*.*",
                                             ) {
                                                 self.modpack_path_input = p.display().to_string();
+                                                self.inspect_local_archive_optional_files();
                                             }
                                         }
                                     });
@@ -235,6 +241,50 @@ impl McwApp {
                                             .hint_text("Leave blank to use modpack name")
                                             .desired_width(300.0),
                                     );
+                                    if !self.archive_optional_files.is_empty() {
+                                        ui.add_space(6.0);
+                                        let opt_hdr = self
+                                            .t("modrinth.modpack.optional_files")
+                                            .to_string();
+                                        ui.checkbox(&mut self.archive_include_optional, &opt_hdr);
+                                        if self.archive_include_optional {
+                                            ui.horizontal(|ui| {
+                                                if ui.small_button("Select All").clicked() {
+                                                    self.archive_selected_optional_ids = self
+                                                        .archive_optional_files
+                                                        .iter()
+                                                        .map(|f| f.id.clone())
+                                                        .collect();
+                                                }
+                                                if ui.small_button("Select None").clicked() {
+                                                    self.archive_selected_optional_ids.clear();
+                                                }
+                                            });
+                                            ScrollArea::vertical()
+                                                .id_salt("archive_optional_files_scroll")
+                                                .max_height(110.0)
+                                                .auto_shrink([false, false])
+                                                .show(ui, |ui| {
+                                                    for opt in &self.archive_optional_files {
+                                                        let mut checked = self
+                                                            .archive_selected_optional_ids
+                                                            .contains(&opt.id);
+                                                        if ui
+                                                            .checkbox(&mut checked, &opt.name)
+                                                            .changed()
+                                                        {
+                                                            if checked {
+                                                                self.archive_selected_optional_ids
+                                                                    .insert(opt.id.clone());
+                                                            } else {
+                                                                self.archive_selected_optional_ids
+                                                                    .remove(&opt.id);
+                                                            }
+                                                        }
+                                                    }
+                                                });
+                                        }
+                                    }
 
                                     if !self.modpack_manual_downloads.is_empty() {
                                         ui.add_space(8.0);
@@ -308,6 +358,7 @@ impl McwApp {
         self.render_repair_center_window(ctx);
         self.render_global_logs_window(ctx);
         self.render_about_window(ctx);
+        self.render_lan_agent_log_window(ctx);
 
         // 1a. Modpack Install Configuration Isolated OS Window (Version + Beta/Alpha + RAM + Java + Open Web)
         self.render_modpack_install_dialog(ctx);
@@ -1531,6 +1582,7 @@ impl McwApp {
                 && self.storage_summary.is_none()
                 && !self.storage_scanning;
             let mut install_java_major: Option<u32> = None;
+            let mut uninstall_java_exe: Option<PathBuf> = None;
             let win_title = self.t("launcher_settings.page.title").to_string();
             let nav_tabs = [
                 (
@@ -2166,6 +2218,116 @@ impl McwApp {
                                                     prefs_dirty = true;
                                                 }
                                             });
+
+                                        ui.add_space(8.0);
+
+                                        // Card 3: Managed Content Failure Policies (Python ManagedContentPolicy parity)
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("managed_content.launcher.title"),
+                                                    )
+                                                    .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("managed_content.launcher.detail"),
+                                                    )
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(6.0);
+                                                let block_txt = self
+                                                    .t("managed_content.policy.block")
+                                                    .to_string();
+                                                let allow_txt = self
+                                                    .t("managed_content.policy.allow")
+                                                    .to_string();
+                                                let warn_txt =
+                                                    "Warn in logs & continue".to_string();
+                                                let policy_label = |val: &str| match val
+                                                    .trim()
+                                                    .to_ascii_lowercase()
+                                                    .as_str()
+                                                {
+                                                    "warn" | "ask" => warn_txt.as_str(),
+                                                    "allow" => allow_txt.as_str(),
+                                                    _ => block_txt.as_str(),
+                                                };
+
+                                                let mr_lbl = self
+                                                    .t("managed_content.modrinth.label")
+                                                    .to_string();
+                                                let cur_mr = policy_label(
+                                                    &self.prefs.modrinth_failure_policy,
+                                                );
+                                                let mr_w =
+                                                    auto_combo_width(ui, cur_mr, 180.0, 280.0);
+                                                egui::ComboBox::from_label(mr_lbl)
+                                                    .selected_text(cur_mr)
+                                                    .width(mr_w)
+                                                    .truncate()
+                                                    .show_ui(ui, |ui| {
+                                                        for (v, lbl) in [
+                                                            ("block", &block_txt),
+                                                            ("warn", &warn_txt),
+                                                            ("allow", &allow_txt),
+                                                        ] {
+                                                            if ui
+                                                                .selectable_value(
+                                                                    &mut self
+                                                                        .prefs
+                                                                        .modrinth_failure_policy,
+                                                                    v.to_string(),
+                                                                    lbl,
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                prefs_dirty = true;
+                                                            }
+                                                        }
+                                                    });
+
+                                                ui.add_space(4.0);
+                                                let cf_lbl = self
+                                                    .t("managed_content.curseforge.label")
+                                                    .to_string();
+                                                let cur_cf = policy_label(
+                                                    &self.prefs.curseforge_failure_policy,
+                                                );
+                                                let cf_w =
+                                                    auto_combo_width(ui, cur_cf, 180.0, 280.0);
+                                                egui::ComboBox::from_label(cf_lbl)
+                                                    .selected_text(cur_cf)
+                                                    .width(cf_w)
+                                                    .truncate()
+                                                    .show_ui(ui, |ui| {
+                                                        for (v, lbl) in [
+                                                            ("block", &block_txt),
+                                                            ("warn", &warn_txt),
+                                                            ("allow", &allow_txt),
+                                                        ] {
+                                                            if ui
+                                                                .selectable_value(
+                                                                    &mut self
+                                                                        .prefs
+                                                                        .curseforge_failure_policy,
+                                                                    v.to_string(),
+                                                                    lbl,
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                prefs_dirty = true;
+                                                            }
+                                                        }
+                                                    });
+                                            });
                                     }
                                     LauncherSettingsTab::Runtime => {
                                         ui.label(
@@ -2207,10 +2369,75 @@ impl McwApp {
                                                     .color(p.text_muted),
                                                 );
                                                 ui.add_space(6.0);
-                                                if self.java_installations.is_empty() {
+                                                if self.java_scanning {
+                                                    ui.horizontal(|ui| {
+                                                        ui.spinner();
+                                                        ui.label(
+                                                            RichText::new(
+                                                                self.t("java.scan.progress"),
+                                                            )
+                                                            .color(p.accent),
+                                                        );
+                                                    });
+                                                } else if !self.java_diagnostics.is_empty() {
+                                                    for diag in &self.java_diagnostics {
+                                                        let vendor = if diag.vendor.is_empty() {
+                                                            "Java".to_string()
+                                                        } else {
+                                                            diag.vendor.clone()
+                                                        };
+                                                        let arch = if diag.architecture.is_empty() {
+                                                            format!("{}-bit", diag.bitness)
+                                                        } else {
+                                                            format!(
+                                                                "{} ({}-bit)",
+                                                                diag.architecture, diag.bitness
+                                                            )
+                                                        };
+                                                        ui.horizontal_wrapped(|ui| {
+                                                            ui.label(
+                                                                RichText::new(format!(
+                                                                    "• Java {} ({}) · {} · {} · [{}] — {}",
+                                                                    diag.major_version,
+                                                                    diag.version_string,
+                                                                    vendor,
+                                                                    arch,
+                                                                    diag.source,
+                                                                    diag.executable.display()
+                                                                ))
+                                                                .monospace()
+                                                                .size(11.0)
+                                                                .color(if diag.valid {
+                                                                    p.text_muted
+                                                                } else {
+                                                                    p.warning
+                                                                }),
+                                                            );
+                                                            if ui.small_button("Open Folder").clicked()
+                                                            {
+                                                                let root = JavaDiagnosticsManager::java_root_dir(
+                                                                    &diag.executable,
+                                                                );
+                                                                open_external(&root.display().to_string());
+                                                            }
+                                                            if diag.is_managed
+                                                                && ui
+                                                                    .small_button(
+                                                                        RichText::new("Uninstall")
+                                                                            .color(p.danger),
+                                                                    )
+                                                                    .clicked()
+                                                            {
+                                                                uninstall_java_exe = Some(
+                                                                    diag.executable.clone(),
+                                                                );
+                                                            }
+                                                        });
+                                                    }
+                                                } else if self.java_installations.is_empty() {
                                                     ui.label(
                                                         RichText::new(
-                                                            "No Java runtimes detected yet.",
+                                                            self.t("launcher_settings.java.none"),
                                                         )
                                                         .color(p.warning),
                                                     );
@@ -2228,6 +2455,17 @@ impl McwApp {
                                                             .color(p.text_muted),
                                                         );
                                                     }
+                                                }
+                                                let recovery_cnt =
+                                                    JavaRecoveryDiagnostics::snapshot().len();
+                                                if recovery_cnt > 0 {
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "Java auto-selection events recorded this session: {recovery_cnt}"
+                                                        ))
+                                                        .size(10.5)
+                                                        .color(p.text_muted),
+                                                    );
                                                 }
                                                 ui.add_space(6.0);
                                                 ui.horizontal_wrapped(|ui| {
@@ -2342,6 +2580,79 @@ impl McwApp {
                                                     }
                                                 });
                                             });
+
+                                        ui.add_space(8.0);
+
+                                        // Card 3: Forge/NeoForge Preflight Failure Policy
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("forge_preflight.launcher.title"),
+                                                    )
+                                                    .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("forge_preflight.launcher.detail"),
+                                                    )
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(6.0);
+                                                let blk_lbl = self
+                                                    .t("forge_preflight.policy.block")
+                                                    .to_string();
+                                                let alw_lbl = self
+                                                    .t("forge_preflight.policy.allow")
+                                                    .to_string();
+                                                let wrn_lbl =
+                                                    "Warn in logs & continue".to_string();
+                                                let cur_fp = match self
+                                                    .prefs
+                                                    .forge_preflight_failure_policy
+                                                    .trim()
+                                                    .to_ascii_lowercase()
+                                                    .as_str()
+                                                {
+                                                    "block" => blk_lbl.as_str(),
+                                                    "allow" => alw_lbl.as_str(),
+                                                    _ => wrn_lbl.as_str(),
+                                                };
+                                                let fp_w =
+                                                    auto_combo_width(ui, cur_fp, 210.0, 320.0);
+                                                egui::ComboBox::from_label(
+                                                    self.t("instance_defaults.policy.forge"),
+                                                )
+                                                .selected_text(cur_fp)
+                                                .width(fp_w)
+                                                .truncate()
+                                                .show_ui(ui, |ui| {
+                                                    for (v, lbl) in [
+                                                        ("warn", &wrn_lbl),
+                                                        ("block", &blk_lbl),
+                                                        ("allow", &alw_lbl),
+                                                    ] {
+                                                        if ui
+                                                            .selectable_value(
+                                                                &mut self
+                                                                    .prefs
+                                                                    .forge_preflight_failure_policy,
+                                                                v.to_string(),
+                                                                lbl,
+                                                            )
+                                                            .changed()
+                                                        {
+                                                            prefs_dirty = true;
+                                                        }
+                                                    }
+                                                });
+                                            });
                                     }
                                     LauncherSettingsTab::Appearance => {
                                         self.render_settings_appearance_tab(
@@ -2376,6 +2687,7 @@ impl McwApp {
             }
             if scan_java {
                 self.reload_java();
+                self.start_java_diagnostics_scan(ctx);
                 self.notice_banner = Some((
                     format!(
                         "Detected {} Java runtime(s).",
@@ -2383,6 +2695,9 @@ impl McwApp {
                     ),
                     false,
                 ));
+            }
+            if let Some(exe) = uninstall_java_exe {
+                self.uninstall_managed_java(exe, ctx);
             }
             if discord_changed {
                 self.discord_rpc.configure(
@@ -2920,7 +3235,62 @@ impl McwApp {
                                 }
                             }
 
-                            ui.add_space(14.0);
+                            ui.add_space(10.0);
+
+                            // 5. Optional Modpack Files Picker (Modrinth / CurseForge / ATLauncher)
+                            let opt_lbl = self.t("modrinth.modpack.optional_files").to_string();
+                            ui.checkbox(&mut self.modpack_dialog.include_optional_files, &opt_lbl);
+                            if self.modpack_dialog.loading_optional_files {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label(
+                                        RichText::new("Inspecting optional files...")
+                                            .size(11.0)
+                                            .color(p.text_muted),
+                                    );
+                                });
+                            } else if self.modpack_dialog.include_optional_files
+                                && !self.modpack_dialog.optional_files.is_empty()
+                            {
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("Select All").clicked() {
+                                        self.modpack_dialog.selected_optional_ids = self
+                                            .modpack_dialog
+                                            .optional_files
+                                            .iter()
+                                            .map(|f| f.id.clone())
+                                            .collect();
+                                    }
+                                    if ui.small_button("Select None").clicked() {
+                                        self.modpack_dialog.selected_optional_ids.clear();
+                                    }
+                                });
+                                ScrollArea::vertical()
+                                    .id_salt("modpack_dialog_optional_files_scroll")
+                                    .max_height(130.0)
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        for opt in &self.modpack_dialog.optional_files {
+                                            let mut checked = self
+                                                .modpack_dialog
+                                                .selected_optional_ids
+                                                .contains(&opt.id);
+                                            if ui.checkbox(&mut checked, &opt.name).changed() {
+                                                if checked {
+                                                    self.modpack_dialog
+                                                        .selected_optional_ids
+                                                        .insert(opt.id.clone());
+                                                } else {
+                                                    self.modpack_dialog
+                                                        .selected_optional_ids
+                                                        .remove(&opt.id);
+                                                }
+                                            }
+                                        }
+                                    });
+                            }
+
+                            ui.add_space(12.0);
                             ui.separator();
                             ui.add_space(8.0);
 
@@ -2949,6 +3319,9 @@ impl McwApp {
         self.modpack_dialog.open = open;
         if filter_changed || selected_changed {
             self.sync_modpack_dialog_selection();
+            if selected_changed {
+                self.load_atlauncher_optional_files(ctx);
+            }
         }
         if browse_java {
             if let Some(p) = pick_file_dialog(

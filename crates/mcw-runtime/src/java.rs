@@ -1,3 +1,4 @@
+use crate::java_diagnostics::JavaRecoveryDiagnostics;
 use crate::{Result, RuntimeError};
 use regex::Regex;
 use std::collections::HashSet;
@@ -251,6 +252,15 @@ impl JavaResolver {
                     reason: "could not determine Java version".to_string(),
                 })?;
             if info.major < required_major {
+                JavaRecoveryDiagnostics::record(
+                    "java.resolve.rejected_preferred",
+                    format!(
+                        "{} (Java {} < required {})",
+                        preferred.display(),
+                        info.major,
+                        required_major
+                    ),
+                );
                 return Err(RuntimeError::InvalidJavaPath {
                     path: preferred.display().to_string(),
                     reason: format!(
@@ -259,6 +269,10 @@ impl JavaResolver {
                     ),
                 });
             }
+            JavaRecoveryDiagnostics::record(
+                "java.resolve.preferred",
+                format!("Java {} at {}", info.major, info.path.display()),
+            );
             return Ok(info);
         }
 
@@ -268,6 +282,15 @@ impl JavaResolver {
         // 1. Prefer exact match in accepted order (required, managed, then higher).
         for target_major in &accepted {
             if let Some(found) = discovered.iter().find(|j| j.major == *target_major) {
+                JavaRecoveryDiagnostics::record(
+                    "java.resolve.discovered",
+                    format!(
+                        "Selected Java {} (required {}+) at {}",
+                        found.major,
+                        required_major,
+                        found.path.display()
+                    ),
+                );
                 return Ok(found.clone());
             }
         }
@@ -275,10 +298,23 @@ impl JavaResolver {
         // 2. If allow_higher, also accept any installed Java >= required_major (e.g. Java 22/23/24/25).
         if allow_higher {
             if let Some(found) = discovered.iter().find(|j| j.major >= required_major) {
+                JavaRecoveryDiagnostics::record(
+                    "java.resolve.higher",
+                    format!(
+                        "Selected higher Java {} (required {}+) at {}",
+                        found.major,
+                        required_major,
+                        found.path.display()
+                    ),
+                );
                 return Ok(found.clone());
             }
         }
 
+        JavaRecoveryDiagnostics::record(
+            "java.resolve.missing",
+            format!("No compatible Java >= {required_major} (managed target {managed})"),
+        );
         Err(RuntimeError::NoCompatibleJava {
             required: required_major,
             managed,

@@ -5,6 +5,7 @@ pub mod discord_rpc;
 pub mod first_run;
 pub mod gpu;
 pub mod java;
+pub mod java_diagnostics;
 pub mod jvm_presets;
 pub mod lan_agent;
 pub mod launcher;
@@ -25,6 +26,9 @@ pub use first_run::{
 pub use gpu::GpuPreferenceManager;
 pub use java::{
     prefer_javaw_on_windows, JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver,
+};
+pub use java_diagnostics::{
+    JavaDiagnostic, JavaDiagnosticsManager, JavaRecoveryDiagnostics, JavaRecoveryEvent,
 };
 pub use jvm_presets::{
     detect_preset, get_preset_flags, JvmPresetId, AIKAR_FLAGS, SHENANDOAH_FLAGS, ZGC_FLAGS,

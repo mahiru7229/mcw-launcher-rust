@@ -3,10 +3,13 @@ pub mod assets;
 pub mod classpath;
 pub mod forge;
 pub mod installer;
+pub mod lan_targets;
+pub mod legacy_libloader;
 pub mod libraries;
 pub mod manifest;
 pub mod modloader;
 pub mod optifine;
+pub mod preflight;
 pub mod repair;
 pub mod rules;
 pub mod screenshots;
@@ -17,10 +20,18 @@ pub use assets::AssetManager;
 pub use classpath::ClasspathBuilder;
 pub use forge::{ForgeFamily, ForgeLoaderService, ForgeLoaderVersion};
 pub use installer::{PreparedLaunch, VanillaLaunchPipeline};
+pub use lan_targets::{LanAgentTarget, LanAgentTargetResolution, LanAgentTargetResolver};
+pub use legacy_libloader::{LegacyLibLoaderDependency, LegacyLibLoaderManager};
 pub use libraries::LibraryManager;
 pub use manifest::VersionManifestService;
 pub use modloader::{LoaderKind, LoaderVersionEntry, ModLoaderService};
-pub use optifine::{InspectedOptiFine, OptiFineManager, OptiFineVersion};
+pub use optifine::{
+    merge_optifine_profile, InspectedOptiFine, OptiFineManager, OptiFineRegistry, OptiFineState,
+    OptiFineTransaction, OptiFineVersion, OFFICIAL_OPTIFINE_URL,
+};
+pub use preflight::{
+    ForgePreflightIssue, ForgePreflightManager, ForgePreflightReport, LoaderDiagnosticsExporter,
+};
 pub use repair::{RepairReport, RepairService};
 pub use rules::LibraryRules;
 pub use screenshots::{ScreenshotInfo, ScreenshotManager};

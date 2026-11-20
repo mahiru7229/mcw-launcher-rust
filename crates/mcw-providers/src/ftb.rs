@@ -1,5 +1,6 @@
 use crate::cache::ApiCache;
 use crate::modpack::{normalize_modloader, ModpackInstallReport, ModpackProgressCallback};
+use crate::pack_registry::{safe_relative_posix, FtbManagedFile, FtbPackRecord, FtbPackRegistry};
 use crate::{ProviderError, Result};
 use mcw_models::instance::ModLoader;
 use mcw_net::{DownloadClient, DownloadRequest};
@@ -278,6 +279,7 @@ impl FtbClient {
         fs::create_dir_all(&mc_dir)?;
 
         let mut requests = Vec::new();
+        let mut managed_files = Vec::new();
         if let Some(files) = ver_json.get("files").and_then(|v| v.as_array()) {
             for f in files {
                 if f.get("serveronly")
@@ -311,6 +313,29 @@ impl FtbClient {
                         .filter(|s| !s.is_empty())
                         .map(String::from);
                     let size = f.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let file_id = f.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let optional = f.get("optional").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let client_only = f
+                        .get("clientonly")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let file_type = f
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    managed_files.push(FtbManagedFile {
+                        file_id,
+                        file_name: name.to_string(),
+                        path: safe_relative_posix(&rel, name),
+                        sha1: sha1.clone().unwrap_or_default(),
+                        size,
+                        urls: vec![url.to_string()],
+                        optional,
+                        client_only,
+                        file_type,
+                        provider: "ftb".to_string(),
+                    });
                     requests.push(
                         DownloadRequest::new(url, dest)
                             .with_sha1(sha1)
@@ -334,6 +359,26 @@ impl FtbClient {
                 }
             })
             .await?;
+
+        let ver_name = ver_json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| format!("v{target_ver_id}"));
+        let _ = FtbPackRegistry::save(
+            &paths.instance_dir(&inst.instance_id),
+            &FtbPackRecord {
+                schema_version: 2,
+                source: "ftb".to_string(),
+                pack_id,
+                pack_name: pack_name.trim().to_string(),
+                version_id: target_ver_id,
+                version_name: ver_name,
+                managed_files,
+                updated_at: String::new(),
+            },
+        );
 
         Ok(ModpackInstallReport {
             instance_id: inst.instance_id,

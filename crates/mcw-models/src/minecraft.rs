@@ -65,6 +65,8 @@ pub struct VersionDownloads {
     #[serde(default)]
     pub client: Option<DownloadArtifact>,
     #[serde(default)]
+    pub client_mappings: Option<DownloadArtifact>,
+    #[serde(default)]
     pub server: Option<DownloadArtifact>,
 }
 

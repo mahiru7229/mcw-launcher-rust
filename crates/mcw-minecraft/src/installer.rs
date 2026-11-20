@@ -2,9 +2,11 @@ use crate::arguments::{ArgumentBuilder, ArgumentContext};
 use crate::assets::AssetManager;
 use crate::classpath::ClasspathBuilder;
 use crate::forge::{ForgeFamily, ForgeLoaderService};
+use crate::legacy_libloader::LegacyLibLoaderManager;
 use crate::libraries::LibraryManager;
 use crate::manifest::VersionManifestService;
 use crate::modloader::{LoaderKind, ModLoaderService};
+use crate::optifine::OptiFineManager;
 use crate::{MinecraftError, Result};
 use mcw_models::account::{AccountSource, Authentication};
 use mcw_models::instance::{Instance, InstanceSettings};
@@ -23,6 +25,7 @@ use std::sync::Arc;
 pub struct PreparedLaunch {
     pub version_id: String,
     pub java: JavaInstallation,
+    pub metadata: mcw_models::minecraft::VersionMetadata,
     pub spec: LaunchSpec,
 }
 
@@ -172,8 +175,26 @@ impl<'a> VanillaLaunchPipeline<'a> {
                 .install_and_merge(family, &base_metadata, &clean_loader_ver, Some(&java.path))
                 .await?
         } else {
-            base_metadata
+            OptiFineManager::apply_to_version(self.paths, instance, base_metadata)?
         };
+
+        let game_dir = self.paths.minecraft_dir(&instance.instance_id);
+        std::fs::create_dir_all(&game_dir)?;
+
+        // If managed Forge OptiFine mod exists, verify its SHA-256 before launching
+        if loader_name == "forge" {
+            OptiFineManager::apply_to_version(self.paths, instance, metadata.clone())?;
+            let libloader_notes =
+                LegacyLibLoaderManager::ensure(&game_dir, &loader_name, self.client).await?;
+            for note in libloader_notes {
+                progress.on_progress(ProgressEvent {
+                    stage: ProgressStage::DownloadingLibraries,
+                    message: note,
+                    current: 1,
+                    total: 1,
+                });
+            }
+        }
 
         // 5. Download libraries & extract natives
         let lib_mgr = LibraryManager::new(self.paths, self.client);
@@ -191,8 +212,6 @@ impl<'a> VanillaLaunchPipeline<'a> {
         let libraries_dir = self.paths.libraries_dir();
         let natives_dir = self.paths.natives_dir(&metadata.id);
         std::fs::create_dir_all(&natives_dir)?;
-        let game_dir = self.paths.minecraft_dir(&instance.instance_id);
-        std::fs::create_dir_all(&game_dir)?;
 
         let classpath = ClasspathBuilder::build(&metadata, &client_jar, &libraries_dir);
         let mut ctx_values = HashMap::new();
@@ -252,8 +271,9 @@ impl<'a> VanillaLaunchPipeline<'a> {
         });
 
         Ok(PreparedLaunch {
-            version_id: metadata.id,
+            version_id: metadata.id.clone(),
             java: java.clone(),
+            metadata: metadata.clone(),
             spec: LaunchSpec {
                 java_executable: java.path,
                 working_dir: game_dir,

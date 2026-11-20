@@ -260,6 +260,20 @@ pub struct LauncherPrefs {
     pub window_width: f32,
     #[serde(default = "default_window_height")]
     pub window_height: f32,
+    #[serde(default = "default_policy_block")]
+    pub modrinth_failure_policy: String,
+    #[serde(default = "default_policy_block")]
+    pub curseforge_failure_policy: String,
+    #[serde(default = "default_policy_warn")]
+    pub forge_preflight_failure_policy: String,
+}
+
+fn default_policy_block() -> String {
+    "block".to_string()
+}
+
+fn default_policy_warn() -> String {
+    "warn".to_string()
 }
 
 fn default_theme() -> String {
@@ -345,6 +359,9 @@ impl Default for LauncherPrefs {
             remember_window_size: true,
             window_width: default_window_width(),
             window_height: default_window_height(),
+            modrinth_failure_policy: default_policy_block(),
+            curseforge_failure_policy: default_policy_block(),
+            forge_preflight_failure_policy: default_policy_warn(),
         }
     }
 }

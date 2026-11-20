@@ -109,6 +109,20 @@ impl LauncherPaths {
         Ok(self.asset_objects_dir().join(&sha1[..2]).join(sha1))
     }
 
+    pub fn content_store_dir(&self) -> PathBuf {
+        self.cache_root.join("content_store")
+    }
+
+    pub fn content_store_blob(&self, sha256: &str) -> Result<PathBuf> {
+        let lower = sha256.trim().to_ascii_lowercase();
+        if lower.len() != 64 || !lower.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(StorageError::InvalidRelativePath(format!(
+                "Invalid content store SHA-256: {sha256}"
+            )));
+        }
+        Ok(self.content_store_dir().join(&lower[..2]).join(lower))
+    }
+
     pub fn instance_dir(&self, instance_id: &str) -> PathBuf {
         self.instances_root.join(instance_id)
     }

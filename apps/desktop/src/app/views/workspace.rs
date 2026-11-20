@@ -403,10 +403,18 @@ impl McwApp {
         let clone_lbl = self.t("workspace.action.clone").to_string();
         let chg_icon_lbl = self.t("workspace.action.change_icon").to_string();
         let rst_icon_lbl = self.t("workspace.action.reset_icon").to_string();
+        let export_diag_lbl = self.t("forge.export_diagnostics").to_string();
+        let is_diag_loader = matches!(
+            inst.mod_loader.name.to_ascii_lowercase().as_str(),
+            "forge" | "neoforge" | "quilt"
+        );
+        let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let tracked_pack = detect_installed_pack(&inst_dir);
 
         let mut trigger_repair = false;
         let mut open_repair_center = false;
         let mut open_export = false;
+        let mut export_loader_diag = false;
         let mut change_icon_clicked = false;
         let mut reset_icon_clicked = false;
 
@@ -435,7 +443,10 @@ impl McwApp {
                                     RichText::new("Actions").strong().color(p.text),
                                     |ui| {
                                         ui.set_min_width(210.0);
-                                        if ui.button("Open .minecraft Folder").clicked() {
+                                        let open_f_lbl =
+                                            self.t("workspace.action.open_folder").to_string();
+                                        if ui.button(format!("{open_f_lbl} (.minecraft)")).clicked()
+                                        {
                                             let _ = std::fs::create_dir_all(&mc_dir);
                                             open_external(&mc_dir.display().to_string());
                                             ui.close_menu();
@@ -450,8 +461,10 @@ impl McwApp {
                                             open_export = true;
                                             ui.close_menu();
                                         }
+                                        let rep_lbl =
+                                            self.t("workspace.action.repair").to_string();
                                         if ui
-                                            .add_enabled(!busy, Button::new("Repair Files"))
+                                            .add_enabled(!busy, Button::new(&rep_lbl))
                                             .on_disabled_hover_text(
                                                 "Stop the instance before repairing",
                                             )
@@ -464,9 +477,14 @@ impl McwApp {
                                             open_repair_center = true;
                                             ui.close_menu();
                                         }
+                                        if is_diag_loader && ui.button(&export_diag_lbl).clicked() {
+                                            export_loader_diag = true;
+                                            ui.close_menu();
+                                        }
                                         ui.separator();
+                                        let ren_lbl = self.t("instance.rename").to_string();
                                         if ui
-                                            .add_enabled(!busy, Button::new("Rename Instance..."))
+                                            .add_enabled(!busy, Button::new(format!("{ren_lbl}...")))
                                             .on_disabled_hover_text(
                                                 "Stop the instance before renaming",
                                             )
@@ -610,6 +628,28 @@ impl McwApp {
                                 ui.label(RichText::new(loader_text).monospace());
                                 ui.end_row();
 
+                                if let Some(ref pack) = tracked_pack {
+                                    ui.label(RichText::new("Modpack Source:").color(p.text_muted));
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} · {} ({}, {} managed file(s))",
+                                            pack.provider,
+                                            pack.pack_name,
+                                            pack.version_name,
+                                            pack.managed_files_count
+                                        ))
+                                        .monospace(),
+                                    );
+                                    ui.end_row();
+                                }
+                                if !inst.icon_origin.trim().is_empty()
+                                    && !inst.icon_origin.eq_ignore_ascii_case("default")
+                                {
+                                    ui.label(RichText::new("Icon Origin:").color(p.text_muted));
+                                    ui.label(RichText::new(&inst.icon_origin).monospace());
+                                    ui.end_row();
+                                }
+
                                 ui.label(RichText::new("Group:").color(p.text_muted));
                                 if inst.group.trim().is_empty() {
                                     ui.label(RichText::new("None").monospace().color(p.text_muted));
@@ -682,6 +722,9 @@ impl McwApp {
 
         if open_export {
             self.show_export_modal = true;
+        }
+        if export_loader_diag {
+            self.export_loader_diagnostics(inst);
         }
         if trigger_repair {
             self.start_repair(ctx);
@@ -1802,6 +1845,16 @@ impl McwApp {
             ),
         ];
 
+        let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let optifine_state = OptiFineManager::state(&inst_dir);
+        let browse_lbl = self.t("common.browse").to_string();
+        let lan_log_btn_lbl = self.t("lan.agent.log.view").to_string();
+        let save_inst_lbl = self.t("instance_settings.save").to_string();
+        let is_forge_family = matches!(
+            inst.mod_loader.name.to_ascii_lowercase().as_str(),
+            "forge" | "neoforge"
+        );
+
         let Some(ref mut settings) = self.selected_settings else {
             return;
         };
@@ -1811,14 +1864,9 @@ impl McwApp {
         let mut install_java_major: Option<u32> = None;
         let mut optifine_install_mods = false;
         let mut optifine_launch_installer = false;
+        let mut optifine_uninstall = false;
+        let mut open_lan_log_window = false;
         let mut prepare_lan_provider: Option<String> = None;
-
-        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
-        let inst_dir = self.paths.instance_dir(&inst.instance_id);
-        let is_forge_family = matches!(
-            inst.mod_loader.name.to_ascii_lowercase().as_str(),
-            "forge" | "neoforge"
-        );
 
         ScrollArea::vertical()
             .id_salt("instance_settings_scroll")
@@ -2026,14 +2074,8 @@ impl McwApp {
                                 .size(11.5)
                                 .color(p.text_muted),
                             );
-                            if ui.button("Open LAN Agent Log").clicked() {
-                                let log_file = LanAgentManager::log_path(&inst_dir);
-                                if log_file.is_file() {
-                                    open_external(&log_file.display().to_string());
-                                } else if let Some(parent) = log_file.parent() {
-                                    let _ = std::fs::create_dir_all(parent);
-                                    open_external(&parent.display().to_string());
-                                }
+                            if ui.button(&lan_log_btn_lbl).clicked() {
+                                open_lan_log_window = true;
                             }
                         });
                         ui.add_space(6.0);
@@ -2078,36 +2120,71 @@ impl McwApp {
 
                         ui.label(RichText::new("OptiFine").strong());
                         ui.add_space(4.0);
+                        if optifine_state.installed {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Installed: OptiFine {} ({})",
+                                        optifine_state.version_id, optifine_state.mode
+                                    ))
+                                    .monospace()
+                                    .size(11.5)
+                                    .color(p.accent),
+                                );
+                                if optifine_state.managed && ui.button("Uninstall OptiFine").clicked() {
+                                    optifine_uninstall = true;
+                                }
+                            });
+                            ui.add_space(4.0);
+                        }
                         ui.label(
                             RichText::new(format!(
-                                "Paste path to an official OptiFine_{}_*.jar file to validate and install.",
+                                "Select or paste path to an official OptiFine_{}_*.jar file to validate and install.",
                                 inst.version_id
                             ))
                             .size(11.5)
                             .color(p.text_muted),
                         );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.add(
                                 TextEdit::singleline(&mut self.optifine_jar_input)
                                     .hint_text("C:\\Users\\...\\Downloads\\OptiFine_1.20.4_HD_U_I7.jar")
-                                    .desired_width(360.0),
+                                    .desired_width(300.0),
                             );
+                            if ui.button(&browse_lbl).clicked() {
+                                if let Some(chosen) = pick_file_dialog(
+                                    "Select OptiFine JAR",
+                                    "OptiFine JAR (*.jar)|*.jar|All Files (*.*)|*.*",
+                                ) {
+                                    self.optifine_jar_input = chosen.display().to_string();
+                                }
+                            }
                             if is_forge_family {
-                                if ui.button("Install to mods/").clicked() {
+                                if ui.button("Install Managed Mod").clicked() {
                                     optifine_install_mods = true;
                                 }
-                            } else if ui.button("Run OptiFine Installer").clicked() {
+                            } else if ui
+                                .add_enabled(
+                                    !self.optifine_installing,
+                                    Button::new(if self.optifine_installing {
+                                        "Installing..."
+                                    } else {
+                                        "Install OptiFine Profile..."
+                                    }),
+                                )
+                                .clicked()
+                            {
                                 optifine_launch_installer = true;
                             }
                             if ui.button("optifine.net").clicked() {
-                                open_external("https://optifine.net/downloads");
+                                open_external(mcw_minecraft::OFFICIAL_OPTIFINE_URL);
                             }
                         });
 
                         ui.add_space(12.0);
                         let save_btn =
-                            Button::new(RichText::new("Save Settings").color(p.accent_text).strong())
+                            Button::new(RichText::new(&save_inst_lbl).color(p.accent_text).strong())
                                 .fill(p.accent)
                                 .corner_radius(CornerRadius::same(3));
                         if ui.add(save_btn).clicked() {
@@ -2116,14 +2193,34 @@ impl McwApp {
                     });
             });
 
+        if open_lan_log_window {
+            self.open_lan_agent_log_window(&inst.instance_id);
+        }
+        if optifine_uninstall {
+            match OptiFineManager::uninstall(&self.paths, inst) {
+                Ok(true) => {
+                    self.mods_cache.remove(&inst.instance_id);
+                    self.notice_banner = Some((
+                        "Uninstalled MCW-managed OptiFine successfully.".to_string(),
+                        false,
+                    ));
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    self.notice_banner = Some((format!("OptiFine uninstall failed: {e}"), true));
+                }
+            }
+        }
         if optifine_install_mods {
             let jar_path = PathBuf::from(self.optifine_jar_input.trim().trim_matches('"'));
-            match OptiFineManager::install_into_mods(&jar_path, &mc_dir, Some(&inst.version_id)) {
-                Ok(dest) => {
+            match OptiFineManager::install_managed_forge_mod(&self.paths, inst, &jar_path) {
+                Ok(state) => {
                     self.mods_cache.remove(&inst.instance_id);
                     self.optifine_jar_input.clear();
-                    self.notice_banner =
-                        Some((format!("Installed OptiFine into {}", dest.display()), false));
+                    self.notice_banner = Some((
+                        format!("Installed managed OptiFine {} to mods/.", state.file_name),
+                        false,
+                    ));
                 }
                 Err(e) => {
                     self.notice_banner = Some((format!("OptiFine install failed: {e}"), true));
@@ -2132,33 +2229,37 @@ impl McwApp {
         }
         if optifine_launch_installer {
             let jar_path = PathBuf::from(self.optifine_jar_input.trim().trim_matches('"'));
-            let java_exe = self
-                .selected_settings
-                .as_ref()
-                .and_then(|s| s.java_path.clone())
-                .or_else(|| self.java_installations.first().map(|j| j.path.clone()));
-            match java_exe {
-                Some(java) => match OptiFineManager::launch_official_installer(
-                    &jar_path,
-                    &java,
-                    Some(&inst.version_id),
-                ) {
-                    Ok(()) => {
+            if inst.mod_loader.is_vanilla() {
+                self.start_optifine_standalone_install(inst.clone(), jar_path, ctx);
+            } else {
+                let java_exe = self
+                    .selected_settings
+                    .as_ref()
+                    .and_then(|s| s.java_path.clone())
+                    .or_else(|| self.java_installations.first().map(|j| j.path.clone()));
+                match java_exe {
+                    Some(java) => match OptiFineManager::launch_official_installer(
+                        &jar_path,
+                        &java,
+                        Some(&inst.version_id),
+                    ) {
+                        Ok(()) => {
+                            self.notice_banner = Some((
+                                "Launched official OptiFine installer window.".to_string(),
+                                false,
+                            ));
+                        }
+                        Err(e) => {
+                            self.notice_banner =
+                                Some((format!("OptiFine installer failed: {e}"), true));
+                        }
+                    },
+                    None => {
                         self.notice_banner = Some((
-                            "Launched official OptiFine installer window.".to_string(),
-                            false,
+                            "No Java runtime found. Install Java 17 or 21 first.".to_string(),
+                            true,
                         ));
                     }
-                    Err(e) => {
-                        self.notice_banner =
-                            Some((format!("OptiFine installer failed: {e}"), true));
-                    }
-                },
-                None => {
-                    self.notice_banner = Some((
-                        "No Java runtime found. Install Java 17 or 21 first.".to_string(),
-                        true,
-                    ));
                 }
             }
         }

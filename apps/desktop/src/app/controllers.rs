@@ -677,6 +677,35 @@ impl McwApp {
             return;
         }
 
+        let missing_manual = self
+            .pending_manual_counts
+            .get(&instance_id)
+            .copied()
+            .unwrap_or(0);
+        if missing_manual > 0 {
+            let cf_policy = ManagedContentPolicy::resolve_for_provider(
+                &settings,
+                &self.prefs.modrinth_failure_policy,
+                &self.prefs.curseforge_failure_policy,
+                &self.prefs.forge_preflight_failure_policy,
+                "curseforge",
+            );
+            if cf_policy.is_blocking() {
+                self.notice_banner = Some((
+                    format!(
+                        "{missing_manual} CurseForge manual download(s) required before launch (policy: block)."
+                    ),
+                    true,
+                ));
+                self.open_manual_downloads_for(&instance_id);
+                return;
+            } else if cf_policy.warns() {
+                self.push_global_log(format!(
+                    "[WARN] Launching '{instance_id}' with {missing_manual} missing CurseForge manual file(s) (policy: warn)."
+                ));
+            }
+        }
+
         // Lesson #8: Clear previous launch errors & logs for the new run.
         self.notice_banner = None;
         self.instance_logs.insert(instance_id.clone(), Vec::new());
@@ -696,6 +725,7 @@ impl McwApp {
 
         let paths = self.paths.clone();
         let prefer_dedicated_gpu = self.prefs.prefer_dedicated_gpu;
+        let forge_policy_str = self.prefs.forge_preflight_failure_policy.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
@@ -745,17 +775,46 @@ impl McwApp {
                     .await
                     .map_err(|e| e.to_string())?;
 
+                // Forge/NeoForge Preflight Check + Policy Enforcement
+                let forge_policy = mcw_models::FailurePolicy::parse_global(&forge_policy_str);
+                let preflight =
+                    ForgePreflightManager::scan(&paths, &inst, &prepared.metadata, false);
+                let preflight_notes = ForgePreflightManager::enforce(&preflight, forge_policy)
+                    .map_err(|e| e.to_string())?;
+                for note in preflight_notes {
+                    let _ = tx.send(AppEvent::LogReceived {
+                        instance_id: inst.instance_id.clone(),
+                        line: LogLine {
+                            stream: LogStream::Stderr,
+                            text: format!("[ForgePreflight] {note}"),
+                        },
+                    });
+                }
+
                 prepared.spec.jvm_args =
                     LanAgentManager::sanitize_user_jvm_args(&prepared.spec.jvm_args);
                 if LanAgentManager::is_enabled(
                     settings.offline_multiplayer_enabled,
                     &settings.lan_auth_mode,
                 ) {
+                    let resolution =
+                        LanAgentTargetResolver::resolve(&paths, &client, &prepared.metadata, &inst)
+                            .await;
+                    for warn in &resolution.warnings {
+                        let _ = tx.send(AppEvent::LogReceived {
+                            instance_id: inst.instance_id.clone(),
+                            line: LogLine {
+                                stream: LogStream::Stdout,
+                                text: format!("[LAN Agent Resolver] {warn}"),
+                            },
+                        });
+                    }
+                    let extra_targets = resolution.encoded_targets();
                     let agent_args = LanAgentManager::build_jvm_args(
                         &paths.cache_root.join("lan_agent"),
                         &paths.instance_dir(&inst.instance_id),
                         &inst.mod_loader.name,
-                        &[],
+                        &extra_targets,
                     )
                     .map_err(|e| e.to_string())?;
                     let mut combined = agent_args;
@@ -1789,6 +1848,14 @@ impl McwApp {
             "Reading modpack archive...",
         );
         let paths = self.paths.clone();
+        let install_opts = ModpackInstallOptions {
+            include_optional: self.archive_include_optional,
+            selected_optional_paths: if self.archive_optional_files.is_empty() {
+                None
+            } else {
+                Some(self.archive_selected_optional_ids.clone())
+            },
+        };
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
@@ -1815,12 +1882,13 @@ impl McwApp {
                 } else {
                     Some(name_override.as_str())
                 };
-                ModpackInstaller::install_from_archive_with_progress(
+                ModpackInstaller::install_from_archive_with_options(
                     &paths,
                     &archive,
                     opt_name,
                     &downloader,
                     cf.as_ref(),
+                    &install_opts,
                     Some(progress),
                 )
                 .await
@@ -2893,6 +2961,72 @@ impl McwApp {
                     self.notice_banner = Some((msg, !report.errors.is_empty()));
                     self.start_storage_scan(ctx);
                 }
+                AppEvent::JavaDiagnosticsScanned(diags) => {
+                    self.java_scanning = false;
+                    self.java_diagnostics = diags;
+                }
+                AppEvent::OptiFineInstallFinished {
+                    task_id,
+                    instance_id,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    self.optifine_installing = false;
+                    match result {
+                        Ok(state) => {
+                            self.mods_cache.remove(&instance_id);
+                            self.optifine_jar_input.clear();
+                            self.notice_banner = Some((
+                                format!(
+                                    "Installed OptiFine {} ({}).",
+                                    state.version_id, state.mode
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("OptiFine install failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::ContentStoreDedupFinished { task_id, result } => {
+                    self.finish_task(task_id);
+                    self.dedup_running = false;
+                    match result {
+                        Ok(stats) => {
+                            let saved = format_bytes(stats.estimated_saved_bytes);
+                            let count = stats.deduplicated_files;
+                            self.content_store_stats = Some(stats);
+                            self.notice_banner = Some((
+                                format!(
+                                    "Content store deduplicated {count} file(s), saving ~{saved}."
+                                ),
+                                false,
+                            ));
+                            self.start_storage_scan(ctx);
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Content deduplication failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::ModpackOptionalFilesLoaded { request_id, files } => {
+                    if self.modpack_dialog.request_id == request_id {
+                        self.modpack_dialog.loading_optional_files = false;
+                        if let Ok(list) = files {
+                            let mut selected = HashSet::new();
+                            for item in &list {
+                                if item.default_selected {
+                                    selected.insert(item.id.clone());
+                                }
+                            }
+                            self.modpack_dialog.optional_files = list;
+                            self.modpack_dialog.selected_optional_ids = selected;
+                        }
+                    }
+                }
             }
         }
     }
@@ -2966,6 +3100,10 @@ impl McwApp {
             ram_user_edited: false,
             java_custom: false,
             java_path: String::new(),
+            include_optional_files: true,
+            optional_files: Vec::new(),
+            selected_optional_ids: HashSet::new(),
+            loading_optional_files: false,
         };
 
         // ATLauncher versions are already present in `pack.versions` — populate instantaneously!
@@ -2997,6 +3135,7 @@ impl McwApp {
             self.modpack_dialog.loading_versions = false;
             self.modpack_dialog.versions = versions;
             self.sync_modpack_dialog_selection();
+            self.load_atlauncher_optional_files(ctx);
             return;
         }
 
@@ -3216,6 +3355,20 @@ impl McwApp {
         let min_ram = d.min_ram_mb.max(256).min(d.max_ram_mb.max(256));
         let max_ram = d.max_ram_mb.max(min_ram);
         let icon_url = d.icon_url.clone();
+        let install_opts = ModpackInstallOptions {
+            include_optional: d.include_optional_files,
+            selected_optional_paths: if d.optional_files.is_empty() {
+                None
+            } else {
+                Some(d.selected_optional_ids.clone())
+            },
+        };
+        let provider_origin_tag = match &provider {
+            ModpackInstallProvider::Modrinth { .. } => "modpack:modrinth",
+            ModpackInstallProvider::CurseForge { .. } => "modpack:curseforge",
+            ModpackInstallProvider::Ftb { .. } => "modpack:ftb",
+            ModpackInstallProvider::AtLauncher { .. } => "modpack:atlauncher",
+        };
 
         let (task_id, task_ctrl) = self.begin_task_with_control(
             format!("Install {}", d.pack_title),
@@ -3294,12 +3447,13 @@ impl McwApp {
                             .download_file(&req)
                             .await
                             .map_err(|e| e.to_string())?;
-                        ModpackInstaller::install_from_archive_with_progress(
+                        ModpackInstaller::install_from_archive_with_options(
                             &paths,
                             &archive_path,
                             Some(&instance_name),
                             &downloader,
                             None,
+                            &install_opts,
                             Some(cb.clone()),
                         )
                         .await
@@ -3326,12 +3480,13 @@ impl McwApp {
                             .download_file(&req)
                             .await
                             .map_err(|e| e.to_string())?;
-                        ModpackInstaller::install_from_archive_with_progress(
+                        ModpackInstaller::install_from_archive_with_options(
                             &paths,
                             &archive_path,
                             Some(&instance_name),
                             &downloader,
                             Some(&cf),
+                            &install_opts,
                             Some(cb.clone()),
                         )
                         .await
@@ -3355,12 +3510,13 @@ impl McwApp {
                     ModpackInstallProvider::AtLauncher { pack } => {
                         let client = AtLauncherClient::new(cache).map_err(|e| e.to_string())?;
                         client
-                            .install_pack_version_with_progress(
+                            .install_pack_version_with_options(
                                 &pack,
                                 Some(&ver.id),
                                 Some(&instance_name),
                                 &paths,
                                 &downloader,
+                                &install_opts,
                                 Some(cb.clone()),
                             )
                             .await
@@ -3384,7 +3540,11 @@ impl McwApp {
                     if let Ok(resp) = downloader.http().get(url).send().await {
                         if resp.status().is_success() {
                             if let Ok(bytes) = resp.bytes().await {
-                                let _ = store.set_instance_icon_bytes(&report.instance_id, &bytes);
+                                let _ = store.set_instance_icon_bytes_with_origin(
+                                    &report.instance_id,
+                                    &bytes,
+                                    provider_origin_tag,
+                                );
                             }
                         }
                     }
@@ -3880,8 +4040,296 @@ impl McwApp {
                 }
             } else if let Some(archive) = zip_files.into_iter().next() {
                 self.modpack_path_input = archive.display().to_string();
+                self.inspect_local_archive_optional_files();
                 self.create_tab = CreateInstanceTab::ImportArchive;
                 self.start_modpack_install(ctx);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Stage 5 Controllers: Java Diagnostics, LAN Agent Log, OptiFine Standalone,
+    // Content Store Deduplication, Loader Diagnostics & Optional Files
+    // -------------------------------------------------------------------------
+
+    pub(crate) fn inspect_local_archive_optional_files(&mut self) {
+        self.archive_optional_files.clear();
+        self.archive_selected_optional_ids.clear();
+        self.archive_include_optional = true;
+        let path = PathBuf::from(self.modpack_path_input.trim());
+        if !path.is_file() {
+            return;
+        }
+        if let Ok(list) = ModpackInstaller::inspect_optional_files(&path) {
+            for item in &list {
+                if item.default_selected {
+                    self.archive_selected_optional_ids.insert(item.id.clone());
+                }
+            }
+            self.archive_optional_files = list;
+        }
+    }
+
+    pub(crate) fn load_atlauncher_optional_files(&mut self, ctx: &egui::Context) {
+        let Some(ModpackInstallProvider::AtLauncher { ref pack }) = self.modpack_dialog.provider
+        else {
+            return;
+        };
+        let pack_clone = pack.clone();
+        let req_id = self.modpack_dialog.request_id;
+        let ver_id = self.modpack_dialog.selected_version_id.clone();
+        if ver_id.is_empty() {
+            return;
+        }
+        self.modpack_dialog.loading_optional_files = true;
+        self.modpack_dialog.optional_files.clear();
+        self.modpack_dialog.selected_optional_ids.clear();
+
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res: Result<Vec<ModpackOptionalFile>, String> = async {
+                let cache = ApiCache::open(&paths.cache_root.join("providers.sqlite"))
+                    .ok()
+                    .map(Arc::new);
+                let client = AtLauncherClient::new(cache).map_err(|e| e.to_string())?;
+                client
+                    .inspect_optional_mods(&pack_clone, Some(&ver_id))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+            let _ = tx.send(AppEvent::ModpackOptionalFilesLoaded {
+                request_id: req_id,
+                files: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_java_diagnostics_scan(&mut self, ctx: &egui::Context) {
+        if self.java_scanning {
+            return;
+        }
+        self.java_scanning = true;
+        let runtimes = self.paths.runtimes_root.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+        self.runtime.spawn(async move {
+            let diags =
+                tokio::task::spawn_blocking(move || JavaDiagnosticsManager::scan(Some(&runtimes)))
+                    .await
+                    .unwrap_or_default();
+            let _ = tx.send(AppEvent::JavaDiagnosticsScanned(diags));
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn uninstall_managed_java(&mut self, executable: PathBuf, ctx: &egui::Context) {
+        match JavaDiagnosticsManager::uninstall_managed(&self.paths.runtimes_root, &executable) {
+            Ok(true) => {
+                self.reload_java();
+                self.start_java_diagnostics_scan(ctx);
+                self.push_global_log(format!(
+                    "Uninstalled managed Java runtime at {}",
+                    executable.display()
+                ));
+                self.notice_banner = Some(("Uninstalled managed Java runtime.".to_string(), false));
+            }
+            Ok(false) => {
+                self.notice_banner = Some((
+                    "Selected managed Java directory no longer exists.".to_string(),
+                    true,
+                ));
+            }
+            Err(err) => {
+                self.notice_banner =
+                    Some((format!("Failed to uninstall Java runtime: {err}"), true));
+            }
+        }
+    }
+
+    pub(crate) fn open_lan_agent_log_window(&mut self, instance_id: &str) {
+        self.lan_agent_log_instance_id = instance_id.to_string();
+        self.refresh_lan_agent_log();
+        self.show_lan_agent_log_window = true;
+    }
+
+    pub(crate) fn refresh_lan_agent_log(&mut self) {
+        if self.lan_agent_log_instance_id.is_empty() {
+            self.lan_agent_log_text.clear();
+            return;
+        }
+        let log_path =
+            LanAgentManager::log_path(&self.paths.instance_dir(&self.lan_agent_log_instance_id));
+        self.lan_agent_log_text = if log_path.is_file() {
+            std::fs::read_to_string(&log_path).unwrap_or_else(|e| {
+                self.lang
+                    .tr_fmt("lan.agent.log.read_error", &[("error", &e.to_string())])
+            })
+        } else {
+            String::new()
+        };
+    }
+
+    pub(crate) fn start_optifine_standalone_install(
+        &mut self,
+        instance: Instance,
+        jar_path: PathBuf,
+        ctx: &egui::Context,
+    ) {
+        if self.optifine_installing {
+            return;
+        }
+        let Some(java_exe) = self
+            .selected_settings
+            .as_ref()
+            .and_then(|s| s.java_path.clone())
+            .or_else(|| self.java_installations.first().map(|j| j.path.clone()))
+        else {
+            self.notice_banner = Some((
+                "No Java runtime found. Install Java 17 or 21 first.".to_string(),
+                true,
+            ));
+            return;
+        };
+
+        self.optifine_installing = true;
+        let task_id = self.begin_task(
+            format!("OptiFine: {}", instance.name),
+            "Preparing isolated OptiFine standalone installer...",
+        );
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res: Result<OptiFineState, String> = async {
+                let client = DownloadClient::new().map_err(|e| e.to_string())?;
+                let manifest_svc = VersionManifestService::new(&paths, &client);
+                let entry = manifest_svc
+                    .find_version(&instance.version_id, false)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let base_meta = manifest_svc
+                    .load_version_metadata(&entry)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let client_jar = paths.client_jar(&base_meta.id);
+                if let Some(dl) = base_meta.downloads.as_ref().and_then(|d| d.client.as_ref()) {
+                    let req = mcw_net::DownloadRequest::new(&dl.url, &client_jar)
+                        .with_sha1(dl.sha1.clone())
+                        .with_size(dl.size);
+                    client
+                        .download_file(&req)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                let paths_c = paths.clone();
+                let inst_c = instance.clone();
+                tokio::task::spawn_blocking(move || {
+                    OptiFineManager::install_standalone_profile(
+                        &paths_c, &inst_c, &base_meta, &jar_path, &java_exe,
+                    )
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())
+            }
+            .await;
+
+            let _ = tx.send(AppEvent::OptiFineInstallFinished {
+                task_id,
+                instance_id: instance.instance_id,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_content_store_dedup(&mut self, ctx: &egui::Context) {
+        if self.dedup_running {
+            return;
+        }
+        self.dedup_running = true;
+        let task_id = self.begin_task(
+            "Deduplicate Shared Content",
+            "Scanning instances for duplicate mods and resource/shader packs...",
+        );
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                ContentStore::deduplicate_instances(&paths).map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|inner| inner);
+
+            let _ = tx.send(AppEvent::ContentStoreDedupFinished {
+                task_id,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn export_loader_diagnostics(&mut self, inst: &Instance) {
+        let default_name = format!(
+            "{}-{}-diagnostics.zip",
+            inst.instance_id, inst.mod_loader.name
+        );
+        let Some(dest) = save_file_dialog(
+            self.t("forge.export_diagnostics"),
+            "ZIP archive (*.zip)|*.zip|All Files (*.*)|*.*",
+            &default_name,
+        ) else {
+            return;
+        };
+
+        let cached_profile_path = match inst.mod_loader.name.to_ascii_lowercase().as_str() {
+            "forge" | "neoforge" | "quilt" => {
+                let id = format!(
+                    "{}-{}-{}",
+                    inst.mod_loader.name.to_ascii_lowercase(),
+                    inst.version_id,
+                    inst.mod_loader.version
+                );
+                let p = self.paths.version_json(&id);
+                if p.is_file() {
+                    Some(p)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let metadata: Option<mcw_models::minecraft::VersionMetadata> = cached_profile_path
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|raw| serde_json::from_str(&raw).ok());
+
+        match LoaderDiagnosticsExporter::export(
+            &self.paths,
+            inst,
+            metadata.as_ref(),
+            &dest,
+            mcw_models::APP_VERSION,
+        ) {
+            Ok(out) => {
+                self.notice_banner = Some((
+                    format!("Exported mod-loader diagnostics to {}", out.display()),
+                    false,
+                ));
+            }
+            Err(err) => {
+                self.notice_banner = Some((
+                    format!("Failed to export mod-loader diagnostics: {err}"),
+                    true,
+                ));
             }
         }
     }

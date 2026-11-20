@@ -5,6 +5,7 @@ pub mod ftb;
 pub mod mod_updates;
 pub mod modpack;
 pub mod modrinth;
+pub mod pack_registry;
 
 pub use atlauncher::{AtLauncherClient, AtLauncherPack};
 pub use cache::ApiCache;
@@ -20,11 +21,16 @@ pub use mod_updates::{
 };
 pub use modpack::{
     normalize_modloader, parse_cf_loader_id, ManualDownloadItem, ModpackExportMode,
-    ModpackExportOptions, ModpackInstallReport, ModpackInstaller, ModpackProgressCallback,
+    ModpackExportOptions, ModpackInstallOptions, ModpackInstallReport, ModpackInstaller,
+    ModpackOptionalFile, ModpackProgressCallback,
 };
 pub use modrinth::{
     InstalledModFile, ModrinthClient, ModrinthDependency, ModrinthFile, ModrinthSearchHit,
     ModrinthSearchParams, ModrinthSearchResult, ModrinthVersion,
+};
+pub use pack_registry::{
+    detect_installed_pack, AtLauncherManagedFile, AtLauncherPackRecord, AtLauncherPackRegistry,
+    FtbManagedFile, FtbPackRecord, FtbPackRegistry, InstalledPackOrigin,
 };
 
 use thiserror::Error;

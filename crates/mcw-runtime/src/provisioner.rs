@@ -1,4 +1,5 @@
 use crate::java::{JavaDiscovery, JavaInstallation, JavaMajorPolicy};
+use crate::java_diagnostics::JavaRecoveryDiagnostics;
 use crate::{Result, RuntimeError};
 use mcw_net::{DownloadClient, DownloadRequest};
 use sha2::{Digest, Sha256};
@@ -164,12 +165,22 @@ impl JavaProvisioner {
         let _ = fs::remove_file(&archive_path);
 
         let exe = Self::managed_executable(runtimes_root, managed_major);
-        JavaDiscovery::probe(&exe).ok_or_else(|| {
+        let installed = JavaDiscovery::probe(&exe).ok_or_else(|| {
             RuntimeError::ProvisionFailed(format!(
                 "Extracted JDK at {} did not produce a working java executable",
                 target_dir.display()
             ))
-        })
+        })?;
+        JavaRecoveryDiagnostics::record(
+            "java.provision.installed",
+            format!(
+                "Installed managed Java {} ({}) at {}",
+                installed.major,
+                installed.version_string,
+                installed.path.display()
+            ),
+        );
+        Ok(installed)
     }
 }
 

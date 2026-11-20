@@ -347,7 +347,12 @@ impl<'a> InstanceStore<'a> {
 
     /// Save raw image bytes as the instance icon at `<instance_dir>/.mcw/instance-icon.<ext>`,
     /// detecting format from magic bytes (matching Python `instance_artwork_manager.py`).
-    pub fn set_instance_icon_bytes(&self, instance_id: &str, bytes: &[u8]) -> Result<Instance> {
+    pub fn set_instance_icon_bytes_with_origin(
+        &self,
+        instance_id: &str,
+        bytes: &[u8],
+        origin: &str,
+    ) -> Result<Instance> {
         if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
             return Err(StorageError::Io {
                 path: instance_id.to_string(),
@@ -376,8 +381,14 @@ impl<'a> InstanceStore<'a> {
 
         let mut instance = self.load_instance(instance_id)?;
         instance.icon = format!(".mcw/instance-icon.{ext}");
+        instance.icon_origin = origin.trim().to_string();
         self.save_instance(&instance)?;
         Ok(instance)
+    }
+
+    /// Save raw image bytes as a custom instance icon at `<instance_dir>/.mcw/instance-icon.<ext>`.
+    pub fn set_instance_icon_bytes(&self, instance_id: &str, bytes: &[u8]) -> Result<Instance> {
+        self.set_instance_icon_bytes_with_origin(instance_id, bytes, "custom")
     }
 
     /// Copy a user-selected image file as the instance icon.
@@ -405,6 +416,7 @@ impl<'a> InstanceStore<'a> {
         }
         let mut instance = self.load_instance(instance_id)?;
         instance.icon = "grass_block".to_string();
+        instance.icon_origin = "default".to_string();
         self.save_instance(&instance)?;
         Ok(instance)
     }

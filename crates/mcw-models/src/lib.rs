@@ -1,7 +1,10 @@
 pub mod account;
 pub mod instance;
 pub mod minecraft;
+pub mod policy;
 pub mod progress;
+
+pub use policy::{FailurePolicy, ManagedContentPolicy};
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LAUNCHER_NAME: &str = "MCW Launcher";

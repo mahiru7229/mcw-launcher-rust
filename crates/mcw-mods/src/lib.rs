@@ -1,10 +1,15 @@
 pub mod compat;
 pub mod content;
+pub mod library;
 pub mod manager;
 pub mod scanner;
 
 pub use compat::{ModCompatibilityAnalyzer, ModCompatibilityReport, ModIssue, ModIssueSeverity};
 pub use content::{ContentKind, ContentPackInfo, ContentPackManager};
+pub use library::{
+    ContentItemFlags, ContentLibraryPrefs, InstalledContentItem, InstalledContentKind,
+    InstalledContentLibrary,
+};
 pub use manager::ModManager;
 pub use scanner::{is_loader_compatible, ModInfo, ModLoaderTag, ModScanner};
 

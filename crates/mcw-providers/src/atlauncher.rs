@@ -1,5 +1,9 @@
 use crate::cache::ApiCache;
-use crate::modpack::{normalize_modloader, ModpackInstallReport, ModpackProgressCallback};
+use crate::modpack::{
+    normalize_modloader, ModpackInstallOptions, ModpackInstallReport, ModpackOptionalFile,
+    ModpackProgressCallback,
+};
+use crate::pack_registry::{AtLauncherManagedFile, AtLauncherPackRecord, AtLauncherPackRegistry};
 use crate::{ProviderError, Result};
 use mcw_models::instance::ModLoader;
 use mcw_net::{DownloadClient, DownloadRequest};
@@ -124,6 +128,76 @@ impl AtLauncherClient {
             .collect())
     }
 
+    /// Inspect optional client mods defined in ATLauncher `Configs.json` for a pack version.
+    pub async fn inspect_optional_mods(
+        &self,
+        pack: &AtLauncherPack,
+        version_override: Option<&str>,
+    ) -> Result<Vec<ModpackOptionalFile>> {
+        let chosen = if let Some(v) = version_override {
+            pack.versions
+                .iter()
+                .find(|entry| entry.version == v)
+                .or_else(|| pack.versions.first())
+        } else {
+            pack.versions.first()
+        }
+        .ok_or_else(|| {
+            ProviderError::Io(std::io::Error::other(format!(
+                "ATLauncher pack '{}' has no published versions",
+                pack.name
+            )))
+        })?;
+        let safe_name = pack.effective_safe_name();
+        let cfg_url = format!(
+            "{ATLAUNCHER_CDN_BASE}packs/{safe_name}/versions/{}/Configs.json",
+            chosen.version
+        );
+        let resp = self.http.get(&cfg_url).send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(ProviderError::ApiError {
+                status: status.as_u16(),
+                message: format!("Failed to fetch ATLauncher Configs.json: {text}"),
+            });
+        }
+        let cfg: serde_json::Value = serde_json::from_str(&text)?;
+        let mut optionals = Vec::new();
+        if let Some(mods) = cfg.get("mods").and_then(|v| v.as_array()) {
+            for m in mods {
+                if !m.get("client").and_then(|v| v.as_bool()).unwrap_or(true) {
+                    continue;
+                }
+                let mod_type = m.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let mod_name = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if is_atlauncher_loader_entry(mod_type, mod_name) {
+                    continue;
+                }
+                if !m.get("optional").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    continue;
+                }
+                let file = m.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                if file.is_empty() {
+                    continue;
+                }
+                let display = if mod_name.trim().is_empty() {
+                    file.to_string()
+                } else {
+                    format!("{} ({file})", mod_name.trim())
+                };
+                let default_selected = m.get("selected").and_then(|v| v.as_bool()).unwrap_or(false);
+                optionals.push(ModpackOptionalFile {
+                    id: file.to_string(),
+                    name: display,
+                    path: format!("mods/{file}"),
+                    default_selected,
+                });
+            }
+        }
+        Ok(optionals)
+    }
+
     /// Download and install the latest version of an ATLauncher modpack into a new Instance.
     pub async fn install_pack_with_progress(
         &self,
@@ -132,8 +206,16 @@ impl AtLauncherClient {
         downloader: &DownloadClient,
         progress: Option<ModpackProgressCallback>,
     ) -> Result<ModpackInstallReport> {
-        self.install_pack_version_with_progress(pack, None, None, paths, downloader, progress)
-            .await
+        self.install_pack_version_with_options(
+            pack,
+            None,
+            None,
+            paths,
+            downloader,
+            &ModpackInstallOptions::default(),
+            progress,
+        )
+        .await
     }
 
     /// Download and install a specific version (or latest if `None`) of an ATLauncher modpack.
@@ -144,6 +226,29 @@ impl AtLauncherClient {
         name_override: Option<&str>,
         paths: &LauncherPaths,
         downloader: &DownloadClient,
+        progress: Option<ModpackProgressCallback>,
+    ) -> Result<ModpackInstallReport> {
+        self.install_pack_version_with_options(
+            pack,
+            version_override,
+            name_override,
+            paths,
+            downloader,
+            &ModpackInstallOptions::default(),
+            progress,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn install_pack_version_with_options(
+        &self,
+        pack: &AtLauncherPack,
+        version_override: Option<&str>,
+        name_override: Option<&str>,
+        paths: &LauncherPaths,
+        downloader: &DownloadClient,
+        options: &ModpackInstallOptions,
         progress: Option<ModpackProgressCallback>,
     ) -> Result<ModpackInstallReport> {
         let emit = |cur: u64, tot: u64, msg: String| {
@@ -227,6 +332,7 @@ impl AtLauncherClient {
         fs::create_dir_all(&mods_dir)?;
 
         let mut requests = Vec::new();
+        let mut managed_files = Vec::new();
         if let Some(mods) = cfg.get("mods").and_then(|v| v.as_array()) {
             for m in mods {
                 if !m.get("client").and_then(|v| v.as_bool()).unwrap_or(true) {
@@ -238,12 +344,20 @@ impl AtLauncherClient {
                 if is_atlauncher_loader_entry(mod_type, mod_name) {
                     continue;
                 }
-                if m.get("optional").and_then(|v| v.as_bool()).unwrap_or(false)
-                    && !m.get("selected").and_then(|v| v.as_bool()).unwrap_or(false)
-                {
-                    continue;
-                }
+                let is_optional = m.get("optional").and_then(|v| v.as_bool()).unwrap_or(false);
                 let file = m.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                if is_optional {
+                    if !options.include_optional {
+                        continue;
+                    }
+                    if let Some(ref set) = options.selected_optional_paths {
+                        if !set.contains(file) && !set.contains(&format!("mods/{file}")) {
+                            continue;
+                        }
+                    } else if !m.get("selected").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        continue;
+                    }
+                }
                 let raw_url = m.get("url").and_then(|v| v.as_str()).unwrap_or("");
                 let download_kind = m.get("download").and_then(|v| v.as_str()).unwrap_or("");
                 if file.is_empty() || raw_url.is_empty() || download_kind == "browser" {
@@ -262,6 +376,22 @@ impl AtLauncherClient {
                     .filter(|s| !s.is_empty())
                     .map(String::from);
                 let size = m.get("filesize").and_then(|v| v.as_u64()).unwrap_or(0);
+                managed_files.push(AtLauncherManagedFile {
+                    file_id: file.to_string(),
+                    file_name: file.to_string(),
+                    name: if mod_name.is_empty() {
+                        file.to_string()
+                    } else {
+                        mod_name.to_string()
+                    },
+                    path: format!("mods/{file}"),
+                    sha1: sha1.clone().unwrap_or_default(),
+                    size,
+                    urls: vec![full_url.clone()],
+                    optional: is_optional,
+                    client_only: true,
+                    provider: "atlauncher".to_string(),
+                });
                 requests.push(
                     DownloadRequest::new(full_url, dest)
                         .with_sha1(sha1)
@@ -284,6 +414,21 @@ impl AtLauncherClient {
                 }
             })
             .await?;
+
+        let _ = AtLauncherPackRegistry::save(
+            &paths.instance_dir(&inst.instance_id),
+            &AtLauncherPackRecord {
+                schema_version: 1,
+                source: "atlauncher".to_string(),
+                pack_id: pack.id.to_string(),
+                pack_name: pack.name.clone(),
+                safe_name,
+                version_id: chosen.version.clone(),
+                version_name: chosen.version.clone(),
+                managed_files,
+                updated_at: String::new(),
+            },
+        );
 
         Ok(ModpackInstallReport {
             instance_id: inst.instance_id,

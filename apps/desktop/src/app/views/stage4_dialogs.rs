@@ -16,6 +16,9 @@ impl McwApp {
         let mut repair_clicked = false;
         let busy = self.is_instance_busy(&inst.instance_id);
 
+        let repair_lbl = self.t("workspace.action.repair").to_string();
+        let close_lbl = self.t("common.close").to_string();
+
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_repair_center");
         let builder = centered_viewport_builder(
             ctx,
@@ -38,7 +41,7 @@ impl McwApp {
                 .show(vp_ctx, |ui| {
                     ui.horizontal(|ui| {
                         let repair_btn = Button::new(
-                            RichText::new("Repair Files")
+                            RichText::new(&repair_lbl)
                                 .color(p.accent_text)
                                 .strong(),
                         )
@@ -50,7 +53,7 @@ impl McwApp {
                             rescan_clicked = true;
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Close").clicked() {
+                            if ui.button(&close_lbl).clicked() {
                                 open = false;
                             }
                         });
@@ -230,10 +233,15 @@ impl McwApp {
         let mut copy_clicked = false;
         let mut export_clicked = false;
 
+        let copy_lbl = self.t("logs.copy_all").to_string();
+        let clear_lbl = self.t("common.clear").to_string();
+        let close_lbl = self.t("common.close").to_string();
+        let title_lbl = self.t("navigation.logs").to_string();
+
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_global_logs");
         let builder = centered_viewport_builder(
             ctx,
-            "Global Launcher Logs — MCW Launcher",
+            format!("{title_lbl} — MCW Launcher"),
             [700.0, 480.0],
             [500.0, 340.0],
         );
@@ -254,23 +262,23 @@ impl McwApp {
                 )
                 .show(vp_ctx, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new("Global Launcher Logs").strong());
+                        ui.label(RichText::new(&title_lbl).strong());
                         ui.add(
                             TextEdit::singleline(&mut self.global_logs_filter)
                                 .hint_text("Filter logs...")
                                 .desired_width(200.0),
                         );
-                        if ui.button("Copy All").clicked() {
+                        if ui.button(&copy_lbl).clicked() {
                             copy_clicked = true;
                         }
                         if ui.button("Export Log...").clicked() {
                             export_clicked = true;
                         }
-                        if ui.button("Clear").clicked() {
+                        if ui.button(&clear_lbl).clicked() {
                             clear_clicked = true;
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Close").clicked() {
+                            if ui.button(&close_lbl).clicked() {
                                 open = false;
                             }
                         });
@@ -453,7 +461,7 @@ impl McwApp {
                             open_external(&self.paths.project_root.display().to_string());
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Close").clicked() {
+                            if ui.button(self.t("common.close")).clicked() {
                                 open = false;
                             }
                         });

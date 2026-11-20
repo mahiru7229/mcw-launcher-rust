@@ -36,6 +36,8 @@ pub struct Instance {
     #[serde(default = "default_icon")]
     pub icon: String,
     #[serde(default)]
+    pub icon_origin: String,
+    #[serde(default)]
     pub last_played: String,
     #[serde(default)]
     pub last_exit_code: Option<i32>,
@@ -73,6 +75,7 @@ impl Instance {
             version_id: version_id.into(),
             mod_loader: ModLoader::vanilla(),
             icon: default_icon(),
+            icon_origin: String::new(),
             last_played: String::new(),
             last_exit_code: None,
             last_launch_crashed: false,
@@ -109,6 +112,14 @@ pub struct InstanceSettings {
     pub height: u32,
     #[serde(default)]
     pub fullscreen: bool,
+    #[serde(default = "default_inherit")]
+    pub modrinth_failure_policy: String,
+    #[serde(default = "default_inherit")]
+    pub curseforge_failure_policy: String,
+}
+
+fn default_inherit() -> String {
+    "inherit".to_string()
 }
 
 fn default_min_memory() -> u32 {
@@ -149,6 +160,8 @@ impl Default for InstanceSettings {
             width: default_width(),
             height: default_height(),
             fullscreen: false,
+            modrinth_failure_policy: default_inherit(),
+            curseforge_failure_policy: default_inherit(),
         }
     }
 }

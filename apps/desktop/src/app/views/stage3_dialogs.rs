@@ -349,6 +349,55 @@ impl McwApp {
                     }
                 });
             });
+
+        ui.add_space(8.0);
+
+        // Card 3: Shared Content Store & Hardlink Deduplication
+        Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .corner_radius(CornerRadius::same(3))
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new("Shared Content Store & Hardlink Deduplication").strong(),
+                );
+                ui.label(
+                    RichText::new(
+                        "Deduplicates identical immutable .jar mods and resource/shader packs across instances via SHA-256 content addressing in cache/content_store/.",
+                    )
+                    .size(11.5)
+                    .color(p.text_muted),
+                );
+                ui.add_space(6.0);
+                if let Some(ref st) = self.content_store_stats {
+                    ui.label(
+                        RichText::new(format!(
+                            "Canonical blobs: {} ({}) · Deduplicated copies: {} (~{} saved)",
+                            st.blob_count,
+                            format_bytes(st.total_blob_bytes),
+                            st.deduplicated_files,
+                            format_bytes(st.estimated_saved_bytes)
+                        ))
+                        .monospace()
+                        .size(11.5)
+                        .color(p.text_muted),
+                    );
+                }
+                ui.add_space(6.0);
+                let dedup_lbl = if self.dedup_running {
+                    "Deduplicating..."
+                } else {
+                    "Deduplicate Shared Mods & Packs"
+                };
+                if ui
+                    .add_enabled(!self.dedup_running, Button::new(dedup_lbl))
+                    .clicked()
+                {
+                    self.start_content_store_dedup(ctx);
+                }
+            });
     }
 
     pub(crate) fn render_settings_updates_tab(

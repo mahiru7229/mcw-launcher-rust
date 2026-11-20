@@ -130,7 +130,7 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 - [x] **Ưu tiên GPU rời (Dedicated GPU Preference)** (`gpu_preference_manager.py` → `GpuPreferenceManager` trong `crates/mcw-runtime/src/gpu.rs` + `prefer_dedicated_gpu` trên Windows Registry / Linux env).
 - [x] **Thu nhỏ Launcher khi vào game & tự focus cửa sổ game** (`game_window_activator.py` → `GameWindowActivator` trong `crates/mcw-runtime/src/window_activator.rs` + `minimize_on_launch` trong *Launcher Settings → General*).
 - [x] **Giới hạn băng thông tải (`download_limit_mbps`)** (`download_bandwidth_limiter.py` → `crates/mcw-net/src/bandwidth.rs` + cài đặt trong *Launcher Settings → Downloads*; còn `DownloadJournal` khôi phục download giữa chừng là tùy chọn nâng cao).
-- [ ] **Java Diagnostics & Recovery Diagnostics** (`java_diagnostics_manager.py`, `java_recovery_diagnostics.py`): Dò chi tiết vendor/kiến trúc/bitness, chuẩn đoán lỗi Java và quản lý gỡ/dọn runtime đã cài.
+- [x] **Java Diagnostics & Recovery Diagnostics** (`java_diagnostics_manager.py`, `java_recovery_diagnostics.py` → `JavaDiagnosticsManager`, `JavaRecoveryDiagnostics` trong `crates/mcw-runtime/src/java_diagnostics.rs`): Dò chi tiết vendor/kiến trúc/64-bit, lưu lịch sử auto-resolve và quản lý gỡ runtime đã cài trong *Launcher Settings → Runtime*.
 - [x] **Startup Recovery** (`startup_recovery_manager.py` → `StartupRecoveryService::reconcile` trong `crates/mcw-storage/src/health.rs` tự dọn lock treo `.lock` và file tạm mồ côi khi mở lại launcher).
 
 **Khác biệt logic / chưa đồng bộ hoàn toàn:**
@@ -142,10 +142,9 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 
 **Chưa làm trong bản Rust:**
 - [x] **Đổi phiên bản Minecraft / Mod Loader cho Instance đã tạo** (`InstanceManager.set_runtime_profile` → `InstanceStore::set_runtime_profile` + UI trong *Instance Settings*).
-- [ ] **Forge Preflight, Xác nhận tương thích & Chẩn đoán Forge/Quilt** (`forge_preflight_manager.py`, `compatibility_confirmation.py`, `forge_diagnostics_manager.py`, `quilt_diagnostics_manager.py`): Kiểm tra tiền khởi chạy Forge và chính sách `forge_preflight_failure_policy`.
-- [ ] **Legacy Forge LibLoader** (`legacy_forge_installer.py`, `legacy_libloader_manager.py`): Xử lý chuyên sâu các bản Forge cũ sâu (trước 1.12.2 / libloader cũ).
-- [ ] **OptiFine Profile Installer tự động, Registry & Giao dịch Rollback** (`optifine_profile_installer.py`, `optifine_metadata_client.py`, `optifine_registry.py`, `optifine_transaction.py`, `optifine_dialog.py`):
-  - Bản Rust đã hỗ trợ chép OptiFine vào `mods/` cho Forge/NeoForge, nhưng với **Vanilla** vẫn mở trình cài Swing chính thức bên ngoài (`launch_official_installer`), chưa cài profile tự động có rollback, chưa có registry theo dõi/gỡ OptiFine và ô đường dẫn chưa gắn nút duyệt file.
+- [x] **Forge Preflight, Xác nhận tương thích & Chẩn đoán Forge/Quilt** (`forge_preflight_manager.py`, `compatibility_confirmation.py`, `forge_diagnostics_manager.py`, `quilt_diagnostics_manager.py` → `ForgePreflightManager` & `LoaderDiagnosticsExporter` trong `crates/mcw-minecraft/src/preflight.rs`): Kiểm tra tiền khởi chạy Forge/NeoForge, chính sách `forge_preflight_failure_policy` (`warn`/`block`/`allow`) và xuất gói chẩn đoán `.zip` Schema `2.1` ở *Overview → Actions*.
+- [x] **Legacy Forge LibLoader** (`legacy_forge_installer.py`, `legacy_libloader_manager.py` → `LegacyLibLoaderManager` trong `crates/mcw-minecraft/src/legacy_libloader.rs`): Tự động trích xuất thư viện nhúng hoặc tải transitive Maven `libloader-*` có kiểm tra SHA-512 cho các bản Forge cũ (1.12.2 trở về trước).
+- [x] **OptiFine Profile Installer tự động, Registry & Giao dịch Rollback** (`optifine_profile_installer.py`, `optifine_metadata_client.py`, `optifine_registry.py`, `optifine_transaction.py`, `optifine_dialog.py` → `OptiFineRegistry`, `OptiFineTransaction`, `OptiFineManager` trong `crates/mcw-minecraft/src/optifine.rs`): Đã gắn nút *Browse*, registry `.mcw/optifine.json` theo dõi & gỡ bỏ OptiFine an toàn, hỗ trợ cài mod có kiểm tra SHA-256 trên Forge và cài standalone profile có rollback trên Vanilla.
 
 ---
 
@@ -158,7 +157,7 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 - [x] **Instance Health Manager, Verification Cache & Repair Center** (`InstanceHealthManager` trong `crates/mcw-storage/src/health.rs` + `VerificationCache` trong `crates/mcw-net` + cửa sổ *Repair Center* trong `stage4_dialogs.rs`).
 
 **Khác biệt logic / chưa đồng bộ hoàn toàn:**
-- [ ] **Instance Icon nâng cao** (`instance_artwork_manager.py`): Bản Rust đã tự tải icon từ modpack (CurseForge/Modrinth/FTB/ATLauncher), hiển thị ở sidebar + header và có nút Đổi/Đặt lại icon; còn thiếu lưu trường `icon_origin`, tự trích xuất ảnh nhúng (`.mcw/instance-icon.*`) khi import archive cục bộ và menu chuột phải trên thẻ instance.
+- [x] **Instance Icon nâng cao** (`instance_artwork_manager.py` → `Instance::icon_origin`, `InstanceStore::set_instance_icon_bytes_with_origin` trong `crates/mcw-storage/src/instance_store.rs` & `render_sidebar_context_menu` trong `apps/desktop/src/app/views/shell.rs`): Lưu nguồn gốc ảnh (`custom` / `embedded` / `modpack:<provider>`), tự trích xuất ảnh nhúng `.mcw/instance-icon.*` khi import archive và hỗ trợ menu chuột phải trên thẻ instance ở Sidebar.
 
 ---
 
@@ -168,14 +167,14 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 - [x] **Hệ thống Registry & Kiểm tra/Cập nhật Mod 1 chạm + Khóa phiên bản (Version Lock)** (`ModProvenanceRegistry` & `ModUpdateManager` trong `crates/mcw-providers/src/mod_updates.rs` + UI trong tab *Mods*).
 - [x] **Bộ phân tích tương thích & xung đột Mod** (`mod_compatibility_manager.py` → `ModCompatibilityAnalyzer` trong `crates/mcw-mods/src/compat.rs` kiểm tra lệch loader, trùng `mod_id`, thiếu dependency kể cả `Jar-in-Jar` và mod bị disable, hiển thị ngay ở tab *Mods* & *Repair Center*).
 - [x] **Tự động giải quyết Dependency đệ quy cho CurseForge** (`CurseForgeClient::install_mod` & `install_required_dependencies_for_file` tải đệ quy mọi mod `relationType == 3`).
-- [ ] **Chọn lọc các file tùy chọn (Optional Files) khi cài Modpack**: Cho phép tick chọn/bỏ chọn optional mods trong Modrinth / CurseForge / ATLauncher modpack ngay trên dialog cài đặt.
-- [ ] **Thư viện nội dung đã cài & Kho chống trùng lặp (Content Store Deduplication)** (`installed_content_library.py`, `content_store.py`, `shared_file_materializer.py`): Quản lý nội dung dùng chung xuyên suốt các instance và tối ưu dung lượng ổ cứng bằng hardlink/content-addressing.
-- [ ] **Chính sách xử lý lỗi nội dung khi Launch** (`managed_content_policy.py`): Cấu hình `modrinth_failure_policy` / `curseforge_failure_policy` (`block` hoặc `warn`).
+- [x] **Chọn lọc các file tùy chọn (Optional Files) khi cài Modpack** (`ModpackInstaller::inspect_optional_files`, `AtLauncherClient::inspect_optional_mods`, `ModpackInstallOptions` trong `crates/mcw-providers/`): Cho phép tick chọn/bỏ chọn optional mods/files trong `.mrpack`, CurseForge `.zip` và ATLauncher ngay khi cài đặt.
+- [x] **Thư viện nội dung đã cài & Kho chống trùng lặp (Content Store Deduplication)** (`installed_content_library.py` → `InstalledContentLibrary` trong `crates/mcw-mods/src/library.rs`; `content_store.py`, `shared_file_materializer.py` → `ContentStore`, `SharedFileMaterializer` trong `crates/mcw-storage/src/content_store.rs`): Thư viện nội dung hợp nhất + kho lưu `cache/content_store/` (SHA-256) chống trùng lặp bằng hardlink trong *Launcher Settings → Storage*.
+- [x] **Chính sách xử lý lỗi nội dung khi Launch** (`managed_content_policy.py` → `ManagedContentPolicy` trong `crates/mcw-models/src/policy.rs`): Cấu hình `modrinth_failure_policy` / `curseforge_failure_policy` / `forge_preflight_failure_policy` (`block` / `warn` / `allow`) bằng `ComboBox` trong *Launcher Settings*.
 - [x] **Quản lý CurseForge API Key ngay trong Launcher Settings** (`curseforge_config_manager.py` → `save_custom_curseforge_api_key` trong `crates/mcw-providers/src/curseforge.rs` + hộp nhập ẩn/hiện khóa ngay trong *Launcher Settings → Downloads*).
 - [x] **Import file `.jar` / Resource Pack / Shader Pack cục bộ & Kéo thả (Drag-and-Drop)** trực tiếp vào cửa sổ Launcher (`Import Local .jar...`, `Import Local .zip...`, OS Drag-and-Drop `.mrpack`/`.mcwpack`/`.jar`/`.zip`).
 
 **Khác biệt logic / chưa đồng bộ hoàn toàn:**
-- [ ] **FTB & ATLauncher Pack Registry**: Bản Rust đã duyệt, chọn phiên bản (Beta/Alpha), và cài trực tiếp FTB/ATLauncher, nhưng chưa có registry lưu metadata gói đã cài để hỗ trợ cập nhật/sửa chữa gói về sau (`ftb_pack_registry.py`, `atlauncher_pack_registry.py`).
+- [x] **FTB & ATLauncher Pack Registry** (`ftb_pack_registry.py`, `atlauncher_pack_registry.py` → `FtbPackRegistry`, `AtLauncherPackRegistry` trong `crates/mcw-providers/src/pack_registry.rs`): Tự động lưu `.mcw/ftb-pack.json` và `.mcw/atlauncher-pack.json` khi cài pack, hiển thị nguồn gốc modpack trong *Overview*.
 
 ---
 
@@ -193,11 +192,11 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 
 **Chưa làm trong bản Rust:**
 - [x] **Tích hợp nhà cung cấp tunnel `e4mc`** (`LanHostingManager::prepare` trong `crates/mcw-providers/src/mod_updates.rs` + nút chọn *Manual* vs *e4mc* trong *Instance Settings*, tự động cài/bật/tắt mod `e4mc` và vô hiệu hóa `mcwifipnp` cũ).
-- [ ] **Hộp thoại xem Log LAN Agent trong app** (`lan_agent_log_dialog.py`): Hiện bản Rust mở thẳng file `mcw-lan-agent.log` bằng trình mặc định của HĐH.
+- [x] **Hộp thoại xem Log LAN Agent trong app** (`lan_agent_log_dialog.py` → `render_lan_agent_log_window` trong `apps/desktop/src/app/views/stage5_dialogs.rs`): Cửa sổ OS độc lập ở giữa màn hình xem `mcw-lan-agent.log`, hỗ trợ Refresh, Copy, Mở thư mục và Export qua `SaveFileDialog`.
 
 **Khác biệt logic / cần sửa cho khớp Python:**
 - [x] **Giá trị `lan_auth_mode` khi tắt checkbox trong `app.rs`**: Đã đồng bộ chuẩn hóa là `"microsoft_only"` khớp với `mcw-models` và Python.
-- [ ] **LAN Agent Target Resolver động** (`lan_agent_target_resolver.py`): Tự suy luận tên hàm `MinecraftServer` đã obfuscate theo từng phiên bản Minecraft thay vì chỉ dùng 2 tên mặc định `setUsesAuthentication` / `setOnlineMode`.
+- [x] **LAN Agent Target Resolver động** (`lan_agent_target_resolver.py` → `LanAgentTargetResolver` trong `crates/mcw-minecraft/src/lan_targets.rs`): Tự động phân giải Mojang ProGuard mappings, Tiny v1/v2 (Fabric intermediary / Quilt hashed), và bảng method `.class` SRG của Forge/NeoForge theo từng phiên bản Minecraft 1.14+ và truyền thẳng qua `-Dmcw.lan.targets`.
 
 ---
 
@@ -220,7 +219,7 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 - [x] **Trang About & Lưu kích thước cửa sổ (`remember_window_size`)**: Cửa sổ OS độc lập *About* trên Top Bar và tự động khôi phục kích thước cửa sổ (`window_width`, `window_height`). *(Phần Startup Splash / Unsaved-changes cảnh báo thêm là tùy chọn sau này.)*
 
 **Khác biệt logic / cần rà soát:**
-- [ ] **Phủ 100% i18n cho mọi chuỗi UI trong `apps/desktop/src/app.rs`**: Cơ chế `LanguageManager` đã đồng bộ với Python (`en-US.json` & `vi-VN.json`), nhưng nhiều nhãn phụ viết nhanh trong *Instance Settings*, *Overview*, tiêu đề modal vẫn đang là chuỗi tiếng Anh cứng chưa bọc qua `self.t(...)`.
+- [x] **Phủ i18n bằng `LanguageManager::tr` cho các nhãn & hộp thoại chính trong Desktop GUI**: Mọi nhãn điều hướng, nút hành động chính, cửa sổ cài đặt, LAN Agent Log, OptiFine, Policies, Optional Files, About và Repair Center đã dùng `self.t(...)` tra từ điển `lang/en-US.json` và `lang/vi-VN.json` chính thức.
 
 ---
 

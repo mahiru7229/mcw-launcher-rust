@@ -22,36 +22,41 @@ use mcw_auth::{
     StoredAccount,
 };
 use mcw_minecraft::{
-    is_quick_play_supported, OptiFineManager, RepairService, ScreenshotInfo, ScreenshotManager,
-    VanillaLaunchPipeline, VersionManifestService, WorldInfo, WorldManager,
+    is_quick_play_supported, ForgePreflightManager, LanAgentTargetResolver,
+    LoaderDiagnosticsExporter, OptiFineManager, OptiFineState, RepairService, ScreenshotInfo,
+    ScreenshotManager, VanillaLaunchPipeline, VersionManifestService, WorldInfo, WorldManager,
 };
 use mcw_models::account::AccountSource;
 use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
 use mcw_models::progress::ProgressEvent;
+use mcw_models::ManagedContentPolicy;
 use mcw_mods::{
     is_loader_compatible, ContentKind, ContentPackInfo, ContentPackManager,
     ModCompatibilityAnalyzer, ModCompatibilityReport, ModInfo, ModIssueSeverity, ModManager,
 };
 use mcw_net::{DownloadClient, TaskControl};
 use mcw_providers::{
-    load_curseforge_api_key, load_custom_curseforge_api_key, save_custom_curseforge_api_key,
-    ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient, CurseForgeMod,
-    CurseForgeSearchParams, FtbClient, FtbPackSummary, LanHostingManager, ManualDownloadItem,
-    ModProvenanceRegistry, ModUpdateCandidate, ModUpdateManager, ModpackExportMode,
-    ModpackExportOptions, ModpackInstaller, ModpackProgressCallback, ModrinthClient,
-    ModrinthSearchHit, ModrinthSearchParams, TrackedModEntry,
+    detect_installed_pack, load_curseforge_api_key, load_custom_curseforge_api_key,
+    save_custom_curseforge_api_key, ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient,
+    CurseForgeMod, CurseForgeSearchParams, FtbClient, FtbPackSummary, LanHostingManager,
+    ManualDownloadItem, ModProvenanceRegistry, ModUpdateCandidate, ModUpdateManager,
+    ModpackExportMode, ModpackExportOptions, ModpackInstallOptions, ModpackInstaller,
+    ModpackOptionalFile, ModpackProgressCallback, ModrinthClient, ModrinthSearchHit,
+    ModrinthSearchParams, TrackedModEntry,
 };
 use mcw_runtime::{
     detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
     recommended_modpack_ram_mb, DiagnosticsExporter, DiscordRpcService, ExitClassification,
-    FirstRunRecommendation, FirstRunRecommendationService, GameWindowActivator, JavaDiscovery,
-    JavaInstallation, JavaProvisioner, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine,
+    FirstRunRecommendation, FirstRunRecommendationService, GameWindowActivator, JavaDiagnostic,
+    JavaDiagnosticsManager, JavaDiscovery, JavaInstallation, JavaProvisioner,
+    JavaRecoveryDiagnostics, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine,
     LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
-    BackupInfo, BackupManager, HealthSeverity, InstanceHealthManager, InstanceHealthReport,
-    InstanceHealthState, InstanceRunLock, InstanceStore, LauncherPaths, StartupRecoveryService,
-    StorageCleanupService, StorageSummary, UnusedVersionCandidate,
+    BackupInfo, BackupManager, ContentStore, ContentStoreStats, HealthSeverity,
+    InstanceHealthManager, InstanceHealthReport, InstanceHealthState, InstanceRunLock,
+    InstanceStore, LauncherPaths, StartupRecoveryService, StorageCleanupService, StorageSummary,
+    UnusedVersionCandidate,
 };
 use mcw_updater::{ReleaseInfo, UpdateChannel, UpdateCheckResult, UpdateChecker, UpdateInstaller};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -136,6 +141,10 @@ struct ModpackInstallDialogState {
     ram_user_edited: bool,
     java_custom: bool,
     java_path: String,
+    include_optional_files: bool,
+    optional_files: Vec<ModpackOptionalFile>,
+    selected_optional_ids: HashSet<String>,
+    loading_optional_files: bool,
 }
 
 pub struct McwApp {
@@ -368,6 +377,21 @@ pub struct McwApp {
     cf_api_key_input: String,
     cf_api_key_revealed: bool,
     last_window_size: [f32; 2],
+
+    // Stage 5: Java Diagnostics, LAN Agent Log dialog, Sidebar Context Menu,
+    // Optional modpack files, Shared Content Store deduplication & OptiFine tracking
+    java_diagnostics: Vec<JavaDiagnostic>,
+    java_scanning: bool,
+    show_lan_agent_log_window: bool,
+    lan_agent_log_instance_id: String,
+    lan_agent_log_text: String,
+    sidebar_context_menu: Option<(String, egui::Pos2)>,
+    archive_optional_files: Vec<ModpackOptionalFile>,
+    archive_selected_optional_ids: HashSet<String>,
+    archive_include_optional: bool,
+    content_store_stats: Option<ContentStoreStats>,
+    dedup_running: bool,
+    optifine_installing: bool,
 }
 
 impl McwApp {
@@ -597,7 +621,21 @@ impl McwApp {
             cf_api_key_input,
             cf_api_key_revealed: false,
             last_window_size,
+            java_diagnostics: Vec::new(),
+            java_scanning: false,
+            show_lan_agent_log_window: false,
+            lan_agent_log_instance_id: String::new(),
+            lan_agent_log_text: String::new(),
+            sidebar_context_menu: None,
+            archive_optional_files: Vec::new(),
+            archive_selected_optional_ids: HashSet::new(),
+            archive_include_optional: true,
+            content_store_stats: None,
+            dedup_running: false,
+            optifine_installing: false,
         };
+
+        app.content_store_stats = Some(ContentStore::stats(&app.paths));
 
         app.push_global_log(format!(
             "MCW Launcher: Rust Edition v{} started.",
@@ -620,6 +658,7 @@ impl McwApp {
         app.reload_instances();
         app.reload_accounts();
         app.reload_java();
+        app.start_java_diagnostics_scan(&cc.egui_ctx);
         app.fetch_versions(&cc.egui_ctx);
         app.ensure_account_avatars_loaded(&cc.egui_ctx);
 

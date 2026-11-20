@@ -55,13 +55,16 @@ impl McwApp {
                             self.show_launcher_settings = !self.show_launcher_settings;
                         }
                         if ui
-                            .selectable_label(self.show_about_window, "About")
+                            .selectable_label(self.show_about_window, self.t("navigation.about"))
                             .clicked()
                         {
                             self.show_about_window = !self.show_about_window;
                         }
                         if ui
-                            .selectable_label(self.show_global_logs_window, "Logs")
+                            .selectable_label(
+                                self.show_global_logs_window,
+                                self.t("navigation.logs"),
+                            )
                             .clicked()
                         {
                             self.show_global_logs_window = !self.show_global_logs_window;
@@ -109,14 +112,12 @@ impl McwApp {
                         .color(p.text_muted),
                 );
                 ui.add_space(4.0);
-                let new_btn = Button::new(
-                    RichText::new("+ New Instance / Modpack")
-                        .color(p.accent_text)
-                        .strong(),
-                )
-                .fill(p.accent)
-                .min_size(Vec2::new(ui.available_width(), 28.0))
-                .corner_radius(CornerRadius::same(3));
+                let new_inst_lbl = format!("+ {}", self.t("workspace.create.title"));
+                let new_btn =
+                    Button::new(RichText::new(new_inst_lbl).color(p.accent_text).strong())
+                        .fill(p.accent)
+                        .min_size(Vec2::new(ui.available_width(), 28.0))
+                        .corner_radius(CornerRadius::same(3));
                 if ui.add(new_btn).clicked() {
                     self.create_tab = CreateInstanceTab::Custom;
                     self.create_name.clear();
@@ -314,11 +315,22 @@ impl McwApp {
                                 });
                             });
 
+                        let card_hovered = ui.rect_contains_pointer(frame_resp.response.rect);
                         let card_clicked = !star_clicked
-                            && ui.rect_contains_pointer(frame_resp.response.rect)
+                            && card_hovered
                             && ui.input(|i| i.pointer.primary_clicked());
                         if card_clicked {
                             newly_selected = Some(inst.instance_id.clone());
+                            self.sidebar_context_menu = None;
+                        }
+                        let right_clicked = !star_clicked
+                            && card_hovered
+                            && ui.input(|i| i.pointer.secondary_clicked());
+                        if right_clicked {
+                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                                newly_selected = Some(inst.instance_id.clone());
+                                self.sidebar_context_menu = Some((inst.instance_id.clone(), pos));
+                            }
                         }
                         ui.add_space(4.0);
                     }
@@ -339,6 +351,195 @@ impl McwApp {
                     self.ensure_active_tab_loaded(ctx);
                 }
             });
+
+        self.render_sidebar_context_menu(ctx);
+    }
+
+    fn render_sidebar_context_menu(&mut self, ctx: &egui::Context) {
+        let Some((menu_inst_id, pos)) = self.sidebar_context_menu.clone() else {
+            return;
+        };
+        let Some(inst) = self
+            .instances
+            .iter()
+            .find(|i| i.instance_id == menu_inst_id)
+            .cloned()
+        else {
+            self.sidebar_context_menu = None;
+            return;
+        };
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.sidebar_context_menu = None;
+            return;
+        }
+
+        let p = self.palette;
+        let busy = self.is_instance_busy(&inst.instance_id);
+        let is_running = matches!(
+            self.launch_states.get(&inst.instance_id),
+            Some(LaunchState::Running { .. })
+        );
+        let has_account = self.active_account().is_some();
+
+        let launch_lbl = if is_running {
+            self.t("Stop Game").to_string()
+        } else {
+            self.t("workspace.action.launch").to_string()
+        };
+        let open_folder_lbl = self.t("workspace.action.open_folder").to_string();
+        let repair_lbl = self.t("workspace.action.repair").to_string();
+        let chg_icon_lbl = self.t("workspace.action.change_icon").to_string();
+        let clone_lbl = self.t("workspace.action.clone").to_string();
+        let rename_lbl = self.t("instance.rename").to_string();
+        let del_lbl = self.t("workspace.action.delete").to_string();
+
+        let mut close_menu = false;
+        let mut launch_or_stop = false;
+        let mut open_folder = false;
+        let mut open_repair = false;
+        let mut open_tags = false;
+        let mut change_icon = false;
+        let mut open_clone = false;
+        let mut open_rename = false;
+        let mut open_delete = false;
+
+        let area_resp = egui::Area::new(egui::Id::new("mcw_sidebar_context_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0_f32, p.accent))
+                    .corner_radius(CornerRadius::same(4))
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.set_min_width(210.0);
+                        ui.label(
+                            RichText::new(&inst.name)
+                                .strong()
+                                .size(11.5)
+                                .color(p.accent),
+                        );
+                        ui.separator();
+
+                        if ui
+                            .add_enabled(
+                                is_running || (!busy && has_account),
+                                Button::new(RichText::new(launch_lbl).strong()),
+                            )
+                            .clicked()
+                        {
+                            launch_or_stop = true;
+                            close_menu = true;
+                        }
+                        if ui.button(open_folder_lbl).clicked() {
+                            open_folder = true;
+                            close_menu = true;
+                        }
+                        if ui
+                            .button(format!("{repair_lbl} / Health Center..."))
+                            .clicked()
+                        {
+                            open_repair = true;
+                            close_menu = true;
+                        }
+                        ui.separator();
+                        if ui.button("Group & Tags...").clicked() {
+                            open_tags = true;
+                            close_menu = true;
+                        }
+                        if ui.button(chg_icon_lbl).clicked() {
+                            change_icon = true;
+                            close_menu = true;
+                        }
+                        if ui.button(clone_lbl).clicked() {
+                            open_clone = true;
+                            close_menu = true;
+                        }
+                        if ui.add_enabled(!busy, Button::new(rename_lbl)).clicked() {
+                            open_rename = true;
+                            close_menu = true;
+                        }
+                        ui.separator();
+                        if ui
+                            .add_enabled(!busy, Button::new(RichText::new(del_lbl).color(p.danger)))
+                            .clicked()
+                        {
+                            open_delete = true;
+                            close_menu = true;
+                        }
+                    });
+            });
+
+        // Close if user clicks anywhere outside the menu popup
+        if !close_menu
+            && ctx.input(|i| i.pointer.primary_clicked())
+            && !area_resp.response.hovered()
+        {
+            if let Some(p_pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                if !area_resp.response.rect.contains(p_pos) {
+                    close_menu = true;
+                }
+            } else {
+                close_menu = true;
+            }
+        }
+
+        if close_menu {
+            self.sidebar_context_menu = None;
+        }
+        if launch_or_stop {
+            if let Some(LaunchState::Running { control, .. }) =
+                self.launch_states.get(&inst.instance_id)
+            {
+                control.request_stop();
+            } else {
+                self.start_launch(ctx);
+            }
+        }
+        if open_folder {
+            let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+            let _ = std::fs::create_dir_all(&mc_dir);
+            open_external(&mc_dir.display().to_string());
+        }
+        if open_repair {
+            self.open_repair_center(&inst.instance_id, ctx);
+        }
+        if open_tags {
+            self.edit_group_input = inst.group.clone();
+            self.edit_tags_input = inst.tags.join(", ");
+            self.show_group_tags_modal = true;
+        }
+        if change_icon {
+            if let Some(chosen) = pick_file_dialog(
+                self.t("workspace.icon.choose_title"),
+                "Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.ico)|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.ico",
+            ) {
+                let store = InstanceStore::new(&self.paths);
+                match store.set_instance_icon(&inst.instance_id, &chosen) {
+                    Ok(_) => {
+                        self.instance_icon_textures.clear();
+                        self.reload_instances();
+                    }
+                    Err(err) => {
+                        self.notice_banner = Some((format!("Failed to set icon: {err}"), true));
+                    }
+                }
+            }
+        }
+        if open_clone {
+            self.clone_name_input = format!("{} (Copy)", inst.name);
+            self.clone_include_saves = false;
+            self.show_clone_modal = true;
+        }
+        if open_rename {
+            self.rename_input = inst.name.clone();
+            self.show_rename_modal = true;
+        }
+        if open_delete {
+            self.show_delete_modal = true;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

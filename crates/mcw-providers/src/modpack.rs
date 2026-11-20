@@ -4,7 +4,7 @@ use mcw_models::instance::ModLoader;
 use mcw_net::{DownloadClient, DownloadRequest};
 use mcw_storage::{InstanceStore, LauncherPaths};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -80,13 +80,53 @@ struct CfModLoader {
     primary: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModpackOptionalFile {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub default_selected: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModpackInstallOptions {
+    pub include_optional: bool,
+    pub selected_optional_paths: Option<HashSet<String>>,
+}
+
+impl Default for ModpackInstallOptions {
+    fn default() -> Self {
+        Self {
+            include_optional: true,
+            selected_optional_paths: None,
+        }
+    }
+}
+
+impl ModpackInstallOptions {
+    pub fn should_include(&self, key: &str) -> bool {
+        if !self.include_optional {
+            return false;
+        }
+        match self.selected_optional_paths {
+            Some(ref set) => set.contains(key),
+            None => true,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct CfManifestFile {
     #[serde(rename = "projectID")]
-    #[allow(dead_code)]
     project_id: u64,
     #[serde(rename = "fileID")]
     file_id: u64,
+    #[serde(default = "default_true")]
+    required: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +157,59 @@ impl Default for ModpackExportOptions {
 pub struct ModpackInstaller;
 
 impl ModpackInstaller {
+    /// Inspects a local `.mrpack` or CurseForge `.zip` archive and returns any optional files
+    /// that the user can toggle before installation.
+    pub fn inspect_optional_files(archive_path: &Path) -> Result<Vec<ModpackOptionalFile>> {
+        let file = File::open(archive_path)?;
+        let mut archive = ZipArchive::new(file)
+            .map_err(|e| ProviderError::Io(io::Error::other(format!("Invalid archive: {e}"))))?;
+
+        if let Ok(entry) = archive.by_name("modrinth.index.json") {
+            let index: MrpackIndex = serde_json::from_reader(entry)?;
+            let mut out = Vec::new();
+            for f in index.files {
+                let is_optional = f
+                    .env
+                    .as_ref()
+                    .and_then(|e| e.get("client"))
+                    .is_some_and(|v| v.eq_ignore_ascii_case("optional"));
+                if is_optional {
+                    let name = Path::new(&f.path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&f.path)
+                        .to_string();
+                    out.push(ModpackOptionalFile {
+                        id: f.path.clone(),
+                        name,
+                        path: f.path,
+                        default_selected: true,
+                    });
+                }
+            }
+            return Ok(out);
+        }
+
+        if let Ok(entry) = archive.by_name("manifest.json") {
+            let manifest: CurseForgeManifest = serde_json::from_reader(entry)?;
+            let mut out = Vec::new();
+            for f in manifest.files {
+                if !f.required {
+                    let key = format!("{}:{}", f.project_id, f.file_id);
+                    out.push(ModpackOptionalFile {
+                        id: key.clone(),
+                        name: format!("CurseForge Project #{} (File #{})", f.project_id, f.file_id),
+                        path: key,
+                        default_selected: true,
+                    });
+                }
+            }
+            return Ok(out);
+        }
+
+        Ok(Vec::new())
+    }
+
     /// Auto-detect and install either a Modrinth `.mrpack` or CurseForge `.zip` modpack.
     pub async fn install_from_archive(
         paths: &LauncherPaths,
@@ -125,12 +218,13 @@ impl ModpackInstaller {
         downloader: &DownloadClient,
         curseforge: Option<&CurseForgeClient>,
     ) -> Result<ModpackInstallReport> {
-        Self::install_from_archive_with_progress(
+        Self::install_from_archive_with_options(
             paths,
             archive_path,
             instance_name_override,
             downloader,
             curseforge,
+            &ModpackInstallOptions::default(),
             None,
         )
         .await
@@ -142,6 +236,27 @@ impl ModpackInstaller {
         instance_name_override: Option<&str>,
         downloader: &DownloadClient,
         curseforge: Option<&CurseForgeClient>,
+        on_progress: Option<ModpackProgressCallback>,
+    ) -> Result<ModpackInstallReport> {
+        Self::install_from_archive_with_options(
+            paths,
+            archive_path,
+            instance_name_override,
+            downloader,
+            curseforge,
+            &ModpackInstallOptions::default(),
+            on_progress,
+        )
+        .await
+    }
+
+    pub async fn install_from_archive_with_options(
+        paths: &LauncherPaths,
+        archive_path: &Path,
+        instance_name_override: Option<&str>,
+        downloader: &DownloadClient,
+        curseforge: Option<&CurseForgeClient>,
+        options: &ModpackInstallOptions,
         on_progress: Option<ModpackProgressCallback>,
     ) -> Result<ModpackInstallReport> {
         let file = File::open(archive_path)?;
@@ -159,6 +274,7 @@ impl ModpackInstaller {
                 archive_path,
                 instance_name_override,
                 downloader,
+                options,
                 on_progress,
             )
             .await;
@@ -171,6 +287,7 @@ impl ModpackInstaller {
                 instance_name_override,
                 downloader,
                 curseforge,
+                options,
                 on_progress,
             )
             .await;
@@ -256,6 +373,7 @@ impl ModpackInstaller {
         archive_path: &Path,
         name_override: Option<&str>,
         downloader: &DownloadClient,
+        options: &ModpackInstallOptions,
         on_progress: Option<ModpackProgressCallback>,
     ) -> Result<ModpackInstallReport> {
         let index: MrpackIndex = {
@@ -291,6 +409,14 @@ impl ModpackInstaller {
                     .get("client")
                     .map(|v| v.eq_ignore_ascii_case("unsupported"))
                     .unwrap_or(false)
+                {
+                    continue;
+                }
+                if env
+                    .get("client")
+                    .map(|v| v.eq_ignore_ascii_case("optional"))
+                    .unwrap_or(false)
+                    && !options.should_include(&f.path)
                 {
                     continue;
                 }
@@ -341,6 +467,7 @@ impl ModpackInstaller {
         name_override: Option<&str>,
         downloader: &DownloadClient,
         curseforge: Option<&CurseForgeClient>,
+        options: &ModpackInstallOptions,
         on_progress: Option<ModpackProgressCallback>,
     ) -> Result<ModpackInstallReport> {
         let manifest: CurseForgeManifest = {
@@ -375,16 +502,26 @@ impl ModpackInstaller {
 
         let mut resolved = Vec::new();
         let mut mod_urls: HashMap<u64, String> = HashMap::new();
-        if !manifest.files.is_empty() {
+        let selected_cf_files: Vec<&CfManifestFile> = manifest
+            .files
+            .iter()
+            .filter(|f| {
+                f.required || options.should_include(&format!("{}:{}", f.project_id, f.file_id))
+            })
+            .collect();
+        if !selected_cf_files.is_empty() {
             let cf_client = curseforge.ok_or(ProviderError::MissingApiKey)?;
             if let Some(ref cb) = on_progress {
                 cb(
                     0,
-                    manifest.files.len() as u64,
-                    format!("Resolving {} CurseForge mod files...", manifest.files.len()),
+                    selected_cf_files.len() as u64,
+                    format!(
+                        "Resolving {} CurseForge mod files...",
+                        selected_cf_files.len()
+                    ),
                 );
             }
-            let file_ids: Vec<u64> = manifest.files.iter().map(|f| f.file_id).collect();
+            let file_ids: Vec<u64> = selected_cf_files.iter().map(|f| f.file_id).collect();
             resolved = cf_client.get_files_batch(&file_ids).await?;
 
             // Batch-resolve project websiteUrl/slug for any files with third-party distribution disabled
@@ -1083,7 +1220,7 @@ fn extract_embedded_instance_icon(archive_path: &Path, store: &InstanceStore, in
         if is_icon {
             let mut buf = Vec::new();
             if io::Read::read_to_end(&mut entry, &mut buf).is_ok() && !buf.is_empty() {
-                let _ = store.set_instance_icon_bytes(instance_id, &buf);
+                let _ = store.set_instance_icon_bytes_with_origin(instance_id, &buf, "embedded");
                 return;
             }
         }
@@ -1372,5 +1509,53 @@ mod tests {
             .minecraft_dir("portable-imported")
             .join("mods/sodium.jar")
             .is_file());
+    }
+
+    #[test]
+    fn inspects_optional_files_from_mrpack_and_curseforge_archives() {
+        let dir = tempdir().unwrap();
+        let mrpack = dir.path().join("opt.mrpack");
+        {
+            let mut zip = ZipWriter::new(File::create(&mrpack).unwrap());
+            zip.start_file("modrinth.index.json", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(
+                br#"{
+                    "name": "Opt Pack",
+                    "dependencies": { "minecraft": "1.21.4", "fabric-loader": "0.16.10" },
+                    "files": [
+                        { "path": "mods/req.jar", "env": { "client": "required" } },
+                        { "path": "mods/shader-opt.jar", "env": { "client": "optional" } }
+                    ]
+                }"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let mr_opts = ModpackInstaller::inspect_optional_files(&mrpack).unwrap();
+        assert_eq!(mr_opts.len(), 1);
+        assert_eq!(mr_opts[0].path, "mods/shader-opt.jar");
+
+        let cf_zip = dir.path().join("cf_opt.zip");
+        {
+            let mut zip = ZipWriter::new(File::create(&cf_zip).unwrap());
+            zip.start_file("manifest.json", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(
+                br#"{
+                    "name": "CF Opt",
+                    "minecraft": { "version": "1.20.1", "modLoaders": [] },
+                    "files": [
+                        { "projectID": 10, "fileID": 100, "required": true },
+                        { "projectID": 20, "fileID": 200, "required": false }
+                    ]
+                }"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let cf_opts = ModpackInstaller::inspect_optional_files(&cf_zip).unwrap();
+        assert_eq!(cf_opts.len(), 1);
+        assert_eq!(cf_opts[0].id, "20:200");
     }
 }
