@@ -195,20 +195,13 @@ impl McwApp {
                             ui.horizontal(|ui| {
                                 for (target, label) in &items {
                                     let active = match target {
-                                        NavTarget::Home => {
-                                            self.active_tab == DetailTab::Overview
-                                                && !self.show_global_logs_window
-                                        }
-                                        NavTarget::Mods => self.active_tab == DetailTab::Mods,
-                                        NavTarget::Servers => {
-                                            self.active_tab == DetailTab::Settings
-                                        }
+                                        NavTarget::Home => self.active_page == AppPage::Home,
+                                        NavTarget::Mods => self.show_content_browser,
+                                        NavTarget::Servers => self.active_page == AppPage::Servers,
                                         NavTarget::Versions => {
-                                            self.show_launcher_settings
-                                                && self.launcher_settings_tab
-                                                    == LauncherSettingsTab::Storage
+                                            self.active_page == AppPage::Versions
                                         }
-                                        NavTarget::Logs => self.show_global_logs_window,
+                                        NavTarget::Logs => self.active_page == AppPage::Logs,
                                     };
                                     if self.nav_pill(ui, label, active).clicked() {
                                         clicked = Some(*target);
@@ -285,24 +278,27 @@ impl McwApp {
         if let Some(target) = clicked {
             match target {
                 NavTarget::Home => {
-                    self.active_tab = DetailTab::Overview;
-                    self.show_global_logs_window = false;
+                    self.active_page = AppPage::Home;
+                    self.ensure_active_tab_loaded(ctx);
                 }
-                NavTarget::Mods => self.active_tab = DetailTab::Mods,
-                NavTarget::Servers => self.active_tab = DetailTab::Settings,
+                NavTarget::Mods => {
+                    self.open_content_browser(BrowserCategory::Mods, None, ctx);
+                }
+                NavTarget::Servers => {
+                    self.active_page = AppPage::Servers;
+                    if let Some(id) = self.selected_instance_id.clone() {
+                        self.load_servers_async(&id, ctx, false);
+                    }
+                }
                 NavTarget::Versions => {
-                    self.launcher_settings_tab = LauncherSettingsTab::Storage;
-                    self.show_launcher_settings = true;
+                    self.active_page = AppPage::Versions;
+                    if self.cached_versions.is_empty() {
+                        self.load_cached_versions_async(ctx);
+                    }
                 }
                 NavTarget::Logs => {
-                    self.show_global_logs_window = !self.show_global_logs_window;
+                    self.active_page = AppPage::Logs;
                 }
-            }
-            if matches!(
-                target,
-                NavTarget::Home | NavTarget::Mods | NavTarget::Servers
-            ) {
-                self.ensure_active_tab_loaded(ctx);
             }
         }
     }
@@ -404,6 +400,9 @@ impl McwApp {
             self.sidebar_context_menu = Some((id, pos));
         } else if let Some(id) = select {
             self.selected_instance_id = Some(id);
+            if self.active_page == AppPage::Versions {
+                self.active_page = AppPage::Home;
+            }
             self.sidebar_context_menu = None;
             self.sync_selected_from_cache();
             self.ensure_active_tab_loaded(ctx);

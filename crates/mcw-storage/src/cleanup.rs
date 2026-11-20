@@ -23,6 +23,14 @@ pub struct UnusedVersionCandidate {
     pub age_days: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct CachedVersionInfo {
+    pub version_id: String,
+    pub path: PathBuf,
+    pub size_bytes: u64,
+    pub has_jar: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StorageCleanupReport {
     pub removed_count: usize,
@@ -171,6 +179,51 @@ impl StorageCleanupService {
         }
         report
     }
+
+    /// List all version folders under `cache/versions/`, sorted by `version_id` descending.
+    pub fn list_cached_versions(paths: &LauncherPaths) -> Vec<CachedVersionInfo> {
+        let versions_dir = paths.cache_root.join("versions");
+        let Ok(entries) = fs::read_dir(&versions_dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let version_id = entry.file_name().to_string_lossy().to_string();
+            let has_jar = path.join(format!("{version_id}.jar")).is_file();
+            let size_bytes = Self::dir_size(&path);
+            out.push(CachedVersionInfo {
+                version_id,
+                path,
+                size_bytes,
+                has_jar,
+            });
+        }
+        out.sort_by(|a, b| b.version_id.cmp(&a.version_id));
+        out
+    }
+
+    /// Safely delete a single cached version folder under `cache/versions/<version_id>`,
+    /// returning reclaimed bytes.
+    pub fn delete_cached_version(paths: &LauncherPaths, version_id: &str) -> std::io::Result<u64> {
+        let clean = version_id.trim();
+        if clean.is_empty() || clean.contains('/') || clean.contains('\\') || clean.contains("..") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid version identifier",
+            ));
+        }
+        let dir = paths.version_dir(clean);
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+        let size = Self::dir_size(&dir);
+        fs::remove_dir_all(&dir)?;
+        Ok(size)
+    }
 }
 
 const UNIX_EPOCH_FALLBACK: SystemTime = SystemTime::UNIX_EPOCH;
@@ -249,5 +302,33 @@ mod tests {
         assert_eq!(pruned.reclaimed_bytes, 400);
         assert!(!v1.exists());
         assert!(v2.exists());
+    }
+
+    #[test]
+    fn lists_and_deletes_cached_versions_safely() {
+        let dir = tempdir().unwrap();
+        let paths = LauncherPaths::portable(dir.path());
+        paths.initialize().unwrap();
+
+        let v1 = paths.version_dir("1.20.4");
+        let v2 = paths.version_dir("1.21.1");
+        fs::create_dir_all(&v1).unwrap();
+        fs::create_dir_all(&v2).unwrap();
+        fs::write(v1.join("1.20.4.jar"), vec![1u8; 300]).unwrap();
+        fs::write(v2.join("1.21.1.json"), b"{}").unwrap();
+
+        let list = StorageCleanupService::list_cached_versions(&paths);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].version_id, "1.21.1");
+        assert!(!list[0].has_jar);
+        assert_eq!(list[1].version_id, "1.20.4");
+        assert!(list[1].has_jar);
+        assert_eq!(list[1].size_bytes, 300);
+
+        let reclaimed = StorageCleanupService::delete_cached_version(&paths, "1.20.4").unwrap();
+        assert_eq!(reclaimed, 300);
+        assert!(!v1.exists());
+
+        assert!(StorageCleanupService::delete_cached_version(&paths, "../escape").is_err());
     }
 }

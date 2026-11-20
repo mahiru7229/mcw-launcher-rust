@@ -1,4 +1,5 @@
 mod controllers;
+mod controllers_pages;
 mod platform;
 mod views;
 
@@ -7,8 +8,8 @@ use crate::background::BackgroundManager;
 use crate::i18n::{LanguageManager, LauncherPrefs};
 use crate::skin_render::{default_skin_face_rgba, render_skin_face_rgba};
 use crate::state::{
-    ActiveTask, AppEvent, ChannelLogSink, ChannelProgressSink, ModVersionChoice, ModpackChannel,
-    ModpackVersionOption,
+    ActiveTask, AppEvent, BrowserCategory, BrowserProvider, ChannelLogSink, ChannelProgressSink,
+    ModVersionChoice, ModpackChannel, ModpackVersionOption,
 };
 use crate::theme::{
     apply_custom_accent, apply_theme_palette, configure_fonts, format_hex_color, parse_hex_color,
@@ -24,8 +25,9 @@ use mcw_auth::{
 };
 use mcw_minecraft::{
     is_quick_play_supported, ForgePreflightManager, LanAgentTargetResolver,
-    LoaderDiagnosticsExporter, OptiFineManager, OptiFineState, RepairService, ScreenshotInfo,
-    ScreenshotManager, VanillaLaunchPipeline, VersionManifestService, WorldInfo, WorldManager,
+    LoaderDiagnosticsExporter, OptiFineManager, OptiFineState, RepairService, SavedServer,
+    ScreenshotInfo, ScreenshotManager, ServerManager, VanillaLaunchPipeline,
+    VersionManifestService, WorldInfo, WorldManager,
 };
 use mcw_models::account::AccountSource;
 use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
@@ -54,7 +56,7 @@ use mcw_runtime::{
     LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
-    BackupInfo, BackupManager, ContentStore, ContentStoreStats, HealthSeverity,
+    BackupInfo, BackupManager, CachedVersionInfo, ContentStore, ContentStoreStats, HealthSeverity,
     InstanceHealthManager, InstanceHealthReport, InstanceHealthState, InstanceRunLock,
     InstanceStore, LauncherPaths, StartupRecoveryService, StorageCleanupService, StorageSummary,
     UnusedVersionCandidate,
@@ -69,31 +71,39 @@ use std::time::{Duration, Instant};
 const MAX_LOG_LINES_PER_INSTANCE: usize = 1500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DetailTab {
-    Overview,
+pub(crate) enum AppPage {
+    Home,
+    Servers,
+    Versions,
+    Logs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DetailTab {
     Mods,
-    Packs,
     Worlds,
+    ResourcePacks,
+    Shaders,
     Screenshots,
     Backups,
     Logs,
     Settings,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModProviderTab {
-    Modrinth,
-    CurseForge,
+impl DetailTab {
+    pub(crate) fn content_kind(self) -> Option<ContentKind> {
+        match self {
+            Self::ResourcePacks => Some(ContentKind::ResourcePack),
+            Self::Shaders => Some(ContentKind::ShaderPack),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CreateInstanceTab {
     Custom,
     ImportArchive,
-    ModrinthPacks,
-    CurseForgePacks,
-    Ftb,
-    AtLauncher,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,13 +196,6 @@ pub struct McwApp {
     pending_delete_world: Option<(String, String)>,
     uploading_mclogs: bool,
     last_mclogs_url: Option<String>,
-    // Resource Packs & Shader Packs browser
-    packs_kind: ContentKind,
-    packs_provider: ModProviderTab,
-    packs_query: String,
-    packs_searching: bool,
-    packs_mr_results: Vec<ModrinthSearchHit>,
-    packs_cf_results: Vec<CurseForgeMod>,
     installing_content_packs: HashSet<String>,
     accounts: Vec<StoredAccount>,
     java_installations: Vec<JavaInstallation>,
@@ -219,13 +222,14 @@ pub struct McwApp {
     installing_java_majors: HashSet<u32>,
 
     // UI state
+    active_page: AppPage,
     active_tab: DetailTab,
     notice_banner: Option<(String, bool)>, // (message, is_error)
     backup_busy: bool,
     backup_note_input: String,
     pending_restore_backup_id: Option<String>,
 
-    // Create instance modal (Custom | Import Archive | Modrinth | CurseForge | FTB | ATLauncher)
+    // Create instance modal (Custom | Modpacks + Import Archive)
     show_create_modal: bool,
     create_tab: CreateInstanceTab,
     create_name: String,
@@ -236,13 +240,6 @@ pub struct McwApp {
     modpack_path_input: String,
     modpack_name_input: String,
     modpack_manual_downloads: Vec<ManualDownloadItem>,
-    pack_browser_query: String,
-    pack_loader_filter: String,
-    pack_browser_searching: bool,
-    mr_pack_results: Vec<ModrinthSearchHit>,
-    cf_pack_results: Vec<CurseForgeMod>,
-    ftb_results: Vec<FtbPackSummary>,
-    atl_results: Vec<AtLauncherPack>,
 
     // 3-Mode Export Modpack Modal (matching Python ModpackExportDialog)
     show_export_modal: bool,
@@ -259,7 +256,7 @@ pub struct McwApp {
     last_manual_scan_at: Option<Instant>,
     manual_scan_status: HashMap<String, String>,
 
-    // Launcher Settings separate window (gear icon in top-right)
+    // Launcher Settings in-app modal
     show_launcher_settings: bool,
     launcher_settings_tab: LauncherSettingsTab,
 
@@ -288,13 +285,35 @@ pub struct McwApp {
     ms_login_task: Option<tokio::task::JoinHandle<()>>,
     ms_device_code: Option<DeviceCodeResponse>,
 
-    // Mods browser inside Mods tab (Modrinth | CurseForge)
-    mod_provider_tab: ModProviderTab,
-    mod_loader_filter: String,
-    mod_search_query: String,
-    modrinth_results: Vec<ModrinthSearchHit>,
-    curseforge_results: Vec<CurseForgeMod>,
-    mod_searching: bool,
+    // Unified Content Browser OS Window (Mods / Modpacks / Resource / Shader / Data packs)
+    show_content_browser: bool,
+    browser_category: BrowserCategory,
+    browser_provider: BrowserProvider,
+    browser_query: String,
+    browser_sort: String,
+    browser_loader_filter: String,
+    browser_searching: bool,
+    browser_request_id: u64,
+    browser_initialized_key: Option<String>,
+    browser_selected_key: Option<String>,
+    browser_mr_results: Vec<ModrinthSearchHit>,
+    browser_cf_results: Vec<CurseForgeMod>,
+    browser_ftb_results: Vec<FtbPackSummary>,
+    browser_atl_results: Vec<AtLauncherPack>,
+    browser_datapack_world: String,
+
+    // v0.12 Pages state (Servers, Versions, Logs)
+    selected_servers: Vec<SavedServer>,
+    servers_cache: HashMap<String, Vec<SavedServer>>,
+    loading_servers: HashSet<String>,
+    add_server_name: String,
+    add_server_ip: String,
+    cached_versions: Vec<CachedVersionInfo>,
+    cached_versions_loading: bool,
+    versions_search: String,
+    versions_type_filter: String,
+    logs_page_source: String,
+    logs_page_filter: String,
 
     // Async icon thumbnail texture cache for Mods, Packs, and Modpacks
     thumb_textures: HashMap<String, egui::TextureHandle>,
@@ -339,10 +358,7 @@ pub struct McwApp {
     notice_banner_last_text: Option<String>,
     notice_banner_since: Option<Instant>,
 
-    // Dedicated Isolated OS Windows for Mod Browser, Pack Browser, Modpack Provider Browser, and Group & Tags
-    show_mod_browser_window: bool,
-    show_pack_browser_window: bool,
-    show_modpack_provider_window: Option<CreateInstanceTab>,
+    // Group & Tags centered OS window
     show_group_tags_modal: bool,
 
     // Stage 3: Account 2D Avatars, Auto-Updater, First-Run Wizard & Storage Inspector
@@ -400,6 +416,7 @@ pub struct McwApp {
     flyout_toggle_rect: Option<egui::Rect>,
     settings_search: String,
     settings_open_since: Option<Instant>,
+    fade_page: AppPage,
     fade_tab: DetailTab,
     fade_since: Instant,
 }
@@ -482,12 +499,6 @@ impl McwApp {
             pending_delete_world: None,
             uploading_mclogs: false,
             last_mclogs_url: None,
-            packs_kind: ContentKind::ResourcePack,
-            packs_provider: ModProviderTab::Modrinth,
-            packs_query: String::new(),
-            packs_searching: false,
-            packs_mr_results: Vec::new(),
-            packs_cf_results: Vec::new(),
             installing_content_packs: HashSet::new(),
             accounts: Vec::new(),
             java_installations: Vec::new(),
@@ -508,7 +519,8 @@ impl McwApp {
             installing_cf_mods: HashSet::new(),
             installing_modrinth_slugs: HashSet::new(),
             installing_java_majors: HashSet::new(),
-            active_tab: DetailTab::Overview,
+            active_page: AppPage::Home,
+            active_tab: DetailTab::Mods,
             notice_banner: None,
             backup_busy: false,
             backup_note_input: String::new(),
@@ -523,13 +535,6 @@ impl McwApp {
             modpack_path_input: String::new(),
             modpack_name_input: String::new(),
             modpack_manual_downloads: Vec::new(),
-            pack_browser_query: String::new(),
-            pack_loader_filter: "fabric".to_string(),
-            pack_browser_searching: false,
-            mr_pack_results: Vec::new(),
-            cf_pack_results: Vec::new(),
-            ftb_results: Vec::new(),
-            atl_results: Vec::new(),
             show_export_modal: false,
             export_mode: ModpackExportMode::Mrpack,
             export_portable_full: false,
@@ -562,12 +567,32 @@ impl McwApp {
             ms_login_mode: None,
             ms_login_task: None,
             ms_device_code: None,
-            mod_provider_tab: ModProviderTab::Modrinth,
-            mod_loader_filter: "fabric".to_string(),
-            mod_search_query: String::new(),
-            modrinth_results: Vec::new(),
-            curseforge_results: Vec::new(),
-            mod_searching: false,
+            show_content_browser: false,
+            browser_category: BrowserCategory::Mods,
+            browser_provider: BrowserProvider::Modrinth,
+            browser_query: String::new(),
+            browser_sort: "relevance".to_string(),
+            browser_loader_filter: "fabric".to_string(),
+            browser_searching: false,
+            browser_request_id: 0,
+            browser_initialized_key: None,
+            browser_selected_key: None,
+            browser_mr_results: Vec::new(),
+            browser_cf_results: Vec::new(),
+            browser_ftb_results: Vec::new(),
+            browser_atl_results: Vec::new(),
+            browser_datapack_world: String::new(),
+            selected_servers: Vec::new(),
+            servers_cache: HashMap::new(),
+            loading_servers: HashSet::new(),
+            add_server_name: String::new(),
+            add_server_ip: String::new(),
+            cached_versions: Vec::new(),
+            cached_versions_loading: false,
+            versions_search: String::new(),
+            versions_type_filter: "release".to_string(),
+            logs_page_source: "__global__".to_string(),
+            logs_page_filter: String::new(),
             thumb_textures: HashMap::new(),
             loading_thumbs: HashSet::new(),
             instance_icon_textures: HashMap::new(),
@@ -594,9 +619,6 @@ impl McwApp {
             checking_mod_updates: false,
             notice_banner_last_text: None,
             notice_banner_since: None,
-            show_mod_browser_window: false,
-            show_pack_browser_window: false,
-            show_modpack_provider_window: None,
             show_group_tags_modal: false,
             account_avatars: HashMap::new(),
             account_avatars_loading: HashSet::new(),
@@ -649,7 +671,8 @@ impl McwApp {
             flyout_toggle_rect: None,
             settings_search: String::new(),
             settings_open_since: None,
-            fade_tab: DetailTab::Overview,
+            fade_page: AppPage::Home,
+            fade_tab: DetailTab::Mods,
             fade_since: Instant::now(),
         };
 
@@ -773,7 +796,7 @@ impl eframe::App for McwApp {
         self.render_top_bar(ctx);
         self.render_tasks_bar(ctx);
         self.render_instance_rail(ctx);
-        self.render_detail_pane(ctx);
+        self.render_active_page(ctx);
         self.render_instance_flyout(ctx);
         self.render_modals(ctx);
     }

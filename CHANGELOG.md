@@ -2,6 +2,20 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [0.12.0-beta.1] — 2026-11-21
+
+### Added
+- **Home / Instance Page (`home_page.rs`)**: Horizon-style hero header (icon, title, playtime/mod/world stats, responsive group/tag pills), large `Play` button, `•••` Actions menu (consolidating all instance management actions), quick vector icon actions (Add Content, Open Folder, Edit Settings), and one floating translucent tabbed panel (`Mods`, `Worlds`, `Resource packs`, `Shaders`, `Screenshots`, `Backups`, `Logs`, `Settings`).
+- **Unified Content Browser OS Window (`content_browser.rs`)**: Centered OS viewport covering `Mods`, `Modpacks`, `Resource packs`, `Shader packs`, and `Data packs` (`mcw-mods::ContentKind::DataPack` + CurseForge class ID `6945`) with `ComboBox` filters (`Provider`, `Sort`, `Loader`, `Target Instance`), split scrollable list + right-hand detail panel (with per-world vs global target selector for Data Packs).
+- **Versions Page (`versions_page.rs`)**: Dedicated management for cached Minecraft versions under `cache/versions/` (`StorageCleanupService::list_cached_versions` / `delete_cached_version`, usage tracking, `Prune Unused`) plus Mojang manifest browser (`Releases` / `Snapshots` / `All`).
+- **Servers & LAN Page (`servers_page.rs`)**: Uncompressed NBT `servers.dat` reader/writer (`mcw-minecraft::ServerManager`) with Add/Remove/Copy IP, direct `--quickPlayMultiplayer` join on MC 1.20+, plus direct MCW LAN Agent & `e4mc` tunnel controls.
+- **Logs Page (`logs_page.rs`)**: Unified in-app log inspector for both Global Launcher Events and per-instance live stdout/stderr streams (with Crash Report jump, `mclo.gs` upload, Diagnostic `.zip` export, and Pop Out Global Window).
+
+### Changed
+- Split desktop pages & unified Content Browser into focused modules per `SOLID.md`, trimming ~2,000 lines across `dialogs.rs` and `workspace.rs`.
+- Replaced interim v0.11 top-bar destinations with dedicated `Home`, `Mods` (OS window), `Servers`, `Versions`, and `Logs` views.
+
+---
 ## [0.11.0-beta.1] — 2026-11-20
 
 ### Added

@@ -11,7 +11,8 @@ pub mod run_lock;
 pub use atomic_fs::{atomic_write_bytes, atomic_write_json, atomic_write_text};
 pub use backup::{BackupInfo, BackupManager, RestoreOutcome};
 pub use cleanup::{
-    StorageCleanupReport, StorageCleanupService, StorageSummary, UnusedVersionCandidate,
+    CachedVersionInfo, StorageCleanupReport, StorageCleanupService, StorageSummary,
+    UnusedVersionCandidate,
 };
 pub use content_store::{
     ContentStore, ContentStoreStats, MaterializationResult, SharedFileMaterializer,

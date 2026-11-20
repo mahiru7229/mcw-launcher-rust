@@ -27,6 +27,7 @@ pub fn class_id_for(kind: &str) -> u32 {
         "modpack" => 4471,
         "resourcepack" => 12,
         "shader" => 6552,
+        "datapack" => 6945,
         _ => 6, // mod
     }
 }
@@ -45,6 +46,7 @@ pub fn loader_type_id(loader: &str) -> Option<u32> {
 
 pub fn sort_field_id(sort: &str) -> u32 {
     match sort.trim().to_ascii_lowercase().as_str() {
+        "relevance" | "featured" => 1,
         "updated" => 3,
         "downloads" => 6,
         "newest" => 11,

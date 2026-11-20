@@ -1,6 +1,6 @@
 use eframe::egui::Context;
 use mcw_auth::{DeviceCodeResponse, StoredAccount};
-use mcw_minecraft::{OptiFineState, RepairReport, ScreenshotInfo, WorldInfo};
+use mcw_minecraft::{OptiFineState, RepairReport, SavedServer, ScreenshotInfo, WorldInfo};
 use mcw_models::progress::{ProgressEvent, ProgressSink};
 use mcw_mods::{ContentKind, ContentPackInfo, ModInfo};
 use mcw_net::TaskControl;
@@ -13,8 +13,8 @@ use mcw_runtime::{
     ProcessControl, ProcessExitReport,
 };
 use mcw_storage::{
-    BackupInfo, ContentStoreStats, RestoreOutcome, StorageCleanupReport, StorageSummary,
-    UnusedVersionCandidate,
+    BackupInfo, CachedVersionInfo, ContentStoreStats, RestoreOutcome, StorageCleanupReport,
+    StorageSummary, UnusedVersionCandidate,
 };
 use mcw_updater::{StagedUpdate, UpdateCheckResult};
 use std::sync::mpsc::Sender;
@@ -65,9 +65,77 @@ pub struct ModVersionChoice {
     pub sha1: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BrowserCategory {
+    Mods,
+    Modpacks,
+    ResourcePacks,
+    ShaderPacks,
+    DataPacks,
+}
+
+impl BrowserCategory {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mods => "Mods",
+            Self::Modpacks => "Modpacks",
+            Self::ResourcePacks => "Resource packs",
+            Self::ShaderPacks => "Shader packs",
+            Self::DataPacks => "Data packs",
+        }
+    }
+
+    pub fn modrinth_project_type(self) -> &'static str {
+        match self {
+            Self::Mods => "mod",
+            Self::Modpacks => "modpack",
+            Self::ResourcePacks => "resourcepack",
+            Self::ShaderPacks => "shader",
+            Self::DataPacks => "datapack",
+        }
+    }
+
+    pub fn curseforge_kind(self) -> &'static str {
+        match self {
+            Self::Mods => "mod",
+            Self::Modpacks => "modpack",
+            Self::ResourcePacks => "resourcepack",
+            Self::ShaderPacks => "shader",
+            Self::DataPacks => "datapack",
+        }
+    }
+
+    pub fn content_kind(self) -> Option<ContentKind> {
+        match self {
+            Self::ResourcePacks => Some(ContentKind::ResourcePack),
+            Self::ShaderPacks => Some(ContentKind::ShaderPack),
+            Self::DataPacks => Some(ContentKind::DataPack),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BrowserProvider {
+    Modrinth,
+    CurseForge,
+    Ftb,
+    AtLauncher,
+}
+
+impl BrowserProvider {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Modrinth => "Modrinth",
+            Self::CurseForge => "CurseForge",
+            Self::Ftb => "FTB",
+            Self::AtLauncher => "ATLauncher",
+        }
+    }
+}
+
 pub enum AppEvent {
     VersionsLoaded(Result<Vec<(String, String)>, String>),
-    ModrinthModpacksSearchFinished(Result<Vec<ModrinthSearchHit>, String>),
     ThumbnailLoaded {
         url: String,
         size: [usize; 2],
@@ -120,11 +188,6 @@ pub enum AppEvent {
         instance_id: String,
         kind: ContentKind,
         packs: Vec<ContentPackInfo>,
-    },
-    ContentPackSearchFinished {
-        provider_is_cf: bool,
-        modrinth: Result<Vec<ModrinthSearchHit>, String>,
-        curseforge: Result<Vec<CurseForgeMod>, String>,
     },
     ContentPackInstallFinished {
         task_id: u64,
@@ -185,9 +248,6 @@ pub enum AppEvent {
     },
     DeviceCodeReady(DeviceCodeResponse),
     MicrosoftLoginFinished(Result<StoredAccount, String>),
-    ModrinthSearchFinished(Result<Vec<ModrinthSearchHit>, String>),
-    CurseForgeSearchFinished(Result<Vec<CurseForgeMod>, String>),
-    CurseForgeModpacksSearchFinished(Result<Vec<CurseForgeMod>, String>),
     #[allow(dead_code)]
     CurseForgeModInstallFinished {
         task_id: u64,
@@ -195,8 +255,6 @@ pub enum AppEvent {
         instance_id: String,
         result: Result<String, String>,
     },
-    FtbSearchFinished(Result<Vec<FtbPackSummary>, String>),
-    AtLauncherSearchFinished(Result<Vec<AtLauncherPack>, String>),
     #[allow(dead_code)]
     ModrinthInstallFinished {
         task_id: u64,
@@ -244,6 +302,20 @@ pub enum AppEvent {
     ModpackOptionalFilesLoaded {
         request_id: u64,
         files: Result<Vec<ModpackOptionalFile>, String>,
+    },
+    ServersLoaded {
+        instance_id: String,
+        servers: Vec<SavedServer>,
+    },
+    CachedVersionsLoaded(Vec<CachedVersionInfo>),
+    ContentBrowserSearchFinished {
+        request_id: u64,
+        category: BrowserCategory,
+        provider: BrowserProvider,
+        modrinth: Result<Vec<ModrinthSearchHit>, String>,
+        curseforge: Result<Vec<CurseForgeMod>, String>,
+        ftb: Result<Vec<FtbPackSummary>, String>,
+        atl: Result<Vec<AtLauncherPack>, String>,
     },
 }
 

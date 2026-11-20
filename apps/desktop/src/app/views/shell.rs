@@ -232,6 +232,9 @@ impl McwApp {
         }
         if let Some(id) = newly_selected {
             self.selected_instance_id = Some(id);
+            if self.active_page == AppPage::Versions {
+                self.active_page = AppPage::Home;
+            }
             self.sync_selected_from_cache();
             self.ensure_active_tab_loaded(ctx);
         }

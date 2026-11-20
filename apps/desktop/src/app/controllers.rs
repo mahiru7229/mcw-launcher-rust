@@ -148,6 +148,10 @@ impl McwApp {
             self.selected_settings = None;
             self.selected_mods.clear();
             self.selected_backups.clear();
+            self.selected_worlds.clear();
+            self.selected_screenshots.clear();
+            self.selected_content_packs.clear();
+            self.selected_servers.clear();
             return;
         };
         if let Some(cached) = self.settings_cache.get(id) {
@@ -165,9 +169,11 @@ impl McwApp {
         self.selected_backups = self.backups_cache.get(id).cloned().unwrap_or_default();
         self.selected_worlds = self.worlds_cache.get(id).cloned().unwrap_or_default();
         self.selected_screenshots = self.screenshots_cache.get(id).cloned().unwrap_or_default();
+        self.selected_servers = self.servers_cache.get(id).cloned().unwrap_or_default();
         self.selected_content_packs = self
-            .content_packs_cache
-            .get(&(id.clone(), self.packs_kind))
+            .active_tab
+            .content_kind()
+            .and_then(|k| self.content_packs_cache.get(&(id.clone(), k)))
             .cloned()
             .unwrap_or_default();
         if let Some(inst) = self.instances.iter().find(|i| &i.instance_id == id) {
@@ -191,9 +197,17 @@ impl McwApp {
         let Some(id) = self.selected_instance_id.clone() else {
             return;
         };
+        if self.active_page == AppPage::Servers {
+            self.load_servers_async(&id, ctx, false);
+        }
         match self.active_tab {
             DetailTab::Mods => self.load_mods_async(&id, ctx, false),
-            DetailTab::Packs => self.load_content_packs_async(&id, self.packs_kind, ctx, false),
+            DetailTab::ResourcePacks => {
+                self.load_content_packs_async(&id, ContentKind::ResourcePack, ctx, false)
+            }
+            DetailTab::Shaders => {
+                self.load_content_packs_async(&id, ContentKind::ShaderPack, ctx, false)
+            }
             DetailTab::Worlds => self.load_worlds_async(&id, ctx, false),
             DetailTab::Screenshots => self.load_screenshots_async(&id, ctx, false),
             DetailTab::Backups => self.load_backups_async(&id, ctx, false),
@@ -212,7 +226,7 @@ impl McwApp {
         if !force {
             if let Some(cached) = self.content_packs_cache.get(&key) {
                 if self.selected_instance_id.as_deref() == Some(instance_id)
-                    && self.packs_kind == kind
+                    && self.active_tab.content_kind() == Some(kind)
                 {
                     self.selected_content_packs = cached.clone();
                 }
@@ -241,81 +255,15 @@ impl McwApp {
         });
     }
 
-    pub(crate) fn start_content_pack_search(&mut self, ctx: &egui::Context) {
-        let Some(inst) = self.selected_instance().cloned() else {
-            return;
-        };
-        self.packs_searching = true;
-        let query = self.packs_query.clone();
-        let kind = self.packs_kind;
-        let is_cf = self.packs_provider == ModProviderTab::CurseForge;
-        let api_key = self.resolved_cf_api_key();
-        let cache_path = self
-            .paths
-            .cache_root
-            .join("providers")
-            .join("api_cache.sqlite");
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-
-        self.runtime.spawn(async move {
-            let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-            if is_cf {
-                let cf_res = async {
-                    let client =
-                        CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
-                    let search = client
-                        .search(&CurseForgeSearchParams {
-                            query,
-                            kind: kind.curseforge_kind().to_string(),
-                            loader: None,
-                            game_version: Some(inst.version_id.clone()),
-                            page_size: 12,
-                            ..Default::default()
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    Ok::<Vec<CurseForgeMod>, String>(search.data)
-                }
-                .await;
-                let _ = tx.send(AppEvent::ContentPackSearchFinished {
-                    provider_is_cf: true,
-                    modrinth: Ok(Vec::new()),
-                    curseforge: cf_res,
-                });
-            } else {
-                let mr_res = async {
-                    let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
-                    let search = mr
-                        .search(&ModrinthSearchParams {
-                            query,
-                            project_type: kind.modrinth_project_type().to_string(),
-                            loader: None,
-                            game_version: Some(inst.version_id.clone()),
-                            limit: 12,
-                            ..Default::default()
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    Ok::<Vec<ModrinthSearchHit>, String>(search.hits)
-                }
-                .await;
-                let _ = tx.send(AppEvent::ContentPackSearchFinished {
-                    provider_is_cf: false,
-                    modrinth: mr_res,
-                    curseforge: Ok(Vec::new()),
-                });
-            }
-            ctx.request_repaint();
-        });
-    }
-
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_content_pack_install(
         &mut self,
+        kind: ContentKind,
         provider_is_cf: bool,
         item_key: String,
         display_name: String,
         cf_mod_id: Option<u64>,
+        datapack_world: Option<String>,
         ctx: &egui::Context,
     ) {
         let Some(inst) = self.selected_instance().cloned() else {
@@ -324,19 +272,28 @@ impl McwApp {
         if !self.installing_content_packs.insert(item_key.clone()) {
             return;
         }
-        let kind = self.packs_kind;
         let kind_label = match kind {
             ContentKind::ResourcePack => "Resource Pack",
             ContentKind::ShaderPack => "Shader Pack",
+            ContentKind::DataPack => "Data Pack",
         };
         let task_id = self.begin_task(
             format!("{kind_label}: {display_name}"),
             format!("Downloading into {}...", inst.name),
         );
-        let target_dir = self
-            .paths
-            .minecraft_dir(&inst.instance_id)
-            .join(kind.folder_name());
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let target_dir = if kind == ContentKind::DataPack {
+            match datapack_world
+                .as_deref()
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+            {
+                Some(world) => mc_dir.join("saves").join(world).join("datapacks"),
+                None => mc_dir.join(kind.folder_name()),
+            }
+        } else {
+            mc_dir.join(kind.folder_name())
+        };
         let api_key = self.resolved_cf_api_key();
         let cache_path = self
             .paths
@@ -649,12 +606,21 @@ impl McwApp {
     }
 
     pub(crate) fn start_launch(&mut self, ctx: &egui::Context) {
-        self.start_launch_with_world(None, ctx);
+        self.start_launch_impl(None, None, ctx);
     }
 
     pub(crate) fn start_launch_with_world(
         &mut self,
         quick_play_world: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        self.start_launch_impl(quick_play_world, None, ctx);
+    }
+
+    pub(crate) fn start_launch_impl(
+        &mut self,
+        quick_play_world: Option<String>,
+        quick_play_server: Option<String>,
         ctx: &egui::Context,
     ) {
         let Some(inst) = self.selected_instance().cloned() else {
@@ -830,6 +796,14 @@ impl McwApp {
                             .push("--quickPlaySingleplayer".to_string());
                         prepared.spec.game_args.push(world_folder);
                     }
+                } else if let Some(server_addr) = quick_play_server {
+                    if is_quick_play_supported(&inst.version_id) {
+                        prepared
+                            .spec
+                            .game_args
+                            .push("--quickPlayMultiplayer".to_string());
+                        prepared.spec.game_args.push(server_addr);
+                    }
                 }
 
                 let log_path = paths
@@ -964,49 +938,6 @@ impl McwApp {
         self.ms_login_task = Some(handle);
     }
 
-    pub(crate) fn start_modrinth_search(&mut self, ctx: &egui::Context) {
-        let Some(inst) = self.selected_instance().cloned() else {
-            return;
-        };
-        self.mod_searching = true;
-        let query = self.mod_search_query.clone();
-        let cache_path = self
-            .paths
-            .cache_root
-            .join("providers")
-            .join("api_cache.sqlite");
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-
-        let loader_filter = self.mod_loader_filter.clone();
-        self.runtime.spawn(async move {
-            let res = async {
-                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let client = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
-                let loader = if loader_filter.is_empty() || loader_filter == "all" {
-                    None
-                } else {
-                    Some(loader_filter)
-                };
-                let search = client
-                    .search(&ModrinthSearchParams {
-                        query,
-                        project_type: "mod".to_string(),
-                        loader,
-                        game_version: Some(inst.version_id.clone()),
-                        limit: 15,
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok::<Vec<ModrinthSearchHit>, String>(search.hits)
-            }
-            .await;
-            let _ = tx.send(AppEvent::ModrinthSearchFinished(res));
-            ctx.request_repaint();
-        });
-    }
-
     pub(crate) fn ensure_thumbnail(&mut self, url: &str, ctx: &egui::Context) {
         let u = url.trim();
         if u.is_empty()
@@ -1107,10 +1038,10 @@ impl McwApp {
 
         if is_pack {
             self.version_picker_mc_filter = "all".to_string();
-            self.version_picker_loader_filter = if self.pack_loader_filter.is_empty() {
+            self.version_picker_loader_filter = if self.browser_loader_filter.is_empty() {
                 "all".to_string()
             } else {
-                self.pack_loader_filter.to_ascii_lowercase()
+                self.browser_loader_filter.to_ascii_lowercase()
             };
         } else {
             let inst = self.selected_instance().cloned();
@@ -1118,13 +1049,13 @@ impl McwApp {
                 .as_ref()
                 .map(|i| i.version_id.clone())
                 .unwrap_or_else(|| "all".to_string());
-            self.version_picker_loader_filter = if self.mod_loader_filter.is_empty() {
+            self.version_picker_loader_filter = if self.browser_loader_filter.is_empty() {
                 inst.as_ref()
                     .map(|i| i.mod_loader.name.to_ascii_lowercase())
                     .filter(|l| l != "vanilla")
                     .unwrap_or_else(|| "all".to_string())
             } else {
-                self.mod_loader_filter.to_ascii_lowercase()
+                self.browser_loader_filter.to_ascii_lowercase()
             };
         }
 
@@ -1193,7 +1124,7 @@ impl McwApp {
     ) {
         let target_key = format!("cf:{mod_id}");
         let web_url = self
-            .curseforge_results
+            .browser_cf_results
             .iter()
             .find(|m| m.id == mod_id)
             .and_then(|m| {
@@ -1228,13 +1159,13 @@ impl McwApp {
         let inst = self.selected_instance().cloned();
         let gv_opt = inst.as_ref().map(|i| i.version_id.clone());
         self.version_picker_mc_filter = gv_opt.clone().unwrap_or_else(|| "all".to_string());
-        self.version_picker_loader_filter = if self.mod_loader_filter.is_empty() {
+        self.version_picker_loader_filter = if self.browser_loader_filter.is_empty() {
             inst.as_ref()
                 .map(|i| i.mod_loader.name.to_ascii_lowercase())
                 .filter(|l| l != "vanilla")
                 .unwrap_or_else(|| "all".to_string())
         } else {
-            self.mod_loader_filter.to_ascii_lowercase()
+            self.browser_loader_filter.to_ascii_lowercase()
         };
 
         let api_key = self.resolved_cf_api_key();
@@ -1608,89 +1539,6 @@ impl McwApp {
         load_curseforge_api_key(Some(&self.paths.project_root)).unwrap_or_default()
     }
 
-    pub(crate) fn start_curseforge_search(&mut self, ctx: &egui::Context) {
-        let Some(inst) = self.selected_instance().cloned() else {
-            return;
-        };
-        self.mod_searching = true;
-        let query = self.mod_search_query.clone();
-        let api_key = self.resolved_cf_api_key();
-        let cache_path = self
-            .paths
-            .cache_root
-            .join("providers")
-            .join("api_cache.sqlite");
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-
-        let loader_filter = self.mod_loader_filter.clone();
-        self.runtime.spawn(async move {
-            let res = async {
-                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let client = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
-                let loader = if loader_filter.is_empty() || loader_filter == "all" {
-                    None
-                } else {
-                    Some(loader_filter)
-                };
-                let search = client
-                    .search(&CurseForgeSearchParams {
-                        query,
-                        kind: "mod".to_string(),
-                        loader,
-                        game_version: Some(inst.version_id.clone()),
-                        page_size: 15,
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok::<Vec<CurseForgeMod>, String>(search.data)
-            }
-            .await;
-            let _ = tx.send(AppEvent::CurseForgeSearchFinished(res));
-            ctx.request_repaint();
-        });
-    }
-
-    pub(crate) fn start_curseforge_modpack_search(&mut self, ctx: &egui::Context) {
-        self.pack_browser_searching = true;
-        let query = self.pack_browser_query.clone();
-        let api_key = self.resolved_cf_api_key();
-        let cache_path = self
-            .paths
-            .cache_root
-            .join("providers")
-            .join("api_cache.sqlite");
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-
-        let loader_opt = if self.pack_loader_filter.is_empty() || self.pack_loader_filter == "all" {
-            None
-        } else {
-            Some(self.pack_loader_filter.clone())
-        };
-        self.runtime.spawn(async move {
-            let res = async {
-                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let client = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
-                let search = client
-                    .search(&CurseForgeSearchParams {
-                        query,
-                        kind: "modpack".to_string(),
-                        loader: loader_opt,
-                        page_size: 15,
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok::<Vec<CurseForgeMod>, String>(search.data)
-            }
-            .await;
-            let _ = tx.send(AppEvent::CurseForgeModpacksSearchFinished(res));
-            ctx.request_repaint();
-        });
-    }
-
     pub(crate) fn start_java_install(&mut self, major: u32, ctx: &egui::Context) {
         if !self.installing_java_majors.insert(major) {
             return;
@@ -1904,45 +1752,6 @@ impl McwApp {
         });
     }
 
-    pub(crate) fn start_modrinth_modpacks_search(&mut self, ctx: &egui::Context) {
-        self.pack_browser_searching = true;
-        let query = self.pack_browser_query.clone();
-        let loader_opt = if self.pack_loader_filter.is_empty() || self.pack_loader_filter == "all" {
-            None
-        } else {
-            Some(self.pack_loader_filter.clone())
-        };
-        let cache_path = self
-            .paths
-            .cache_root
-            .join("providers")
-            .join("api_cache.sqlite");
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-
-        self.runtime.spawn(async move {
-            let res = async {
-                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
-                let search = mr
-                    .search(&ModrinthSearchParams {
-                        query,
-                        project_type: "modpack".to_string(),
-                        loader: loader_opt,
-                        game_version: None,
-                        limit: 18,
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok::<Vec<ModrinthSearchHit>, String>(search.hits)
-            }
-            .await;
-            let _ = tx.send(AppEvent::ModrinthModpacksSearchFinished(res));
-            ctx.request_repaint();
-        });
-    }
-
     pub(crate) fn start_modrinth_pack_install(
         &mut self,
         slug: String,
@@ -2038,54 +1847,6 @@ impl McwApp {
         });
     }
 
-    pub(crate) fn start_ftb_search(&mut self, ctx: &egui::Context) {
-        self.pack_browser_searching = true;
-        let query = self.pack_browser_query.clone();
-        let cache_path = self
-            .paths
-            .cache_root
-            .join("providers")
-            .join("api_cache.sqlite");
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-
-        self.runtime.spawn(async move {
-            let res = async {
-                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let ftb = FtbClient::new(cache).map_err(|e| e.to_string())?;
-                ftb.search_packs(&query, 15)
-                    .await
-                    .map_err(|e| e.to_string())
-            }
-            .await;
-            let _ = tx.send(AppEvent::FtbSearchFinished(res));
-            ctx.request_repaint();
-        });
-    }
-
-    pub(crate) fn start_atlauncher_search(&mut self, ctx: &egui::Context) {
-        self.pack_browser_searching = true;
-        let query = self.pack_browser_query.clone();
-        let cache_path = self
-            .paths
-            .cache_root
-            .join("providers")
-            .join("api_cache.sqlite");
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-
-        self.runtime.spawn(async move {
-            let res = async {
-                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let atl = AtLauncherClient::new(cache).map_err(|e| e.to_string())?;
-                atl.search(&query, 15).await.map_err(|e| e.to_string())
-            }
-            .await;
-            let _ = tx.send(AppEvent::AtLauncherSearchFinished(res));
-            ctx.request_repaint();
-        });
-    }
-
     pub(crate) fn start_instance_export(
         &mut self,
         instance_id: String,
@@ -2169,16 +1930,6 @@ impl McwApp {
                             Err(err) => {
                                 self.modpack_dialog.error = Some(err);
                             }
-                        }
-                    }
-                }
-                AppEvent::ModrinthModpacksSearchFinished(res) => {
-                    self.pack_browser_searching = false;
-                    match res {
-                        Ok(hits) => self.mr_pack_results = hits,
-                        Err(err) => {
-                            self.notice_banner =
-                                Some((format!("Modrinth modpack search failed: {err}"), true));
                         }
                     }
                 }
@@ -2325,35 +2076,11 @@ impl McwApp {
                     self.loading_content_packs
                         .remove(&(instance_id.clone(), kind));
                     if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
-                        && self.packs_kind == kind
+                        && self.active_tab.content_kind() == Some(kind)
                     {
                         self.selected_content_packs = packs.clone();
                     }
                     self.content_packs_cache.insert((instance_id, kind), packs);
-                }
-                AppEvent::ContentPackSearchFinished {
-                    provider_is_cf,
-                    modrinth,
-                    curseforge,
-                } => {
-                    self.packs_searching = false;
-                    if provider_is_cf {
-                        match curseforge {
-                            Ok(mods) => self.packs_cf_results = mods,
-                            Err(err) => {
-                                self.notice_banner =
-                                    Some((format!("CurseForge pack search failed: {err}"), true));
-                            }
-                        }
-                    } else {
-                        match modrinth {
-                            Ok(hits) => self.packs_mr_results = hits,
-                            Err(err) => {
-                                self.notice_banner =
-                                    Some((format!("Modrinth pack search failed: {err}"), true));
-                            }
-                        }
-                    }
                 }
                 AppEvent::ContentPackInstallFinished {
                     task_id,
@@ -2369,8 +2096,7 @@ impl McwApp {
                             self.content_packs_cache
                                 .remove(&(instance_id.clone(), kind));
                             if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
-                                && self.active_tab == DetailTab::Packs
-                                && self.packs_kind == kind
+                                && self.active_tab.content_kind() == Some(kind)
                             {
                                 self.load_content_packs_async(&instance_id, kind, ctx, true);
                             }
@@ -2539,36 +2265,6 @@ impl McwApp {
                         Err(err) => {
                             self.notice_banner =
                                 Some((format!("Microsoft sign-in failed: {err}"), true));
-                        }
-                    }
-                }
-                AppEvent::ModrinthSearchFinished(res) => {
-                    self.mod_searching = false;
-                    match res {
-                        Ok(hits) => self.modrinth_results = hits,
-                        Err(err) => {
-                            self.notice_banner =
-                                Some((format!("Modrinth search failed: {err}"), true));
-                        }
-                    }
-                }
-                AppEvent::CurseForgeSearchFinished(res) => {
-                    self.mod_searching = false;
-                    match res {
-                        Ok(mods) => self.curseforge_results = mods,
-                        Err(err) => {
-                            self.notice_banner =
-                                Some((format!("CurseForge search failed: {err}"), true));
-                        }
-                    }
-                }
-                AppEvent::CurseForgeModpacksSearchFinished(res) => {
-                    self.pack_browser_searching = false;
-                    match res {
-                        Ok(packs) => self.cf_pack_results = packs,
-                        Err(err) => {
-                            self.notice_banner =
-                                Some((format!("CurseForge modpack search failed: {err}"), true));
                         }
                     }
                 }
@@ -2764,25 +2460,6 @@ impl McwApp {
                         }
                     }
                 }
-                AppEvent::FtbSearchFinished(res) => {
-                    self.pack_browser_searching = false;
-                    match res {
-                        Ok(packs) => self.ftb_results = packs,
-                        Err(err) => {
-                            self.notice_banner = Some((format!("FTB search failed: {err}"), true));
-                        }
-                    }
-                }
-                AppEvent::AtLauncherSearchFinished(res) => {
-                    self.pack_browser_searching = false;
-                    match res {
-                        Ok(packs) => self.atl_results = packs,
-                        Err(err) => {
-                            self.notice_banner =
-                                Some((format!("ATLauncher search failed: {err}"), true));
-                        }
-                    }
-                }
                 AppEvent::ExternalModpackInstalled {
                     task_id,
                     pack_key,
@@ -2960,6 +2637,9 @@ impl McwApp {
                     };
                     self.notice_banner = Some((msg, !report.errors.is_empty()));
                     self.start_storage_scan(ctx);
+                    if self.active_page == AppPage::Versions {
+                        self.load_cached_versions_async(ctx);
+                    }
                 }
                 AppEvent::JavaDiagnosticsScanned(diags) => {
                     self.java_scanning = false;
@@ -3025,6 +2705,91 @@ impl McwApp {
                             self.modpack_dialog.optional_files = list;
                             self.modpack_dialog.selected_optional_ids = selected;
                         }
+                    }
+                }
+                AppEvent::ServersLoaded {
+                    instance_id,
+                    servers,
+                } => {
+                    self.loading_servers.remove(&instance_id);
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                        self.selected_servers = servers.clone();
+                    }
+                    self.servers_cache.insert(instance_id, servers);
+                }
+                AppEvent::CachedVersionsLoaded(list) => {
+                    self.cached_versions_loading = false;
+                    self.cached_versions = list;
+                }
+                AppEvent::ContentBrowserSearchFinished {
+                    request_id,
+                    category,
+                    provider,
+                    modrinth,
+                    curseforge,
+                    ftb,
+                    atl,
+                } => {
+                    if request_id != self.browser_request_id {
+                        continue;
+                    }
+                    self.browser_searching = false;
+                    let _ = category;
+                    match provider {
+                        BrowserProvider::Modrinth => match modrinth {
+                            Ok(hits) => {
+                                let first = hits.first().map(|h| format!("mr:{}", h.slug));
+                                self.browser_mr_results = hits;
+                                if self.browser_selected_key.is_none() {
+                                    self.browser_selected_key = first;
+                                }
+                            }
+                            Err(err) => {
+                                self.notice_banner =
+                                    Some((format!("Modrinth search failed: {err}"), true));
+                            }
+                        },
+                        BrowserProvider::CurseForge => match curseforge {
+                            Ok(mods) => {
+                                let first = mods.first().map(|m| format!("cf:{}", m.id));
+                                self.browser_cf_results = mods;
+                                if self.browser_selected_key.is_none() {
+                                    self.browser_selected_key = first;
+                                }
+                            }
+                            Err(err) => {
+                                self.notice_banner =
+                                    Some((format!("CurseForge search failed: {err}"), true));
+                            }
+                        },
+                        BrowserProvider::Ftb => match ftb {
+                            Ok(packs) => {
+                                let first = packs.first().map(|p| format!("ftb:{}", p.id));
+                                self.browser_ftb_results = packs;
+                                if self.browser_selected_key.is_none() {
+                                    self.browser_selected_key = first;
+                                }
+                            }
+                            Err(err) => {
+                                self.notice_banner =
+                                    Some((format!("FTB search failed: {err}"), true));
+                            }
+                        },
+                        BrowserProvider::AtLauncher => match atl {
+                            Ok(packs) => {
+                                let first = packs
+                                    .first()
+                                    .map(|p| format!("atl:{}", p.effective_safe_name()));
+                                self.browser_atl_results = packs;
+                                if self.browser_selected_key.is_none() {
+                                    self.browser_selected_key = first;
+                                }
+                            }
+                            Err(err) => {
+                                self.notice_banner =
+                                    Some((format!("ATLauncher search failed: {err}"), true));
+                            }
+                        },
                     }
                 }
             }
@@ -4030,14 +3795,9 @@ impl McwApp {
         }
 
         if !zip_files.is_empty() {
-            if self.active_tab == DetailTab::Packs {
+            if let Some(kind) = self.active_tab.content_kind() {
                 if let Some(inst) = self.selected_instance().cloned() {
-                    self.import_local_pack_files(
-                        &inst.instance_id,
-                        self.packs_kind,
-                        &zip_files,
-                        ctx,
-                    );
+                    self.import_local_pack_files(&inst.instance_id, kind, &zip_files, ctx);
                 }
             } else if let Some(archive) = zip_files.into_iter().next() {
                 self.modpack_path_input = archive.display().to_string();

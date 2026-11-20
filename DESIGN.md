@@ -46,17 +46,16 @@ Stack: `egui` / `eframe` (pure Rust, no WebView). Reference mood: "Horizon"-styl
 
 ## 5. Delivery plan (SemVer tags, no separate hotfix system)
 
-1. **`v0.11.0-beta.1` — Foundation + Shell**
+1. **`v0.11.0-beta.1` — Foundation + Shell** *(Completed)*
    - Background image system (bundled default, user picture, panel transparency, dim sliders).
    - New palette model + presets (Violet default, Sunrise, Neon, Ocean, Emerald) + custom accent; keep `themes/*.json`.
    - Shell: top pill nav, left icon rail, instance flyout, account chip, Settings → in-app modal. (Global `Ctrl+K` search is deferred to v0.13.)
    - Simple animation helpers (hover/fade) honoring `MotionMode`.
-   - Interim nav wiring until v0.12 pages exist: Servers → instance Settings tab, Versions → Settings → Storage, Logs → Global Logs window (OS window).
-2. **`v0.12.0-beta.1` — Pages**
+2. **`v0.12.0-beta.1` — Pages** *(Completed)*
    - Home/instance page (title, Play, quick icons, floating tabbed panel, `...` menu).
-   - Versions page.
-   - New centered OS-window content browser (Mods/Modpacks/Resource/Shader/Data packs, list + detail panel).
-   - Servers/LAN page, Logs page.
+   - Versions page (`cache/versions/` + Mojang manifest browser).
+   - New centered OS-window content browser (`Mods`, `Modpacks`, `Resource packs`, `Shader packs`, `Data packs` — `ComboBox` filters + split list & detail panel).
+   - Servers/LAN page (`servers.dat` NBT manager + Quick Play + LAN/e4mc), Logs page (unified Global & per-instance viewer).
 3. **`v0.13.0-beta.1` — Polish**
    - Restyle every remaining dialog (create instance, accounts, repair, manual downloads, optional files, etc.).
    - Final animation pass, i18n gaps, remove dead UI code.

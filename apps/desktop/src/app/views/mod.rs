@@ -1,7 +1,12 @@
+pub mod content_browser;
 pub mod dialogs;
+pub mod home_page;
+pub mod logs_page;
+pub mod servers_page;
 pub mod shell;
 pub mod shell_nav;
 pub mod stage3_dialogs;
 pub mod stage4_dialogs;
 pub mod stage5_dialogs;
+pub mod versions_page;
 pub mod workspace;

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 pub enum ContentKind {
     ResourcePack,
     ShaderPack,
+    DataPack,
 }
 
 impl ContentKind {
@@ -13,6 +14,7 @@ impl ContentKind {
         match self {
             Self::ResourcePack => "resourcepacks",
             Self::ShaderPack => "shaderpacks",
+            Self::DataPack => "datapacks",
         }
     }
 
@@ -20,6 +22,7 @@ impl ContentKind {
         match self {
             Self::ResourcePack => "resourcepack",
             Self::ShaderPack => "shader",
+            Self::DataPack => "datapack",
         }
     }
 
@@ -27,6 +30,7 @@ impl ContentKind {
         match self {
             Self::ResourcePack => "resourcepack",
             Self::ShaderPack => "shader",
+            Self::DataPack => "datapack",
         }
     }
 }
@@ -185,5 +189,26 @@ mod tests {
         )
         .unwrap();
         assert!(ContentPackManager::list(dir.path(), ContentKind::ResourcePack).is_empty());
+    }
+
+    #[test]
+    fn supports_datapack_folder_provider_names_and_toggle() {
+        assert_eq!(ContentKind::DataPack.folder_name(), "datapacks");
+        assert_eq!(ContentKind::DataPack.modrinth_project_type(), "datapack");
+        assert_eq!(ContentKind::DataPack.curseforge_kind(), "datapack");
+
+        let dir = tempdir().unwrap();
+        let dp_dir = dir.path().join("datapacks");
+        fs::create_dir_all(&dp_dir).unwrap();
+        fs::write(dp_dir.join("Terralith.zip"), b"dp-zip").unwrap();
+
+        let list = ContentPackManager::list(dir.path(), ContentKind::DataPack);
+        assert_eq!(list.len(), 1);
+        assert!(list[0].enabled);
+
+        ContentPackManager::set_enabled(dir.path(), ContentKind::DataPack, "Terralith.zip", false)
+            .unwrap();
+        let list2 = ContentPackManager::list(dir.path(), ContentKind::DataPack);
+        assert!(!list2[0].enabled);
     }
 }

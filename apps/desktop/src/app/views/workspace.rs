@@ -2,776 +2,6 @@ use crate::app::platform::*;
 use crate::app::*;
 
 impl McwApp {
-    pub(crate) fn render_detail_pane(&mut self, ctx: &egui::Context) {
-        let p = self.palette;
-        if self.fade_tab != self.active_tab {
-            self.fade_tab = self.active_tab;
-            self.fade_since = Instant::now();
-        }
-        let fade_secs = self.motion_secs(0.15);
-        let fade = if fade_secs <= 0.0 {
-            1.0
-        } else {
-            (self.fade_since.elapsed().as_secs_f32() / fade_secs).clamp(0.0, 1.0)
-        };
-        if fade < 1.0 {
-            ctx.request_repaint();
-        }
-        egui::CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(Color32::TRANSPARENT)
-                    .inner_margin(egui::Margin::same(16)),
-            )
-            .show(ctx, |ui| {
-                ui.set_opacity(0.35 + 0.65 * fade);
-                // Notice / Error banner
-                if let Some((msg, is_err)) = self.notice_banner.clone() {
-                    let banner_stroke = if is_err { p.danger } else { p.accent };
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, banner_stroke))
-                        .corner_radius(CornerRadius::same(3))
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(msg).color(if is_err {
-                                    p.danger
-                                } else {
-                                    p.text
-                                }));
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.button("Dismiss").clicked() {
-                                        self.notice_banner = None;
-                                    }
-                                });
-                            });
-                        });
-                    ui.add_space(8.0);
-                }
-
-                let Some(inst) = self.selected_instance().cloned() else {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(80.0);
-                        ui.label(
-                            RichText::new("Select or create a Minecraft instance")
-                                .size(16.0)
-                                .strong(),
-                        );
-                        ui.add_space(8.0);
-                        if ui.button("+ Create Instance").clicked() {
-                            let latest = self.latest_mc_version(self.create_show_snapshots);
-                            if !latest.is_empty() {
-                                self.create_version = latest;
-                            }
-                            self.show_create_modal = true;
-                        }
-                    });
-                    return;
-                };
-
-                // Ensure selected instance icon is loaded
-                self.ensure_instance_icon(&inst, ctx);
-
-                // Detail Header + Primary Launch/Stop button
-                let busy = self.is_instance_busy(&inst.instance_id);
-                let has_account = self.active_account().is_some();
-                let mut change_icon_clicked = false;
-                let mut reset_icon_clicked = false;
-
-                ui.horizontal(|ui| {
-                    self.render_instance_icon(ui, &inst, 44.0);
-                    ui.add_space(6.0);
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&inst.name).size(20.0).strong().color(p.text));
-                            let chg_lbl = self.t("workspace.action.change_icon").to_string();
-                            if ui
-                                .add(Button::new(RichText::new(chg_lbl).size(10.5)))
-                                .clicked()
-                            {
-                                change_icon_clicked = true;
-                            }
-                            if !inst.icon.is_empty()
-                                && !inst.icon.eq_ignore_ascii_case("grass_block")
-                            {
-                                let rst_lbl = self.t("workspace.action.reset_icon").to_string();
-                                if ui
-                                    .add(Button::new(RichText::new(rst_lbl).size(10.5)))
-                                    .clicked()
-                                {
-                                    reset_icon_clicked = true;
-                                }
-                            }
-                        });
-                        ui.label(
-                            RichText::new(format!(
-                                "Minecraft {}  |  Loader: {}  |  Playtime: {}",
-                                inst.version_id,
-                                inst.mod_loader.name,
-                                format_duration(inst.total_playtime_seconds)
-                            ))
-                            .monospace()
-                            .size(11.5)
-                            .color(p.text_muted),
-                        );
-                        let has_group = !inst.group.trim().is_empty();
-                        let has_tags = inst.tags.iter().any(|t| !t.trim().is_empty());
-                        if has_group || has_tags {
-                            ui.add_space(2.0);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = Vec2::new(5.0, 3.0);
-                                if has_group {
-                                    render_badge_pill(ui, &inst.group, true, false, p);
-                                }
-                                for tag in &inst.tags {
-                                    render_badge_pill(ui, tag, false, false, p);
-                                }
-                            });
-                        }
-                    });
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        match self.launch_states.get(&inst.instance_id) {
-                            Some(LaunchState::Running { control, .. }) => {
-                                let stop_btn = Button::new(
-                                    RichText::new(self.t("Stop Game"))
-                                        .color(Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(p.danger)
-                                .min_size(Vec2::new(120.0, 34.0))
-                                .corner_radius(CornerRadius::same(3));
-                                if ui.add(stop_btn).clicked() {
-                                    control.request_stop();
-                                }
-                            }
-                            Some(LaunchState::Preparing(_)) => {
-                                let launch_ctrl = self
-                                    .launch_task_ids
-                                    .get(&inst.instance_id)
-                                    .and_then(|tid| {
-                                        self.active_tasks
-                                            .iter()
-                                            .find(|t| t.id == *tid)
-                                            .map(|t| Arc::clone(&t.control))
-                                    });
-                                let is_paused = launch_ctrl
-                                    .as_ref()
-                                    .map(|c| c.is_paused())
-                                    .unwrap_or(false);
-                                let is_cancelling = launch_ctrl
-                                    .as_ref()
-                                    .map(|c| c.is_cancelled())
-                                    .unwrap_or(false);
-
-                                let cancel_text = if is_cancelling {
-                                    self.t("launch.cancelling_badge").to_string()
-                                } else {
-                                    self.t("launch.cancel_button").to_string()
-                                };
-                                let cancel_btn = Button::new(
-                                    RichText::new(cancel_text)
-                                        .color(Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(p.danger)
-                                .min_size(Vec2::new(110.0, 34.0))
-                                .corner_radius(CornerRadius::same(3));
-                                if ui.add_enabled(!is_cancelling, cancel_btn).clicked() {
-                                    if let Some(ref ctrl) = launch_ctrl {
-                                        ctrl.cancel();
-                                    }
-                                }
-
-                                let pause_text = if is_paused {
-                                    self.t("launch.resume_button").to_string()
-                                } else {
-                                    self.t("launch.pause_button").to_string()
-                                };
-                                let pause_btn = Button::new(
-                                    RichText::new(pause_text)
-                                        .color(if is_paused { p.accent_text } else { p.text })
-                                        .strong(),
-                                )
-                                .fill(if is_paused { p.accent } else { p.elevated })
-                                .min_size(Vec2::new(96.0, 34.0))
-                                .corner_radius(CornerRadius::same(3));
-                                if ui.add_enabled(!is_cancelling, pause_btn).clicked() {
-                                    if let Some(ref ctrl) = launch_ctrl {
-                                        ctrl.toggle_pause();
-                                    }
-                                }
-                            }
-                            _ => {
-                                let missing_manual = self
-                                    .pending_manual_counts
-                                    .get(&inst.instance_id)
-                                    .copied()
-                                    .unwrap_or(0);
-                                if missing_manual > 0 {
-                                    let warn_btn = Button::new(
-                                        RichText::new(format!("Missing Mods ({missing_manual})"))
-                                            .color(Color32::BLACK)
-                                            .strong(),
-                                    )
-                                    .fill(p.warning)
-                                    .min_size(Vec2::new(140.0, 34.0))
-                                    .corner_radius(CornerRadius::same(3));
-                                    if ui
-                                        .add(warn_btn)
-                                        .on_hover_text(
-                                            "This modpack still has missing manual downloads. Click to complete them before launching.",
-                                        )
-                                        .clicked()
-                                    {
-                                        self.open_manual_downloads_for(&inst.instance_id);
-                                    }
-                                } else {
-                                    let launch_btn = Button::new(
-                                        RichText::new(self.t("Launch"))
-                                            .color(p.accent_text)
-                                            .strong(),
-                                    )
-                                    .fill(p.accent)
-                                    .min_size(Vec2::new(120.0, 34.0))
-                                    .corner_radius(CornerRadius::same(3));
-                                    let resp = ui.add_enabled(has_account, launch_btn);
-                                    if !has_account {
-                                        resp.on_disabled_hover_text(
-                                            "Add or sign in to an account first",
-                                        );
-                                    } else if resp.clicked() {
-                                        self.start_launch(ctx);
-                                    }
-                                }
-                            }
-                        }
-                    });
-                });
-
-                ui.add_space(8.0);
-
-                // Persistent flag banner whenever a modpack instance still has missing manual downloads
-                let pending_manual_count = self
-                    .pending_manual_counts
-                    .get(&inst.instance_id)
-                    .copied()
-                    .unwrap_or(0);
-                if pending_manual_count > 0 {
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.warning))
-                        .corner_radius(CornerRadius::same(3))
-                        .inner_margin(egui::Margin::symmetric(12, 8))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new("INCOMPLETE MODPACK")
-                                        .strong()
-                                        .monospace()
-                                        .size(11.0)
-                                        .color(p.warning),
-                                );
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{pending_manual_count} manual mod(s) have not been downloaded yet."
-                                    ))
-                                    .size(12.0)
-                                    .color(p.text),
-                                );
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let open_btn = Button::new(
-                                        RichText::new("Open Manual Downloads")
-                                            .color(Color32::BLACK)
-                                            .strong(),
-                                    )
-                                    .fill(p.warning);
-                                    if ui.add(open_btn).clicked() {
-                                        self.open_manual_downloads_for(&inst.instance_id);
-                                    }
-                                    if ui.button("Scan Downloads Now").clicked() {
-                                        self.run_manual_downloads_scan(&inst.instance_id, true);
-                                    }
-                                });
-                            });
-                        });
-                    ui.add_space(8.0);
-                }
-
-                if change_icon_clicked {
-                    if let Some(chosen) = pick_file_dialog(
-                        self.t("workspace.icon.choose_title"),
-                        "Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.ico)|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.ico",
-                    ) {
-                        let store = InstanceStore::new(&self.paths);
-                        match store.set_instance_icon(&inst.instance_id, &chosen) {
-                            Ok(_) => {
-                                self.instance_icon_textures.clear();
-                                self.reload_instances();
-                            }
-                            Err(err) => {
-                                self.notice_banner = Some((format!("Failed to set icon: {err}"), true));
-                            }
-                        }
-                    }
-                }
-                if reset_icon_clicked {
-                    let store = InstanceStore::new(&self.paths);
-                    if store.reset_instance_icon(&inst.instance_id).is_ok() {
-                        self.instance_icon_textures.clear();
-                        self.reload_instances();
-                    }
-                }
-
-                // Launch progress is shown exclusively in the unified bottom progress bar (no duplicate big bar here).
-                if let Some(LaunchState::Running { pid, .. }) =
-                    self.launch_states.get(&inst.instance_id)
-                {
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.accent))
-                        .corner_radius(CornerRadius::same(3))
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                        RichText::new("RUNNING")
-                                            .strong()
-                                            .monospace()
-                                            .color(p.accent),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!("PID {pid} — streaming live logs"))
-                                            .color(p.text_muted),
-                                    );
-                                });
-                            });
-                        ui.add_space(8.0);
-                    }
-
-                // Detail Tabs
-                let mut switched_tab: Option<DetailTab> = None;
-                ui.horizontal(|ui| {
-                    for (tab, label) in [
-                        (DetailTab::Overview, self.t("Overview")),
-                        (DetailTab::Mods, self.t("Mods")),
-                        (DetailTab::Packs, self.t("Packs")),
-                        (DetailTab::Worlds, self.t("Worlds")),
-                        (DetailTab::Screenshots, self.t("Screenshots")),
-                        (DetailTab::Backups, self.t("Backups")),
-                        (DetailTab::Logs, self.t("navigation.logs")),
-                        (DetailTab::Settings, self.t("navigation.instance_settings")),
-                    ] {
-                        let active = self.active_tab == tab;
-                        let btn = Button::new(
-                            RichText::new(label).color(if active {
-                                p.accent
-                            } else {
-                                p.text_muted
-                            }),
-                        )
-                        .fill(if active { p.elevated } else { p.surface })
-                        .stroke(Stroke::new(
-                            1.0_f32,
-                            if active { p.accent } else { p.border },
-                        ))
-                        .corner_radius(CornerRadius::same(3));
-                        if ui.add(btn).clicked() {
-                            switched_tab = Some(tab);
-                        }
-                    }
-                });
-                if let Some(tab) = switched_tab {
-                    self.active_tab = tab;
-                    self.ensure_active_tab_loaded(ctx);
-                }
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                match self.active_tab {
-                    DetailTab::Overview => self.render_overview_tab(ui, ctx, &inst, busy),
-                    DetailTab::Mods => self.render_mods_tab(ui, ctx, &inst),
-                    DetailTab::Packs => self.render_packs_tab(ui, ctx, &inst),
-                    DetailTab::Worlds => self.render_worlds_tab(ui, ctx, &inst, busy),
-                    DetailTab::Screenshots => self.render_screenshots_tab(ui, ctx, &inst),
-                    DetailTab::Backups => self.render_backups_tab(ui, ctx, &inst, busy),
-                    DetailTab::Logs => self.render_logs_tab(ui, ctx, &inst),
-                    DetailTab::Settings => self.render_settings_tab(ui, ctx, &inst),
-                }
-            });
-    }
-
-    pub(crate) fn render_overview_tab(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &egui::Context,
-        inst: &Instance,
-        busy: bool,
-    ) {
-        let p = self.palette;
-        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
-        let export_label = self.t("modpack_package.export.title").to_string();
-        let clone_lbl = self.t("workspace.action.clone").to_string();
-        let chg_icon_lbl = self.t("workspace.action.change_icon").to_string();
-        let rst_icon_lbl = self.t("workspace.action.reset_icon").to_string();
-        let export_diag_lbl = self.t("forge.export_diagnostics").to_string();
-        let is_diag_loader = matches!(
-            inst.mod_loader.name.to_ascii_lowercase().as_str(),
-            "forge" | "neoforge" | "quilt"
-        );
-        let inst_dir = self.paths.instance_dir(&inst.instance_id);
-        let tracked_pack = detect_installed_pack(&inst_dir);
-
-        let mut trigger_repair = false;
-        let mut open_repair_center = false;
-        let mut open_export = false;
-        let mut export_loader_diag = false;
-        let mut change_icon_clicked = false;
-        let mut reset_icon_clicked = false;
-
-        ScrollArea::vertical()
-            .id_salt("overview_tab_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                Frame::new()
-                    .fill(p.surface)
-                    .stroke(Stroke::new(1.0_f32, p.border))
-                    .corner_radius(CornerRadius::same(3))
-                    .inner_margin(egui::Margin::same(14))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-
-                        // Header Row: Title + Compact Action Menu (`Actions`)
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Instance Details")
-                                    .size(14.5)
-                                    .strong()
-                                    .color(p.text),
-                            );
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.menu_button(
-                                    RichText::new("Actions").strong().color(p.text),
-                                    |ui| {
-                                        ui.set_min_width(210.0);
-                                        let open_f_lbl =
-                                            self.t("workspace.action.open_folder").to_string();
-                                        if ui.button(format!("{open_f_lbl} (.minecraft)")).clicked()
-                                        {
-                                            let _ = std::fs::create_dir_all(&mc_dir);
-                                            open_external(&mc_dir.display().to_string());
-                                            ui.close_menu();
-                                        }
-                                        if ui
-                                            .add_enabled(!busy, Button::new(&export_label))
-                                            .on_disabled_hover_text(
-                                                "Stop the instance before exporting",
-                                            )
-                                            .clicked()
-                                        {
-                                            open_export = true;
-                                            ui.close_menu();
-                                        }
-                                        let rep_lbl =
-                                            self.t("workspace.action.repair").to_string();
-                                        if ui
-                                            .add_enabled(!busy, Button::new(&rep_lbl))
-                                            .on_disabled_hover_text(
-                                                "Stop the instance before repairing",
-                                            )
-                                            .clicked()
-                                        {
-                                            trigger_repair = true;
-                                            ui.close_menu();
-                                        }
-                                        if ui.button("Repair Center / Health Check...").clicked() {
-                                            open_repair_center = true;
-                                            ui.close_menu();
-                                        }
-                                        if is_diag_loader && ui.button(&export_diag_lbl).clicked() {
-                                            export_loader_diag = true;
-                                            ui.close_menu();
-                                        }
-                                        ui.separator();
-                                        let ren_lbl = self.t("instance.rename").to_string();
-                                        if ui
-                                            .add_enabled(!busy, Button::new(format!("{ren_lbl}...")))
-                                            .on_disabled_hover_text(
-                                                "Stop the instance before renaming",
-                                            )
-                                            .clicked()
-                                        {
-                                            self.rename_input = inst.name.clone();
-                                            self.show_rename_modal = true;
-                                            ui.close_menu();
-                                        }
-                                        if ui.button("Edit Group & Tags...").clicked() {
-                                            self.edit_group_input = inst.group.clone();
-                                            self.edit_tags_input = inst.tags.join(", ");
-                                            self.show_group_tags_modal = true;
-                                            ui.close_menu();
-                                        }
-                                        if ui.button(&clone_lbl).clicked() {
-                                            self.clone_name_input = format!("{} (Copy)", inst.name);
-                                            self.clone_include_saves = false;
-                                            self.show_clone_modal = true;
-                                            ui.close_menu();
-                                        }
-                                        if ui.button(&chg_icon_lbl).clicked() {
-                                            change_icon_clicked = true;
-                                            ui.close_menu();
-                                        }
-                                        if !inst.icon.is_empty()
-                                            && !inst.icon.eq_ignore_ascii_case("grass_block")
-                                            && ui.button(&rst_icon_lbl).clicked()
-                                        {
-                                            reset_icon_clicked = true;
-                                            ui.close_menu();
-                                        }
-                                        ui.separator();
-                                        let del_btn = Button::new(
-                                            RichText::new("Delete Instance...").color(p.danger),
-                                        );
-                                        if ui
-                                            .add_enabled(!busy, del_btn)
-                                            .on_disabled_hover_text(
-                                                "Stop the instance before deleting",
-                                            )
-                                            .clicked()
-                                        {
-                                            self.show_delete_modal = true;
-                                            ui.close_menu();
-                                        }
-                                    },
-                                );
-                            });
-                        });
-
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-
-                        // Comprehensive Instance Metadata Grid
-                        let loader_text = if inst.mod_loader.is_vanilla()
-                            || inst.mod_loader.version.trim().is_empty()
-                            || inst.mod_loader.version == "-1"
-                        {
-                            inst.mod_loader.name.clone()
-                        } else {
-                            format!("{} ({})", inst.mod_loader.name, inst.mod_loader.version)
-                        };
-                        let (mem_text, res_text, java_text, lan_text) =
-                            if let Some(ref s) = self.selected_settings {
-                                let mem = format!("{} MB – {} MB", s.min_memory, s.max_memory);
-                                let res = if s.fullscreen {
-                                    format!("{} × {} (Fullscreen)", s.width, s.height)
-                                } else {
-                                    format!("{} × {} (Windowed)", s.width, s.height)
-                                };
-                                let jv = s
-                                    .java_path
-                                    .as_ref()
-                                    .map(|jp| jp.display().to_string())
-                                    .unwrap_or_else(|| "Automatic (recommended)".to_string());
-                                let lan = format!(
-                                    "Auth: {}  ·  Tunnel: {}",
-                                    s.lan_auth_mode, s.lan_connection_provider
-                                );
-                                (mem, res, jv, lan)
-                            } else {
-                                (
-                                    "Default".to_string(),
-                                    "Default".to_string(),
-                                    "Automatic (recommended)".to_string(),
-                                    "Default".to_string(),
-                                )
-                            };
-                        let last_played_text = if inst.last_played.trim().is_empty() {
-                            "Never"
-                        } else {
-                            inst.last_played.as_str()
-                        };
-                        let exit_text = match inst.last_exit_code {
-                            Some(code) => format!("{} (exit code: {code})", inst.last_launch_state),
-                            None => inst.last_launch_state.clone(),
-                        };
-                        let mods_count = self
-                            .mods_cache
-                            .get(&inst.instance_id)
-                            .map(|v| v.len())
-                            .unwrap_or(self.selected_mods.len());
-                        let worlds_count = self
-                            .worlds_cache
-                            .get(&inst.instance_id)
-                            .map(|v| v.len())
-                            .unwrap_or(self.selected_worlds.len());
-                        let shots_count = self
-                            .screenshots_cache
-                            .get(&inst.instance_id)
-                            .map(|v| v.len())
-                            .unwrap_or(self.selected_screenshots.len());
-                        let backups_count = self
-                            .backups_cache
-                            .get(&inst.instance_id)
-                            .map(|v| v.len())
-                            .unwrap_or(self.selected_backups.len());
-
-                        egui::Grid::new("overview_instance_details_grid")
-                            .num_columns(2)
-                            .spacing([24.0, 6.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.label(RichText::new("Instance Name / ID:").color(p.text_muted));
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{}  ({})",
-                                        inst.name, inst.instance_id
-                                    ))
-                                    .monospace(),
-                                );
-                                ui.end_row();
-
-                                ui.label(RichText::new("Minecraft Version:").color(p.text_muted));
-                                ui.label(RichText::new(&inst.version_id).monospace().strong());
-                                ui.end_row();
-
-                                ui.label(RichText::new("Mod Loader:").color(p.text_muted));
-                                ui.label(RichText::new(loader_text).monospace());
-                                ui.end_row();
-
-                                if let Some(ref pack) = tracked_pack {
-                                    ui.label(RichText::new("Modpack Source:").color(p.text_muted));
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "{} · {} ({}, {} managed file(s))",
-                                            pack.provider,
-                                            pack.pack_name,
-                                            pack.version_name,
-                                            pack.managed_files_count
-                                        ))
-                                        .monospace(),
-                                    );
-                                    ui.end_row();
-                                }
-                                if !inst.icon_origin.trim().is_empty()
-                                    && !inst.icon_origin.eq_ignore_ascii_case("default")
-                                {
-                                    ui.label(RichText::new("Icon Origin:").color(p.text_muted));
-                                    ui.label(RichText::new(&inst.icon_origin).monospace());
-                                    ui.end_row();
-                                }
-
-                                ui.label(RichText::new("Group:").color(p.text_muted));
-                                if inst.group.trim().is_empty() {
-                                    ui.label(RichText::new("None").monospace().color(p.text_muted));
-                                } else {
-                                    ui.horizontal_wrapped(|ui| {
-                                        render_badge_pill(ui, &inst.group, true, false, p);
-                                    });
-                                }
-                                ui.end_row();
-
-                                ui.label(RichText::new("Tags:").color(p.text_muted));
-                                if inst.tags.iter().all(|t| t.trim().is_empty()) {
-                                    ui.label(RichText::new("None").monospace().color(p.text_muted));
-                                } else {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing = Vec2::new(5.0, 4.0);
-                                        for tag in &inst.tags {
-                                            render_badge_pill(ui, tag, false, false, p);
-                                        }
-                                    });
-                                }
-                                ui.end_row();
-
-                                ui.label(RichText::new("Game Directory:").color(p.text_muted));
-                                ui.label(RichText::new(mc_dir.display().to_string()).monospace());
-                                ui.end_row();
-
-                                ui.label(RichText::new("Memory Allocation:").color(p.text_muted));
-                                ui.label(RichText::new(mem_text).monospace());
-                                ui.end_row();
-
-                                ui.label(RichText::new("Window Resolution:").color(p.text_muted));
-                                ui.label(RichText::new(res_text).monospace());
-                                ui.end_row();
-
-                                ui.label(RichText::new("Java Runtime:").color(p.text_muted));
-                                ui.label(RichText::new(java_text).monospace());
-                                ui.end_row();
-
-                                ui.label(RichText::new("LAN Hosting:").color(p.text_muted));
-                                ui.label(RichText::new(lan_text).monospace());
-                                ui.end_row();
-
-                                ui.label(RichText::new("Total Playtime:").color(p.text_muted));
-                                ui.label(
-                                    RichText::new(format_duration(inst.total_playtime_seconds))
-                                        .monospace(),
-                                );
-                                ui.end_row();
-
-                                ui.label(RichText::new("Last Played:").color(p.text_muted));
-                                ui.label(RichText::new(last_played_text).monospace());
-                                ui.end_row();
-
-                                ui.label(RichText::new("Last Status:").color(p.text_muted));
-                                ui.label(RichText::new(exit_text).monospace());
-                                ui.end_row();
-
-                                ui.label(RichText::new("Installed Content:").color(p.text_muted));
-                                ui.label(
-                                    RichText::new(format!(
-                                        "Mods: {mods_count}  ·  Worlds: {worlds_count}  ·  Screenshots: {shots_count}  ·  Backups: {backups_count}"
-                                    ))
-                                    .monospace(),
-                                );
-                                ui.end_row();
-                            });
-                    });
-            });
-
-        if open_export {
-            self.show_export_modal = true;
-        }
-        if export_loader_diag {
-            self.export_loader_diagnostics(inst);
-        }
-        if trigger_repair {
-            self.start_repair(ctx);
-        }
-        if open_repair_center {
-            self.open_repair_center(&inst.instance_id, ctx);
-        }
-        if change_icon_clicked {
-            if let Some(chosen) = pick_file_dialog(
-                self.t("workspace.icon.choose_title"),
-                "Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.ico)|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.ico",
-            ) {
-                let store = InstanceStore::new(&self.paths);
-                match store.set_instance_icon(&inst.instance_id, &chosen) {
-                    Ok(_) => {
-                        self.instance_icon_textures.clear();
-                        self.reload_instances();
-                    }
-                    Err(err) => {
-                        self.notice_banner = Some((format!("Failed to set icon: {err}"), true));
-                    }
-                }
-            }
-        }
-        if reset_icon_clicked {
-            let store = InstanceStore::new(&self.paths);
-            if store.reset_instance_icon(&inst.instance_id).is_ok() {
-                self.instance_icon_textures.clear();
-                self.reload_instances();
-            }
-        }
-    }
-
     pub(crate) fn render_backups_tab(
         &mut self,
         ui: &mut egui::Ui,
@@ -837,7 +67,7 @@ impl McwApp {
                     Frame::new()
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(3))
+                        .corner_radius(CornerRadius::same(10))
                         .inner_margin(egui::Margin::symmetric(10, 8))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -918,17 +148,12 @@ impl McwApp {
             let can_install = !inst.mod_loader.is_vanilla();
             let add_btn = Button::new(RichText::new("+ Add Mod").color(p.accent_text).strong())
                 .fill(p.accent)
-                .corner_radius(CornerRadius::same(3));
+                .corner_radius(CornerRadius::same(8));
             let add_resp = ui.add_enabled(can_install, add_btn);
             if !can_install {
                 add_resp.on_disabled_hover_text("Vanilla instances cannot install mods");
             } else if add_resp.clicked() {
-                if !inst.mod_loader.name.is_empty()
-                    && !inst.mod_loader.name.eq_ignore_ascii_case("vanilla")
-                {
-                    self.mod_loader_filter = inst.mod_loader.name.to_ascii_lowercase();
-                }
-                self.show_mod_browser_window = true;
+                self.open_content_browser(BrowserCategory::Mods, None, ctx);
             }
 
             let check_lbl = if self.checking_mod_updates {
@@ -986,7 +211,7 @@ impl McwApp {
                 Frame::new()
                     .fill(p.elevated)
                     .stroke(Stroke::new(1.0_f32, frame_col))
-                    .corner_radius(CornerRadius::same(3))
+                    .corner_radius(CornerRadius::same(10))
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -1042,7 +267,7 @@ impl McwApp {
                     Frame::new()
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(3))
+                        .corner_radius(CornerRadius::same(10))
                         .inner_margin(egui::Margin::symmetric(10, 6))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -1165,60 +390,57 @@ impl McwApp {
         }
     }
 
-    pub(crate) fn render_packs_tab(
+    pub(crate) fn render_content_pack_tab(
         &mut self,
         ui: &mut egui::Ui,
         ctx: &egui::Context,
         inst: &Instance,
+        kind: ContentKind,
     ) {
         let p = self.palette;
         let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
-        let prev_kind = self.packs_kind;
 
-        let kind_label = match self.packs_kind {
-            ContentKind::ResourcePack => "Resource Packs",
-            ContentKind::ShaderPack => "Shader Packs",
-        };
-        let section_title = match self.packs_kind {
-            ContentKind::ResourcePack => {
+        let (kind_singular, section_title, browser_cat) = match kind {
+            ContentKind::ResourcePack => (
+                "Resource Pack",
                 format!(
                     "Installed Resource Packs ({})",
                     self.selected_content_packs.len()
-                )
-            }
-            ContentKind::ShaderPack => {
+                ),
+                BrowserCategory::ResourcePacks,
+            ),
+            ContentKind::ShaderPack => (
+                "Shader Pack",
                 format!(
                     "Installed Shader Packs ({})",
                     self.selected_content_packs.len()
-                )
-            }
+                ),
+                BrowserCategory::ShaderPacks,
+            ),
+            ContentKind::DataPack => (
+                "Data Pack",
+                format!(
+                    "Installed Data Packs ({})",
+                    self.selected_content_packs.len()
+                ),
+                BrowserCategory::DataPacks,
+            ),
         };
 
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(section_title).strong().color(p.text));
-            egui::ComboBox::from_id_salt("packs_kind_combo")
-                .selected_text(kind_label)
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.packs_kind,
-                        ContentKind::ResourcePack,
-                        "Resource Packs",
-                    );
-                    ui.selectable_value(
-                        &mut self.packs_kind,
-                        ContentKind::ShaderPack,
-                        "Shader Packs",
-                    );
-                });
-            let add_btn = Button::new(RichText::new("+ Add Pack").color(p.accent_text).strong())
-                .fill(p.accent)
-                .corner_radius(CornerRadius::same(3));
+            let add_btn = Button::new(
+                RichText::new(format!("+ Add {kind_singular}"))
+                    .color(p.accent_text)
+                    .strong(),
+            )
+            .fill(p.accent)
+            .corner_radius(CornerRadius::same(8));
             if ui.add(add_btn).clicked() {
-                self.show_pack_browser_window = true;
+                self.open_content_browser(browser_cat, None, ctx);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let folder_dir = mc_dir.join(self.packs_kind.folder_name());
+                let folder_dir = mc_dir.join(kind.folder_name());
                 if ui.button("Open Folder").clicked() {
                     let _ = std::fs::create_dir_all(&folder_dir);
                     open_external(&folder_dir.display().to_string());
@@ -1228,41 +450,25 @@ impl McwApp {
                         "Import Pack Archive (.zip)",
                         "Pack Archive (*.zip;*.zip.disabled)|*.zip;*.zip.disabled|All Files (*.*)|*.*",
                     ) {
-                        self.import_local_pack_files(
-                            &inst.instance_id,
-                            self.packs_kind,
-                            &[chosen],
-                            ctx,
-                        );
+                        self.import_local_pack_files(&inst.instance_id, kind, &[chosen], ctx);
                     }
                 }
                 if ui.button("Refresh").clicked() {
-                    self.load_content_packs_async(&inst.instance_id, self.packs_kind, ctx, true);
+                    self.load_content_packs_async(&inst.instance_id, kind, ctx, true);
                 }
             });
         });
-
-        if self.packs_kind != prev_kind {
-            self.packs_mr_results.clear();
-            self.packs_cf_results.clear();
-            self.selected_content_packs = self
-                .content_packs_cache
-                .get(&(inst.instance_id.clone(), self.packs_kind))
-                .cloned()
-                .unwrap_or_default();
-            self.load_content_packs_async(&inst.instance_id, self.packs_kind, ctx, false);
-        }
 
         ui.add_space(6.0);
 
         if self.selected_content_packs.is_empty() {
             let msg = if self
                 .loading_content_packs
-                .contains(&(inst.instance_id.clone(), self.packs_kind))
+                .contains(&(inst.instance_id.clone(), kind))
             {
                 "Scanning folder in background..."
             } else {
-                "No packs installed in this folder yet. Click '+ Add Pack' to browse Modrinth or CurseForge."
+                "No packs installed in this folder yet. Click '+ Add' above to browse Modrinth or CurseForge."
             };
             ui.label(RichText::new(msg).color(p.text_muted));
             return;
@@ -1279,7 +485,7 @@ impl McwApp {
                     Frame::new()
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(3))
+                        .corner_radius(CornerRadius::same(10))
                         .inner_margin(egui::Margin::symmetric(10, 6))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -1318,7 +524,6 @@ impl McwApp {
                 }
             });
 
-        let kind = self.packs_kind;
         if let Some((file_name, enable)) = toggle_action {
             if let Err(e) = ContentPackManager::set_enabled(&mc_dir, kind, &file_name, enable) {
                 self.notice_banner = Some((format!("Failed to toggle pack: {e}"), true));
@@ -1425,7 +630,7 @@ impl McwApp {
                     Frame::new()
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(3))
+                        .corner_radius(CornerRadius::same(10))
                         .inner_margin(egui::Margin::symmetric(10, 8))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -1605,7 +810,7 @@ impl McwApp {
                     Frame::new()
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(3))
+                        .corner_radius(CornerRadius::same(10))
                         .inner_margin(egui::Margin::symmetric(10, 6))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -1791,7 +996,7 @@ impl McwApp {
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(3))
+            .corner_radius(CornerRadius::same(10))
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
@@ -1860,6 +1065,8 @@ impl McwApp {
         ];
 
         let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let tracked_pack = detect_installed_pack(&inst_dir);
         let optifine_state = OptiFineManager::state(&inst_dir);
         let browse_lbl = self.t("common.browse").to_string();
         let lan_log_btn_lbl = self.t("lan.agent.log.view").to_string();
@@ -1868,6 +1075,10 @@ impl McwApp {
             inst.mod_loader.name.to_ascii_lowercase().as_str(),
             "forge" | "neoforge"
         );
+        let last_status_text = match inst.last_exit_code {
+            Some(code) => format!("{} (exit code: {code})", inst.last_launch_state),
+            None => inst.last_launch_state.clone(),
+        };
 
         let Some(ref mut settings) = self.selected_settings else {
             return;
@@ -1889,7 +1100,51 @@ impl McwApp {
                 Frame::new()
                     .fill(p.surface)
                     .stroke(Stroke::new(1.0_f32, p.border))
-                    .corner_radius(CornerRadius::same(3))
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("Instance Info").strong());
+                        ui.add_space(4.0);
+                        egui::Grid::new("inst_settings_info_grid")
+                            .num_columns(2)
+                            .spacing([18.0, 4.0])
+                            .show(ui, |ui| {
+                                ui.label(RichText::new("Instance ID:").color(p.text_muted));
+                                ui.label(RichText::new(&inst.instance_id).monospace());
+                                ui.end_row();
+                                ui.label(RichText::new("Game Directory:").color(p.text_muted));
+                                ui.label(RichText::new(mc_dir.display().to_string()).monospace());
+                                ui.end_row();
+                                if let Some(ref pack) = tracked_pack {
+                                    ui.label(RichText::new("Pack Origin:").color(p.text_muted));
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} · {} ({})",
+                                            pack.provider, pack.pack_name, pack.version_name
+                                        ))
+                                        .monospace(),
+                                    );
+                                    ui.end_row();
+                                }
+                                if !inst.icon_origin.trim().is_empty()
+                                    && !inst.icon_origin.eq_ignore_ascii_case("default")
+                                {
+                                    ui.label(RichText::new("Icon Origin:").color(p.text_muted));
+                                    ui.label(RichText::new(&inst.icon_origin).monospace());
+                                    ui.end_row();
+                                }
+                                ui.label(RichText::new("Last Status:").color(p.text_muted));
+                                ui.label(RichText::new(&last_status_text).monospace());
+                                ui.end_row();
+                            });
+                    });
+                ui.add_space(10.0);
+
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0_f32, p.border))
+                    .corner_radius(CornerRadius::same(10))
                     .inner_margin(egui::Margin::same(12))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -2200,7 +1455,7 @@ impl McwApp {
                         let save_btn =
                             Button::new(RichText::new(&save_inst_lbl).color(p.accent_text).strong())
                                 .fill(p.accent)
-                                .corner_radius(CornerRadius::same(3));
+                                .corner_radius(CornerRadius::same(10));
                         if ui.add(save_btn).clicked() {
                             save_clicked = true;
                         }
