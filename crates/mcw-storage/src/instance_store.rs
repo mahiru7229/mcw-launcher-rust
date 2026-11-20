@@ -12,6 +12,21 @@ const WINDOWS_RESERVED_NAMES: &[&str] = &[
 
 const INVALID_FILENAME_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
+/// Storage boundary contract for reading and persisting Minecraft instances
+/// (following `SOLID.md` §4 LSP and §6 DIP).
+pub trait InstanceRepository {
+    /// Returns `Ok(None)` when the instance does not exist, or `Err` on I/O/parse failure.
+    fn find(&self, instance_id: &str) -> Result<Option<Instance>>;
+    /// Returns all valid instances ordered by favorite then name.
+    fn list(&self) -> Result<Vec<Instance>>;
+    /// Persists the supplied instance metadata atomically.
+    fn save(&self, instance: &Instance) -> Result<()>;
+    /// Loads instance runtime settings.
+    fn load_settings(&self, instance_id: &str) -> Result<InstanceSettings>;
+    /// Saves instance runtime settings atomically.
+    fn save_settings(&self, instance_id: &str, settings: &InstanceSettings) -> Result<()>;
+}
+
 pub struct InstanceStore<'a> {
     paths: &'a LauncherPaths,
 }
@@ -272,7 +287,34 @@ impl<'a> InstanceStore<'a> {
         let path = self.paths.instance_settings_json(instance_id);
         atomic_write_json(&path, settings)
     }
+}
 
+impl<'a> InstanceRepository for InstanceStore<'a> {
+    fn find(&self, instance_id: &str) -> Result<Option<Instance>> {
+        if !self.paths.instance_json(instance_id).is_file() {
+            return Ok(None);
+        }
+        self.load_instance(instance_id).map(Some)
+    }
+
+    fn list(&self) -> Result<Vec<Instance>> {
+        self.list_instances()
+    }
+
+    fn save(&self, instance: &Instance) -> Result<()> {
+        self.save_instance(instance)
+    }
+
+    fn load_settings(&self, instance_id: &str) -> Result<InstanceSettings> {
+        InstanceStore::load_settings(self, instance_id)
+    }
+
+    fn save_settings(&self, instance_id: &str, settings: &InstanceSettings) -> Result<()> {
+        InstanceStore::save_settings(self, instance_id, settings)
+    }
+}
+
+impl<'a> InstanceStore<'a> {
     /// Resolve the on-disk icon file path for an instance, supporting both Python's
     /// `.mcw/instance-icon.<ext>` relative paths, custom absolute paths, and legacy `icon.png`.
     pub fn resolve_instance_icon_path(&self, instance: &Instance) -> Option<std::path::PathBuf> {
