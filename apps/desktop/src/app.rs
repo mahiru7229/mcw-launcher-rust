@@ -285,11 +285,17 @@ pub struct McwApp {
     version_picker_open: bool,
     version_picker_title: String,
     version_picker_icon: Option<String>,
+    version_picker_website_url: Option<String>,
     version_picker_key: String,
     version_picker_is_pack: bool,
     version_picker_loading: bool,
     version_picker_items: Vec<ModVersionChoice>,
     version_picker_error: Option<String>,
+    version_picker_include_beta: bool,
+    version_picker_include_alpha: bool,
+    version_picker_mc_filter: String,
+    version_picker_loader_filter: String,
+    version_picker_selected_id: String,
 
     // OptiFine JAR path input inside Instance Settings tab
     optifine_jar_input: String,
@@ -302,10 +308,11 @@ pub struct McwApp {
     notice_banner_last_text: Option<String>,
     notice_banner_since: Option<Instant>,
 
-    // Dedicated Isolated OS Windows for Mod Browser, Pack Browser, and Modpack Provider Browser
+    // Dedicated Isolated OS Windows for Mod Browser, Pack Browser, Modpack Provider Browser, and Group & Tags
     show_mod_browser_window: bool,
     show_pack_browser_window: bool,
     show_modpack_provider_window: Option<CreateInstanceTab>,
+    show_group_tags_modal: bool,
 }
 
 impl McwApp {
@@ -456,11 +463,17 @@ impl McwApp {
             version_picker_open: false,
             version_picker_title: String::new(),
             version_picker_icon: None,
+            version_picker_website_url: None,
             version_picker_key: String::new(),
             version_picker_is_pack: false,
             version_picker_loading: false,
             version_picker_items: Vec::new(),
             version_picker_error: None,
+            version_picker_include_beta: false,
+            version_picker_include_alpha: false,
+            version_picker_mc_filter: "all".to_string(),
+            version_picker_loader_filter: "all".to_string(),
+            version_picker_selected_id: String::new(),
             optifine_jar_input: String::new(),
             mod_update_candidates: Vec::new(),
             checking_mod_updates: false,
@@ -469,6 +482,7 @@ impl McwApp {
             show_mod_browser_window: false,
             show_pack_browser_window: false,
             show_modpack_provider_window: None,
+            show_group_tags_modal: false,
         };
 
         app.reload_instances();

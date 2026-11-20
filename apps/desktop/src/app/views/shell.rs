@@ -509,10 +509,12 @@ impl McwApp {
         if self.show_all_tasks_modal && total_tasks > 2 {
             let mut open = self.show_all_tasks_modal;
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_all_tasks");
-            let builder = egui::ViewportBuilder::default()
-                .with_title(format!("All Active Tasks ({total_tasks}) — MCW Launcher"))
-                .with_inner_size([560.0, 420.0])
-                .with_min_inner_size([380.0, 260.0]);
+            let builder = centered_viewport_builder(
+                ctx,
+                format!("All Active Tasks ({total_tasks}) — MCW Launcher"),
+                [560.0, 420.0],
+                [380.0, 260.0],
+            );
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
                 if vp_ctx.input(|i| i.viewport().close_requested()) {
                     open = false;

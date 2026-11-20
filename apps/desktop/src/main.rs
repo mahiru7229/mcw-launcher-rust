@@ -23,6 +23,7 @@ fn main() -> eframe::Result {
     let _ = paths.initialize();
 
     let options = eframe::NativeOptions {
+        centered: true,
         viewport: egui::ViewportBuilder::default()
             .with_title("MCW Launcher: Rust Edition")
             .with_inner_size([1080.0, 680.0])

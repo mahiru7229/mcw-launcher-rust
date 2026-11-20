@@ -140,6 +140,24 @@ pub fn configure_fonts(ctx: &Context) {
     }
 
     #[cfg(windows)]
+    if let Ok(sym_bytes) = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf") {
+        fonts.font_data.insert(
+            "mcw_symbols".to_owned(),
+            Arc::new(FontData::from_owned(sym_bytes)),
+        );
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(1, "mcw_symbols".to_owned());
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .push("mcw_symbols".to_owned());
+    }
+
+    #[cfg(windows)]
     let mono_candidates = [
         r"C:\Windows\Fonts\CascadiaMono.ttf",
         r"C:\Windows\Fonts\consola.ttf",

@@ -395,259 +395,265 @@ impl McwApp {
         let mut change_icon_clicked = false;
         let mut reset_icon_clicked = false;
 
-        Frame::new()
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::same(14))
+        ScrollArea::vertical()
+            .id_salt("overview_tab_scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-
-                // Header Row: Title + Compact Action Menu (`⋮ Actions ▾`)
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Instance Details")
-                            .size(14.5)
-                            .strong()
-                            .color(p.text),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.menu_button(
-                            RichText::new("⋮ Actions ▾").strong().color(p.text),
-                            |ui| {
-                                ui.set_min_width(210.0);
-                                if ui.button("Open .minecraft Folder").clicked() {
-                                    let _ = std::fs::create_dir_all(&mc_dir);
-                                    open_external(&mc_dir.display().to_string());
-                                    ui.close_menu();
-                                }
-                                if ui
-                                    .add_enabled(!busy, Button::new(&export_label))
-                                    .on_disabled_hover_text("Stop the instance before exporting")
-                                    .clicked()
-                                {
-                                    open_export = true;
-                                    ui.close_menu();
-                                }
-                                if ui
-                                    .add_enabled(!busy, Button::new("Repair Files"))
-                                    .on_disabled_hover_text("Stop the instance before repairing")
-                                    .clicked()
-                                {
-                                    trigger_repair = true;
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                if ui
-                                    .add_enabled(!busy, Button::new("Rename Instance..."))
-                                    .on_disabled_hover_text("Stop the instance before renaming")
-                                    .clicked()
-                                {
-                                    self.rename_input = inst.name.clone();
-                                    self.show_rename_modal = true;
-                                    ui.close_menu();
-                                }
-                                if ui.button(&clone_lbl).clicked() {
-                                    self.clone_name_input = format!("{} (Copy)", inst.name);
-                                    self.clone_include_saves = false;
-                                    self.show_clone_modal = true;
-                                    ui.close_menu();
-                                }
-                                if ui.button(&chg_icon_lbl).clicked() {
-                                    change_icon_clicked = true;
-                                    ui.close_menu();
-                                }
-                                if !inst.icon.is_empty()
-                                    && !inst.icon.eq_ignore_ascii_case("grass_block")
-                                    && ui.button(&rst_icon_lbl).clicked()
-                                {
-                                    reset_icon_clicked = true;
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                let del_btn = Button::new(
-                                    RichText::new("Delete Instance...").color(p.danger),
-                                );
-                                if ui
-                                    .add_enabled(!busy, del_btn)
-                                    .on_disabled_hover_text("Stop the instance before deleting")
-                                    .clicked()
-                                {
-                                    self.show_delete_modal = true;
-                                    ui.close_menu();
-                                }
-                            },
-                        );
-                    });
-                });
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                // Comprehensive Instance Metadata Grid
-                let loader_text = if inst.mod_loader.version.trim().is_empty() {
-                    inst.mod_loader.name.clone()
-                } else {
-                    format!("{} ({})", inst.mod_loader.name, inst.mod_loader.version)
-                };
-                let (mem_text, res_text, java_text, lan_text) =
-                    if let Some(ref s) = self.selected_settings {
-                        let mem = format!("{} MB – {} MB", s.min_memory, s.max_memory);
-                        let res = if s.fullscreen {
-                            format!("{} × {} (Fullscreen)", s.width, s.height)
-                        } else {
-                            format!("{} × {} (Windowed)", s.width, s.height)
-                        };
-                        let jv = s
-                            .java_path
-                            .as_ref()
-                            .map(|jp| jp.display().to_string())
-                            .unwrap_or_else(|| "Automatic (recommended)".to_string());
-                        let lan = format!(
-                            "Auth: {}  ·  Tunnel: {}",
-                            s.lan_auth_mode, s.lan_connection_provider
-                        );
-                        (mem, res, jv, lan)
-                    } else {
-                        (
-                            "Default".to_string(),
-                            "Default".to_string(),
-                            "Automatic (recommended)".to_string(),
-                            "Default".to_string(),
-                        )
-                    };
-                let last_played_text = if inst.last_played.trim().is_empty() {
-                    "Never"
-                } else {
-                    inst.last_played.as_str()
-                };
-                let exit_text = match inst.last_exit_code {
-                    Some(code) => format!("{} (exit code: {code})", inst.last_launch_state),
-                    None => inst.last_launch_state.clone(),
-                };
-                let mods_count = self
-                    .mods_cache
-                    .get(&inst.instance_id)
-                    .map(|v| v.len())
-                    .unwrap_or(self.selected_mods.len());
-                let worlds_count = self
-                    .worlds_cache
-                    .get(&inst.instance_id)
-                    .map(|v| v.len())
-                    .unwrap_or(self.selected_worlds.len());
-                let shots_count = self
-                    .screenshots_cache
-                    .get(&inst.instance_id)
-                    .map(|v| v.len())
-                    .unwrap_or(self.selected_screenshots.len());
-                let backups_count = self
-                    .backups_cache
-                    .get(&inst.instance_id)
-                    .map(|v| v.len())
-                    .unwrap_or(self.selected_backups.len());
-
-                egui::Grid::new("overview_instance_details_grid")
-                    .num_columns(2)
-                    .spacing([24.0, 6.0])
-                    .striped(true)
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0_f32, p.border))
+                    .corner_radius(CornerRadius::same(3))
+                    .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("Instance Name / ID:").color(p.text_muted));
-                        ui.label(
-                            RichText::new(format!("{}  ({})", inst.name, inst.instance_id))
-                                .monospace(),
-                        );
-                        ui.end_row();
+                        ui.set_width(ui.available_width());
 
-                        ui.label(RichText::new("Minecraft Version:").color(p.text_muted));
-                        ui.label(RichText::new(&inst.version_id).monospace().strong());
-                        ui.end_row();
+                        // Header Row: Title + Compact Action Menu (`Actions`)
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Instance Details")
+                                    .size(14.5)
+                                    .strong()
+                                    .color(p.text),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.menu_button(
+                                    RichText::new("Actions").strong().color(p.text),
+                                    |ui| {
+                                        ui.set_min_width(210.0);
+                                        if ui.button("Open .minecraft Folder").clicked() {
+                                            let _ = std::fs::create_dir_all(&mc_dir);
+                                            open_external(&mc_dir.display().to_string());
+                                            ui.close_menu();
+                                        }
+                                        if ui
+                                            .add_enabled(!busy, Button::new(&export_label))
+                                            .on_disabled_hover_text(
+                                                "Stop the instance before exporting",
+                                            )
+                                            .clicked()
+                                        {
+                                            open_export = true;
+                                            ui.close_menu();
+                                        }
+                                        if ui
+                                            .add_enabled(!busy, Button::new("Repair Files"))
+                                            .on_disabled_hover_text(
+                                                "Stop the instance before repairing",
+                                            )
+                                            .clicked()
+                                        {
+                                            trigger_repair = true;
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        if ui
+                                            .add_enabled(!busy, Button::new("Rename Instance..."))
+                                            .on_disabled_hover_text(
+                                                "Stop the instance before renaming",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.rename_input = inst.name.clone();
+                                            self.show_rename_modal = true;
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Edit Group & Tags...").clicked() {
+                                            self.edit_group_input = inst.group.clone();
+                                            self.edit_tags_input = inst.tags.join(", ");
+                                            self.show_group_tags_modal = true;
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(&clone_lbl).clicked() {
+                                            self.clone_name_input = format!("{} (Copy)", inst.name);
+                                            self.clone_include_saves = false;
+                                            self.show_clone_modal = true;
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(&chg_icon_lbl).clicked() {
+                                            change_icon_clicked = true;
+                                            ui.close_menu();
+                                        }
+                                        if !inst.icon.is_empty()
+                                            && !inst.icon.eq_ignore_ascii_case("grass_block")
+                                            && ui.button(&rst_icon_lbl).clicked()
+                                        {
+                                            reset_icon_clicked = true;
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        let del_btn = Button::new(
+                                            RichText::new("Delete Instance...").color(p.danger),
+                                        );
+                                        if ui
+                                            .add_enabled(!busy, del_btn)
+                                            .on_disabled_hover_text(
+                                                "Stop the instance before deleting",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.show_delete_modal = true;
+                                            ui.close_menu();
+                                        }
+                                    },
+                                );
+                            });
+                        });
 
-                        ui.label(RichText::new("Mod Loader:").color(p.text_muted));
-                        ui.label(RichText::new(loader_text).monospace());
-                        ui.end_row();
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
 
-                        ui.label(RichText::new("Game Directory:").color(p.text_muted));
-                        ui.label(RichText::new(mc_dir.display().to_string()).monospace());
-                        ui.end_row();
+                        // Comprehensive Instance Metadata Grid
+                        let loader_text = if inst.mod_loader.is_vanilla()
+                            || inst.mod_loader.version.trim().is_empty()
+                            || inst.mod_loader.version == "-1"
+                        {
+                            inst.mod_loader.name.clone()
+                        } else {
+                            format!("{} ({})", inst.mod_loader.name, inst.mod_loader.version)
+                        };
+                        let (mem_text, res_text, java_text, lan_text) =
+                            if let Some(ref s) = self.selected_settings {
+                                let mem = format!("{} MB – {} MB", s.min_memory, s.max_memory);
+                                let res = if s.fullscreen {
+                                    format!("{} × {} (Fullscreen)", s.width, s.height)
+                                } else {
+                                    format!("{} × {} (Windowed)", s.width, s.height)
+                                };
+                                let jv = s
+                                    .java_path
+                                    .as_ref()
+                                    .map(|jp| jp.display().to_string())
+                                    .unwrap_or_else(|| "Automatic (recommended)".to_string());
+                                let lan = format!(
+                                    "Auth: {}  ·  Tunnel: {}",
+                                    s.lan_auth_mode, s.lan_connection_provider
+                                );
+                                (mem, res, jv, lan)
+                            } else {
+                                (
+                                    "Default".to_string(),
+                                    "Default".to_string(),
+                                    "Automatic (recommended)".to_string(),
+                                    "Default".to_string(),
+                                )
+                            };
+                        let last_played_text = if inst.last_played.trim().is_empty() {
+                            "Never"
+                        } else {
+                            inst.last_played.as_str()
+                        };
+                        let exit_text = match inst.last_exit_code {
+                            Some(code) => format!("{} (exit code: {code})", inst.last_launch_state),
+                            None => inst.last_launch_state.clone(),
+                        };
+                        let group_text = if inst.group.trim().is_empty() {
+                            "None".to_string()
+                        } else {
+                            inst.group.clone()
+                        };
+                        let tags_text = if inst.tags.is_empty() {
+                            "None".to_string()
+                        } else {
+                            inst.tags.join(", ")
+                        };
+                        let mods_count = self
+                            .mods_cache
+                            .get(&inst.instance_id)
+                            .map(|v| v.len())
+                            .unwrap_or(self.selected_mods.len());
+                        let worlds_count = self
+                            .worlds_cache
+                            .get(&inst.instance_id)
+                            .map(|v| v.len())
+                            .unwrap_or(self.selected_worlds.len());
+                        let shots_count = self
+                            .screenshots_cache
+                            .get(&inst.instance_id)
+                            .map(|v| v.len())
+                            .unwrap_or(self.selected_screenshots.len());
+                        let backups_count = self
+                            .backups_cache
+                            .get(&inst.instance_id)
+                            .map(|v| v.len())
+                            .unwrap_or(self.selected_backups.len());
 
-                        ui.label(RichText::new("Memory Allocation:").color(p.text_muted));
-                        ui.label(RichText::new(mem_text).monospace());
-                        ui.end_row();
+                        egui::Grid::new("overview_instance_details_grid")
+                            .num_columns(2)
+                            .spacing([24.0, 6.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.label(RichText::new("Instance Name / ID:").color(p.text_muted));
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{}  ({})",
+                                        inst.name, inst.instance_id
+                                    ))
+                                    .monospace(),
+                                );
+                                ui.end_row();
 
-                        ui.label(RichText::new("Window Resolution:").color(p.text_muted));
-                        ui.label(RichText::new(res_text).monospace());
-                        ui.end_row();
+                                ui.label(RichText::new("Minecraft Version:").color(p.text_muted));
+                                ui.label(RichText::new(&inst.version_id).monospace().strong());
+                                ui.end_row();
 
-                        ui.label(RichText::new("Java Runtime:").color(p.text_muted));
-                        ui.label(RichText::new(java_text).monospace());
-                        ui.end_row();
+                                ui.label(RichText::new("Mod Loader:").color(p.text_muted));
+                                ui.label(RichText::new(loader_text).monospace());
+                                ui.end_row();
 
-                        ui.label(RichText::new("LAN Hosting:").color(p.text_muted));
-                        ui.label(RichText::new(lan_text).monospace());
-                        ui.end_row();
+                                ui.label(RichText::new("Group:").color(p.text_muted));
+                                ui.label(RichText::new(group_text).monospace());
+                                ui.end_row();
 
-                        ui.label(RichText::new("Total Playtime:").color(p.text_muted));
-                        ui.label(
-                            RichText::new(format_duration(inst.total_playtime_seconds)).monospace(),
-                        );
-                        ui.end_row();
+                                ui.label(RichText::new("Tags:").color(p.text_muted));
+                                ui.label(RichText::new(tags_text).monospace());
+                                ui.end_row();
 
-                        ui.label(RichText::new("Last Played:").color(p.text_muted));
-                        ui.label(RichText::new(last_played_text).monospace());
-                        ui.end_row();
+                                ui.label(RichText::new("Game Directory:").color(p.text_muted));
+                                ui.label(RichText::new(mc_dir.display().to_string()).monospace());
+                                ui.end_row();
 
-                        ui.label(RichText::new("Last Status:").color(p.text_muted));
-                        ui.label(RichText::new(exit_text).monospace());
-                        ui.end_row();
+                                ui.label(RichText::new("Memory Allocation:").color(p.text_muted));
+                                ui.label(RichText::new(mem_text).monospace());
+                                ui.end_row();
 
-                        ui.label(RichText::new("Installed Content:").color(p.text_muted));
-                        ui.label(
-                            RichText::new(format!(
-                                "Mods: {mods_count}  ·  Worlds: {worlds_count}  ·  Screenshots: {shots_count}  ·  Backups: {backups_count}"
-                            ))
-                            .monospace(),
-                        );
-                        ui.end_row();
+                                ui.label(RichText::new("Window Resolution:").color(p.text_muted));
+                                ui.label(RichText::new(res_text).monospace());
+                                ui.end_row();
+
+                                ui.label(RichText::new("Java Runtime:").color(p.text_muted));
+                                ui.label(RichText::new(java_text).monospace());
+                                ui.end_row();
+
+                                ui.label(RichText::new("LAN Hosting:").color(p.text_muted));
+                                ui.label(RichText::new(lan_text).monospace());
+                                ui.end_row();
+
+                                ui.label(RichText::new("Total Playtime:").color(p.text_muted));
+                                ui.label(
+                                    RichText::new(format_duration(inst.total_playtime_seconds))
+                                        .monospace(),
+                                );
+                                ui.end_row();
+
+                                ui.label(RichText::new("Last Played:").color(p.text_muted));
+                                ui.label(RichText::new(last_played_text).monospace());
+                                ui.end_row();
+
+                                ui.label(RichText::new("Last Status:").color(p.text_muted));
+                                ui.label(RichText::new(exit_text).monospace());
+                                ui.end_row();
+
+                                ui.label(RichText::new("Installed Content:").color(p.text_muted));
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Mods: {mods_count}  ·  Worlds: {worlds_count}  ·  Screenshots: {shots_count}  ·  Backups: {backups_count}"
+                                    ))
+                                    .monospace(),
+                                );
+                                ui.end_row();
+                            });
                     });
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Group:").color(p.text_muted));
-                    ui.add(
-                        TextEdit::singleline(&mut self.edit_group_input)
-                            .hint_text("e.g. Survival, Modded")
-                            .desired_width(140.0),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(RichText::new("Tags (comma-separated):").color(p.text_muted));
-                    ui.add(
-                        TextEdit::singleline(&mut self.edit_tags_input)
-                            .hint_text("e.g. RPG, Tech, 1.21")
-                            .desired_width(200.0),
-                    );
-                    if ui.button("Save Group & Tags").clicked() {
-                        let store = InstanceStore::new(&self.paths);
-                        match store.set_library_metadata(
-                            &inst.instance_id,
-                            None,
-                            Some(&self.edit_group_input),
-                            Some(&self.edit_tags_input),
-                        ) {
-                            Ok(_) => {
-                                self.reload_instances();
-                                self.notice_banner =
-                                    Some(("Updated instance group and tags.".to_string(), false));
-                            }
-                            Err(e) => {
-                                self.notice_banner =
-                                    Some((format!("Failed to update tags: {e}"), true));
-                            }
-                        }
-                    }
-                });
             });
 
         if open_export {

@@ -51,6 +51,7 @@ pub struct ModVersionChoice {
     pub id: String,
     pub title: String,
     pub version_number: String,
+    pub channel: ModpackChannel,
     pub game_versions: Vec<String>,
     pub loaders: Vec<String>,
     pub file_name: String,

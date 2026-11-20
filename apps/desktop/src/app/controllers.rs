@@ -1022,28 +1022,42 @@ impl McwApp {
         self.version_picker_open = true;
         self.version_picker_title = title;
         self.version_picker_icon = icon_url;
+        self.version_picker_website_url = Some(format!(
+            "https://modrinth.com/{}/{}",
+            if is_pack { "modpack" } else { "mod" },
+            slug
+        ));
         self.version_picker_key = target_key.clone();
         self.version_picker_is_pack = is_pack;
         self.version_picker_loading = true;
         self.version_picker_items.clear();
         self.version_picker_error = None;
+        self.version_picker_include_beta = self.prefs.modrinth_include_beta;
+        self.version_picker_include_alpha = self.prefs.modrinth_include_alpha;
+        self.version_picker_selected_id.clear();
 
-        let (loader_opt, gv_opt) = if is_pack {
-            let l = if self.pack_loader_filter.is_empty() || self.pack_loader_filter == "all" {
-                None
+        if is_pack {
+            self.version_picker_mc_filter = "all".to_string();
+            self.version_picker_loader_filter = if self.pack_loader_filter.is_empty() {
+                "all".to_string()
             } else {
-                Some(self.pack_loader_filter.clone())
+                self.pack_loader_filter.to_ascii_lowercase()
             };
-            (l, None)
         } else {
-            let inst = self.selected_instance();
-            let l = if self.mod_loader_filter.is_empty() || self.mod_loader_filter == "all" {
-                None
+            let inst = self.selected_instance().cloned();
+            self.version_picker_mc_filter = inst
+                .as_ref()
+                .map(|i| i.version_id.clone())
+                .unwrap_or_else(|| "all".to_string());
+            self.version_picker_loader_filter = if self.mod_loader_filter.is_empty() {
+                inst.as_ref()
+                    .map(|i| i.mod_loader.name.to_ascii_lowercase())
+                    .filter(|l| l != "vanilla")
+                    .unwrap_or_else(|| "all".to_string())
             } else {
-                Some(self.mod_loader_filter.clone())
+                self.mod_loader_filter.to_ascii_lowercase()
             };
-            (l, inst.map(|i| i.version_id.clone()))
-        };
+        }
 
         let cache_path = self
             .paths
@@ -1057,23 +1071,30 @@ impl McwApp {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
                 let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
+                // Fetch all project versions so the user can filter by Release/Beta/Alpha, MC version, and Loader in the dialog
                 let versions = mr
-                    .list_versions(&slug, loader_opt.as_deref(), gv_opt.as_deref())
+                    .list_versions(&slug, None, None)
                     .await
                     .map_err(|e| e.to_string())?;
                 let choices: Vec<ModVersionChoice> = versions
                     .into_iter()
-                    .take(25)
+                    .take(120)
                     .filter_map(|v| {
                         let primary = v
                             .files
                             .iter()
                             .find(|f| f.primary)
                             .or_else(|| v.files.first())?;
+                        let channel = match v.version_type.to_ascii_lowercase().as_str() {
+                            "alpha" => ModpackChannel::Alpha,
+                            "beta" => ModpackChannel::Beta,
+                            _ => ModpackChannel::Release,
+                        };
                         Some(ModVersionChoice {
                             id: v.id,
                             title: v.name,
                             version_number: v.version_number,
+                            channel,
                             game_versions: v.game_versions,
                             loaders: v.loaders,
                             file_name: primary.filename.clone(),
@@ -1102,22 +1123,51 @@ impl McwApp {
         ctx: &egui::Context,
     ) {
         let target_key = format!("cf:{mod_id}");
+        let web_url = self
+            .curseforge_results
+            .iter()
+            .find(|m| m.id == mod_id)
+            .and_then(|m| {
+                m.links
+                    .as_ref()
+                    .and_then(|l| l.website_url.clone())
+                    .or_else(|| {
+                        if !m.slug.is_empty() {
+                            Some(format!(
+                                "https://www.curseforge.com/minecraft/mc-mods/{}",
+                                m.slug
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+            });
+
         self.version_picker_open = true;
         self.version_picker_title = title;
         self.version_picker_icon = icon_url;
+        self.version_picker_website_url = web_url;
         self.version_picker_key = target_key.clone();
         self.version_picker_is_pack = false;
         self.version_picker_loading = true;
         self.version_picker_items.clear();
         self.version_picker_error = None;
+        self.version_picker_include_beta = self.prefs.modrinth_include_beta;
+        self.version_picker_include_alpha = self.prefs.modrinth_include_alpha;
+        self.version_picker_selected_id.clear();
 
-        let inst = self.selected_instance();
-        let gv_opt = inst.map(|i| i.version_id.clone());
-        let loader_opt = if self.mod_loader_filter.is_empty() || self.mod_loader_filter == "all" {
-            None
+        let inst = self.selected_instance().cloned();
+        let gv_opt = inst.as_ref().map(|i| i.version_id.clone());
+        self.version_picker_mc_filter = gv_opt.clone().unwrap_or_else(|| "all".to_string());
+        self.version_picker_loader_filter = if self.mod_loader_filter.is_empty() {
+            inst.as_ref()
+                .map(|i| i.mod_loader.name.to_ascii_lowercase())
+                .filter(|l| l != "vanilla")
+                .unwrap_or_else(|| "all".to_string())
         } else {
-            Some(self.mod_loader_filter.clone())
+            self.mod_loader_filter.to_ascii_lowercase()
         };
+
         let api_key = self.resolved_cf_api_key();
         let cache_path = self
             .paths
@@ -1131,19 +1181,55 @@ impl McwApp {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
                 let cf = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
-                let files = cf
-                    .get_mod_files(mod_id, gv_opt.as_deref(), loader_opt.as_deref())
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let mut files = Vec::new();
+                let mut seen_ids = HashSet::new();
+                if let Some(ref gv) = gv_opt {
+                    if let Ok(gv_files) = cf.get_mod_files(mod_id, Some(gv.as_str()), None).await {
+                        for f in gv_files {
+                            if seen_ids.insert(f.id) {
+                                files.push(f);
+                            }
+                        }
+                    }
+                }
+                if let Ok(all_files) = cf.get_mod_files(mod_id, None, None).await {
+                    for f in all_files {
+                        if seen_ids.insert(f.id) {
+                            files.push(f);
+                        }
+                    }
+                }
                 let choices: Vec<ModVersionChoice> = files
                     .into_iter()
-                    .take(25)
+                    .take(100)
                     .map(|f| {
                         let sha1 = f
                             .hashes
                             .iter()
                             .find(|h| h.algo == 1)
                             .map(|h| h.value.clone());
+                        let channel = match f.release_type {
+                            3 => ModpackChannel::Alpha,
+                            2 => ModpackChannel::Beta,
+                            _ => ModpackChannel::Release,
+                        };
+                        let mut gvs = Vec::new();
+                        let mut loaders = Vec::new();
+                        for token in f.game_versions {
+                            let low = token.to_ascii_lowercase();
+                            if matches!(low.as_str(), "forge" | "fabric" | "neoforge" | "quilt") {
+                                if !loaders.contains(&low) {
+                                    loaders.push(low);
+                                }
+                            } else if token
+                                .chars()
+                                .next()
+                                .map(|c| c.is_ascii_digit())
+                                .unwrap_or(false)
+                            {
+                                gvs.push(token);
+                            }
+                        }
                         ModVersionChoice {
                             id: f.id.to_string(),
                             title: if f.display_name.is_empty() {
@@ -1152,8 +1238,9 @@ impl McwApp {
                                 f.display_name
                             },
                             version_number: format!("File #{}", f.id),
-                            game_versions: f.game_versions,
-                            loaders: Vec::new(),
+                            channel,
+                            game_versions: gvs,
+                            loaders,
                             file_name: f.file_name,
                             download_url: f.download_url.filter(|u| !u.trim().is_empty()),
                             file_size: f.file_length,
@@ -1170,6 +1257,61 @@ impl McwApp {
             });
             ctx.request_repaint();
         });
+    }
+
+    pub(crate) fn filtered_mod_versions(&self) -> Vec<&ModVersionChoice> {
+        let mc_filter = self.version_picker_mc_filter.trim();
+        let loader_filter = self
+            .version_picker_loader_filter
+            .trim()
+            .to_ascii_lowercase();
+        self.version_picker_items
+            .iter()
+            .filter(|v| match v.channel {
+                ModpackChannel::Release => true,
+                ModpackChannel::Beta => self.version_picker_include_beta,
+                ModpackChannel::Alpha => self.version_picker_include_alpha,
+            })
+            .filter(|v| {
+                if mc_filter.is_empty()
+                    || mc_filter.eq_ignore_ascii_case("all")
+                    || v.game_versions.is_empty()
+                {
+                    true
+                } else {
+                    v.game_versions.iter().any(|gv| gv == mc_filter)
+                }
+            })
+            .filter(|v| {
+                if loader_filter.is_empty() || loader_filter == "all" || v.loaders.is_empty() {
+                    true
+                } else {
+                    v.loaders
+                        .iter()
+                        .any(|l| l.eq_ignore_ascii_case(&loader_filter))
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn sync_mod_version_picker_selection(&mut self) {
+        if self.filtered_mod_versions().is_empty() && !self.version_picker_items.is_empty() {
+            // Auto-relax beta/alpha if the mod only has beta/alpha builds for the selected MC version/loader
+            if !self.version_picker_include_beta {
+                self.version_picker_include_beta = true;
+            }
+            if self.filtered_mod_versions().is_empty() && !self.version_picker_include_alpha {
+                self.version_picker_include_alpha = true;
+            }
+        }
+        let filtered_ids: Vec<String> = self
+            .filtered_mod_versions()
+            .into_iter()
+            .map(|v| v.id.clone())
+            .collect();
+        if !filtered_ids.contains(&self.version_picker_selected_id) {
+            self.version_picker_selected_id = filtered_ids.into_iter().next().unwrap_or_default();
+        }
     }
 
     pub(crate) fn start_direct_mod_file_install(
@@ -1978,6 +2120,7 @@ impl McwApp {
                             Ok(list) => {
                                 self.version_picker_items = list;
                                 self.version_picker_error = None;
+                                self.sync_mod_version_picker_selection();
                             }
                             Err(err) => {
                                 self.version_picker_error = Some(err);

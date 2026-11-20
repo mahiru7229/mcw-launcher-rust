@@ -9,10 +9,12 @@ impl McwApp {
         if self.show_create_modal {
             let mut open = self.show_create_modal;
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_create_instance");
-            let builder = egui::ViewportBuilder::default()
-                .with_title("Create Instance — MCW Launcher")
-                .with_inner_size([580.0, 480.0])
-                .with_min_inner_size([460.0, 380.0]);
+            let builder = centered_viewport_builder(
+                ctx,
+                "Create Instance — MCW Launcher",
+                [580.0, 480.0],
+                [460.0, 380.0],
+            );
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
                 if vp_ctx.input(|i| i.viewport().close_requested()) {
                     open = false;
@@ -312,10 +314,12 @@ impl McwApp {
                 let mut trigger_export: Option<ModpackExportOptions> = None;
                 let mut open = self.show_export_modal;
                 let vp_id = egui::ViewportId::from_hash_of("mcw_vp_export_modpack");
-                let builder = egui::ViewportBuilder::default()
-                    .with_title(format!("{title} — {}", inst.name))
-                    .with_inner_size([540.0, 420.0])
-                    .with_min_inner_size([420.0, 320.0]);
+                let builder = centered_viewport_builder(
+                    ctx,
+                    format!("{title} — {}", inst.name),
+                    [540.0, 420.0],
+                    [420.0, 320.0],
+                );
                 ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
                     if vp_ctx.input(|i| i.viewport().close_requested()) {
                         open = false;
@@ -492,130 +496,377 @@ impl McwApp {
             }
         }
 
-        // 1c. Mod / Modpack Version Picker Isolated OS Window
+        // 1c. Mod / Modpack Version Picker Isolated OS Window (with Release/Beta/Alpha, MC Version, Loader & Version Dropdown filters)
         if self.version_picker_open {
             let mut open = self.version_picker_open;
             let mut chosen: Option<ModVersionChoice> = None;
+            let mut filter_changed = false;
             let title = format!("Select Version — {}", self.version_picker_title);
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_version_picker");
-            let builder = egui::ViewportBuilder::default()
-                .with_title(title)
-                .with_inner_size([580.0, 460.0])
-                .with_min_inner_size([440.0, 320.0]);
+            let builder = centered_viewport_builder(ctx, title, [640.0, 540.0], [480.0, 380.0]);
+
+            let beta_lbl = self.t("content.channel.beta").to_string();
+            let alpha_lbl = self.t("content.channel.alpha").to_string();
+            let open_web_lbl = self.t("content.open_web").to_string();
+            let cancel_lbl = self.t("common.cancel").to_string();
+
+            let mut all_mc_versions: Vec<String> = vec!["all".to_string()];
+            if let Some(inst) = self.selected_instance() {
+                if !all_mc_versions.contains(&inst.version_id) {
+                    all_mc_versions.push(inst.version_id.clone());
+                }
+            }
+            for item in &self.version_picker_items {
+                for gv in &item.game_versions {
+                    if !all_mc_versions.contains(gv) {
+                        all_mc_versions.push(gv.clone());
+                    }
+                }
+            }
+
+            let filtered_items: Vec<ModVersionChoice> =
+                self.filtered_mod_versions().into_iter().cloned().collect();
+
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
                 if vp_ctx.input(|i| i.viewport().close_requested()) {
                     open = false;
                 }
                 egui::CentralPanel::default()
-                    .frame(Frame::new().fill(p.canvas).inner_margin(egui::Margin::same(12)))
+                    .frame(
+                        Frame::new()
+                            .fill(p.canvas)
+                            .inner_margin(egui::Margin::same(14)),
+                    )
                     .show(vp_ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        self.render_thumbnail(ui, self.version_picker_icon.as_deref(), 40.0);
+                        // Header: Thumbnail + Mod Title + Open on Web
+                        ui.horizontal(|ui| {
+                            self.render_thumbnail(ui, self.version_picker_icon.as_deref(), 44.0);
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new(&self.version_picker_title)
+                                        .strong()
+                                        .size(15.5)
+                                        .color(p.text),
+                                );
+                                ui.label(
+                                    RichText::new(if self.version_picker_is_pack {
+                                        "Choose a modpack version to download and install."
+                                    } else {
+                                        "Filter and select a compatible mod version to install into mods/."
+                                    })
+                                    .size(11.5)
+                                    .color(p.text_muted),
+                                );
+                            });
+                            if let Some(ref web_url) = self.version_picker_website_url {
+                                let url_clone = web_url.clone();
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui.button(&open_web_lbl).clicked() {
+                                        open_external(&url_clone);
+                                    }
+                                });
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                        ui.separator();
                         ui.add_space(6.0);
-                        ui.vertical(|ui| {
+
+                        // Row 1: Release channels (Include Beta / Include Alpha) + MC Version & Loader dropdowns
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .checkbox(&mut self.version_picker_include_beta, &beta_lbl)
+                                .changed()
+                            {
+                                filter_changed = true;
+                            }
+                            if ui
+                                .checkbox(&mut self.version_picker_include_alpha, &alpha_lbl)
+                                .changed()
+                            {
+                                filter_changed = true;
+                            }
+                            ui.separator();
+                            ui.label("MC Version:");
+                            egui::ComboBox::from_id_salt("mod_vp_mc_filter_combo")
+                                .selected_text(&self.version_picker_mc_filter)
+                                .width(110.0)
+                                .show_ui(ui, |ui| {
+                                    for gv in &all_mc_versions {
+                                        if ui
+                                            .selectable_value(
+                                                &mut self.version_picker_mc_filter,
+                                                gv.clone(),
+                                                gv,
+                                            )
+                                            .changed()
+                                        {
+                                            filter_changed = true;
+                                        }
+                                    }
+                                });
+                            ui.label("Loader:");
+                            egui::ComboBox::from_id_salt("mod_vp_loader_filter_combo")
+                                .selected_text(&self.version_picker_loader_filter)
+                                .width(100.0)
+                                .show_ui(ui, |ui| {
+                                    for l in ["all", "fabric", "forge", "neoforge", "quilt"] {
+                                        if ui
+                                            .selectable_value(
+                                                &mut self.version_picker_loader_filter,
+                                                l.to_string(),
+                                                l,
+                                            )
+                                            .changed()
+                                        {
+                                            filter_changed = true;
+                                        }
+                                    }
+                                });
                             ui.label(
-                                RichText::new(&self.version_picker_title)
-                                    .strong()
-                                    .size(14.5),
-                            );
-                            ui.label(
-                                RichText::new(if self.version_picker_is_pack {
-                                    "Choose a modpack version to download and install."
-                                } else {
-                                    "Choose a compatible version to install into mods/."
-                                })
-                                .size(11.5)
-                                .color(p.text_muted),
+                                RichText::new(format!("({} available)", filtered_items.len()))
+                                    .size(11.0)
+                                    .color(p.text_muted),
                             );
                         });
-                    });
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
 
-                    if self.version_picker_loading {
-                        ui.label(RichText::new("Loading versions...").color(p.accent));
-                    } else if let Some(ref err) = self.version_picker_error {
-                        ui.label(RichText::new(format!("Error: {err}")).color(p.danger));
-                    } else if self.version_picker_items.is_empty() {
-                        ui.label(
-                            RichText::new(
-                                "No compatible versions found for the selected Minecraft version / loader.",
-                            )
-                            .color(p.text_muted),
-                        );
-                    } else {
-                        ScrollArea::vertical()
-                            .id_salt("version_picker_scroll")
-                            .max_height(320.0)
-                            .show(ui, |ui| {
-                                for item in &self.version_picker_items {
+                        ui.add_space(6.0);
+
+                        if self.version_picker_loading {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(RichText::new("Loading versions...").color(p.accent));
+                            });
+                        } else if let Some(ref err) = self.version_picker_error {
+                            ui.label(RichText::new(format!("Error: {err}")).color(p.danger));
+                        } else if filtered_items.is_empty() {
+                            ui.label(
+                                RichText::new(
+                                    "No versions match the current filters. Try enabling Beta/Alpha or switching MC Version / Loader to 'all'.",
+                                )
+                                .color(p.warning),
+                            );
+                        } else {
+                            // Row 2: Selected Version Dropdown (same pattern as Modpack Install Dialog)
+                            let selected_item = filtered_items
+                                .iter()
+                                .find(|v| v.id == self.version_picker_selected_id)
+                                .or_else(|| filtered_items.first());
+                            let selected_label = selected_item
+                                .map(|item| {
+                                    let badge = match item.channel {
+                                        ModpackChannel::Release => "[R]",
+                                        ModpackChannel::Beta => "[B]",
+                                        ModpackChannel::Alpha => "[A]",
+                                    };
+                                    let gvs = item
+                                        .game_versions
+                                        .iter()
+                                        .take(3)
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    let loaders = item.loaders.join(", ");
+                                    if loaders.is_empty() {
+                                        format!(
+                                            "{badge} {} ({}) · MC {} · {}",
+                                            item.title,
+                                            item.version_number,
+                                            gvs,
+                                            format_bytes(item.file_size)
+                                        )
+                                    } else {
+                                        format!(
+                                            "{badge} {} ({}) · {} · MC {} · {}",
+                                            item.title,
+                                            item.version_number,
+                                            loaders,
+                                            gvs,
+                                            format_bytes(item.file_size)
+                                        )
+                                    }
+                                })
+                                .unwrap_or_else(|| "Select version...".to_string());
+
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Selected Version:").strong());
+                                egui::ComboBox::from_id_salt("mod_version_picker_combo")
+                                    .selected_text(selected_label)
+                                    .width((ui.available_width() - 8.0).max(260.0))
+                                    .show_ui(ui, |ui| {
+                                        for item in &filtered_items {
+                                            let badge = match item.channel {
+                                                ModpackChannel::Release => "[R]",
+                                                ModpackChannel::Beta => "[B]",
+                                                ModpackChannel::Alpha => "[A]",
+                                            };
+                                            let gvs = item
+                                                .game_versions
+                                                .iter()
+                                                .take(3)
+                                                .cloned()
+                                                .collect::<Vec<_>>()
+                                                .join(", ");
+                                            let loaders = item.loaders.join(", ");
+                                            let text = if loaders.is_empty() {
+                                                format!(
+                                                    "{badge} {} ({}) · MC {} · {}",
+                                                    item.title,
+                                                    item.version_number,
+                                                    gvs,
+                                                    format_bytes(item.file_size)
+                                                )
+                                            } else {
+                                                format!(
+                                                    "{badge} {} ({}) · {} · MC {} · {}",
+                                                    item.title,
+                                                    item.version_number,
+                                                    loaders,
+                                                    gvs,
+                                                    format_bytes(item.file_size)
+                                                )
+                                            };
+                                            ui.selectable_value(
+                                                &mut self.version_picker_selected_id,
+                                                item.id.clone(),
+                                                text,
+                                            );
+                                        }
+                                    });
+                            });
+
+                            ui.add_space(6.0);
+
+                            // Footer Buttons + Scrollable list of versions
+                            egui::TopBottomPanel::bottom("mod_vp_footer_panel")
+                                .frame(
                                     Frame::new()
-                                        .fill(p.elevated)
-                                        .stroke(Stroke::new(1.0_f32, p.border))
-                                        .corner_radius(CornerRadius::same(3))
-                                        .inner_margin(egui::Margin::symmetric(8, 6))
-                                        .show(ui, |ui| {
-                                            ui.set_width(ui.available_width());
-                                            ui.horizontal(|ui| {
-                                                ui.vertical(|ui| {
-                                                    ui.label(
-                                                        RichText::new(&item.title).strong(),
-                                                    );
-                                                    let gvs = item
-                                                        .game_versions
-                                                        .iter()
-                                                        .take(4)
-                                                        .cloned()
-                                                        .collect::<Vec<_>>()
-                                                        .join(", ");
-                                                    let loaders = item.loaders.join(", ");
-                                                    let meta = if loaders.is_empty() {
-                                                        format!(
-                                                            "{} · MC {} · {}",
-                                                            item.version_number,
-                                                            gvs,
-                                                            format_bytes(item.file_size)
-                                                        )
-                                                    } else {
-                                                        format!(
-                                                            "{} · {} · MC {} · {}",
-                                                            item.version_number,
-                                                            loaders,
-                                                            gvs,
-                                                            format_bytes(item.file_size)
-                                                        )
-                                                    };
-                                                    ui.label(
-                                                        RichText::new(meta)
-                                                            .monospace()
-                                                            .size(10.5)
-                                                            .color(p.text_muted),
+                                        .fill(p.canvas)
+                                        .inner_margin(egui::Margin::symmetric(0, 6)),
+                                )
+                                .show_inside(ui, |ui| {
+                                    ui.separator();
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        let install_btn = Button::new(
+                                            RichText::new("Install Selected Version")
+                                                .color(p.accent_text)
+                                                .strong(),
+                                        )
+                                        .fill(p.accent);
+                                        if ui
+                                            .add_enabled(selected_item.is_some(), install_btn)
+                                            .clicked()
+                                        {
+                                            if let Some(sel) = selected_item {
+                                                chosen = Some(sel.clone());
+                                            }
+                                        }
+                                        if ui.button(&cancel_lbl).clicked() {
+                                            open = false;
+                                        }
+                                    });
+                                });
+
+                            ScrollArea::vertical()
+                                .id_salt("version_picker_scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    for item in &filtered_items {
+                                        let is_selected =
+                                            item.id == self.version_picker_selected_id;
+                                        let badge = match item.channel {
+                                            ModpackChannel::Release => "[R]",
+                                            ModpackChannel::Beta => "[B]",
+                                            ModpackChannel::Alpha => "[A]",
+                                        };
+                                        let badge_col = match item.channel {
+                                            ModpackChannel::Release => p.accent,
+                                            ModpackChannel::Beta => p.warning,
+                                            ModpackChannel::Alpha => p.danger,
+                                        };
+                                        Frame::new()
+                                            .fill(p.elevated)
+                                            .stroke(Stroke::new(
+                                                1.0_f32,
+                                                if is_selected { p.accent } else { p.border },
+                                            ))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::symmetric(8, 6))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.horizontal(|ui| {
+                                                    ui.vertical(|ui| {
+                                                        ui.horizontal(|ui| {
+                                                            ui.label(
+                                                                RichText::new(badge)
+                                                                    .monospace()
+                                                                    .strong()
+                                                                    .size(11.0)
+                                                                    .color(badge_col),
+                                                            );
+                                                            ui.label(
+                                                                RichText::new(&item.title).strong(),
+                                                            );
+                                                        });
+                                                        let gvs = item
+                                                            .game_versions
+                                                            .iter()
+                                                            .take(4)
+                                                            .cloned()
+                                                            .collect::<Vec<_>>()
+                                                            .join(", ");
+                                                        let loaders = item.loaders.join(", ");
+                                                        let meta = if loaders.is_empty() {
+                                                            format!(
+                                                                "{} · MC {} · {}",
+                                                                item.version_number,
+                                                                gvs,
+                                                                format_bytes(item.file_size)
+                                                            )
+                                                        } else {
+                                                            format!(
+                                                                "{} · {} · MC {} · {}",
+                                                                item.version_number,
+                                                                loaders,
+                                                                gvs,
+                                                                format_bytes(item.file_size)
+                                                            )
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(meta)
+                                                                .monospace()
+                                                                .size(10.5)
+                                                                .color(p.text_muted),
+                                                        );
+                                                    });
+                                                    ui.with_layout(
+                                                        Layout::right_to_left(Align::Center),
+                                                        |ui| {
+                                                            let btn = Button::new(
+                                                                RichText::new("Install")
+                                                                    .color(p.accent_text)
+                                                                    .strong(),
+                                                            )
+                                                            .fill(p.accent);
+                                                            if ui.add(btn).clicked() {
+                                                                chosen = Some(item.clone());
+                                                            }
+                                                        },
                                                     );
                                                 });
-                                                ui.with_layout(
-                                                    Layout::right_to_left(Align::Center),
-                                                    |ui| {
-                                                        let btn = Button::new(
-                                                            RichText::new("Install")
-                                                                .color(p.accent_text)
-                                                                .strong(),
-                                                        )
-                                                        .fill(p.accent);
-                                                        if ui.add(btn).clicked() {
-                                                            chosen = Some(item.clone());
-                                                        }
-                                                    },
-                                                );
                                             });
-                                        });
-                                    ui.add_space(4.0);
-                                }
-                            });
-                    }
+                                        ui.add_space(4.0);
+                                    }
+                                });
+                        }
                     });
             });
             self.version_picker_open = open;
+            if filter_changed {
+                self.sync_mod_version_picker_selection();
+            }
             if let Some(choice) = chosen {
                 self.version_picker_open = false;
                 if self.version_picker_is_pack {
@@ -632,147 +883,292 @@ impl McwApp {
             }
         }
 
-        // 2. Rename Instance Modal
+        // 2. Rename Instance Isolated OS Window (Centered)
         if self.show_rename_modal {
             if let Some(inst) = self.selected_instance().cloned() {
-                egui::Window::new("Rename Instance")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                    .show(ctx, |ui| {
-                        ui.label(format!("New name for '{}':", inst.name));
-                        ui.text_edit_singleline(&mut self.rename_input);
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Rename").clicked() {
-                                let store = InstanceStore::new(&self.paths);
-                                match store.rename_instance(&inst.instance_id, &self.rename_input) {
-                                    Ok(updated) => {
-                                        self.selected_instance_id = Some(updated.instance_id);
-                                        self.show_rename_modal = false;
-                                        self.reload_instances();
-                                        self.notice_banner = Some((
-                                            format!("Renamed instance to '{}'.", updated.name),
-                                            false,
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        self.notice_banner =
-                                            Some((format!("Rename failed: {e}"), true));
+                let mut open = self.show_rename_modal;
+                let vp_id = egui::ViewportId::from_hash_of("mcw_vp_rename_instance");
+                let builder = centered_viewport_builder(
+                    ctx,
+                    format!("Rename Instance — {}", inst.name),
+                    [420.0, 170.0],
+                    [360.0, 150.0],
+                );
+                ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                    if vp_ctx.input(|i| i.viewport().close_requested()) {
+                        open = false;
+                    }
+                    egui::CentralPanel::default()
+                        .frame(
+                            Frame::new()
+                                .fill(p.canvas)
+                                .inner_margin(egui::Margin::same(14)),
+                        )
+                        .show(vp_ctx, |ui| {
+                            ui.label(format!("New name for '{}':", inst.name));
+                            ui.text_edit_singleline(&mut self.rename_input);
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                let ren_btn = Button::new(
+                                    RichText::new("Rename").color(p.accent_text).strong(),
+                                )
+                                .fill(p.accent);
+                                if ui.add(ren_btn).clicked() {
+                                    let store = InstanceStore::new(&self.paths);
+                                    match store
+                                        .rename_instance(&inst.instance_id, &self.rename_input)
+                                    {
+                                        Ok(updated) => {
+                                            self.selected_instance_id = Some(updated.instance_id);
+                                            open = false;
+                                            self.reload_instances();
+                                            self.notice_banner = Some((
+                                                format!("Renamed instance to '{}'.", updated.name),
+                                                false,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            self.notice_banner =
+                                                Some((format!("Rename failed: {e}"), true));
+                                        }
                                     }
                                 }
-                            }
-                            if ui.button("Cancel").clicked() {
-                                self.show_rename_modal = false;
-                            }
+                                if ui.button("Cancel").clicked() {
+                                    open = false;
+                                }
+                            });
                         });
-                    });
+                });
+                self.show_rename_modal = open;
             }
         }
 
-        // 2b. Clone / Duplicate Instance Modal
+        // 2a. Edit Group & Tags Isolated OS Window (Centered, opened from Actions -> Edit Group & Tags...)
+        if self.show_group_tags_modal {
+            if let Some(inst) = self.selected_instance().cloned() {
+                let mut open = self.show_group_tags_modal;
+                let vp_id = egui::ViewportId::from_hash_of("mcw_vp_edit_group_tags");
+                let builder = centered_viewport_builder(
+                    ctx,
+                    format!("Edit Group & Tags — {}", inst.name),
+                    [460.0, 230.0],
+                    [380.0, 200.0],
+                );
+                ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                    if vp_ctx.input(|i| i.viewport().close_requested()) {
+                        open = false;
+                    }
+                    egui::CentralPanel::default()
+                        .frame(
+                            Frame::new()
+                                .fill(p.canvas)
+                                .inner_margin(egui::Margin::same(14)),
+                        )
+                        .show(vp_ctx, |ui| {
+                            ui.label(
+                                RichText::new(format!("Group & Tags for '{}'", inst.name))
+                                    .strong()
+                                    .size(14.0),
+                            );
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("Group:").color(p.text_muted));
+                            ui.add(
+                                TextEdit::singleline(&mut self.edit_group_input)
+                                    .hint_text("e.g. Survival, Modded")
+                                    .desired_width(ui.available_width()),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(RichText::new("Tags (comma-separated):").color(p.text_muted));
+                            ui.add(
+                                TextEdit::singleline(&mut self.edit_tags_input)
+                                    .hint_text("e.g. RPG, Tech, 1.21")
+                                    .desired_width(ui.available_width()),
+                            );
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                let save_btn = Button::new(
+                                    RichText::new("Save Group & Tags")
+                                        .color(p.accent_text)
+                                        .strong(),
+                                )
+                                .fill(p.accent);
+                                if ui.add(save_btn).clicked() {
+                                    let store = InstanceStore::new(&self.paths);
+                                    match store.set_library_metadata(
+                                        &inst.instance_id,
+                                        None,
+                                        Some(&self.edit_group_input),
+                                        Some(&self.edit_tags_input),
+                                    ) {
+                                        Ok(_) => {
+                                            open = false;
+                                            self.reload_instances();
+                                            self.notice_banner = Some((
+                                                "Updated instance group and tags.".to_string(),
+                                                false,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            self.notice_banner =
+                                                Some((format!("Failed to update tags: {e}"), true));
+                                        }
+                                    }
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    open = false;
+                                }
+                            });
+                        });
+                });
+                self.show_group_tags_modal = open;
+            }
+        }
+
+        // 2b. Clone / Duplicate Instance Isolated OS Window (Centered)
         if self.show_clone_modal {
             if let Some(inst) = self.selected_instance().cloned() {
+                let mut open = self.show_clone_modal;
                 let clone_title = self.t("workspace.clone.title").to_string();
                 let include_saves_lbl = self.t("workspace.clone.include_saves").to_string();
-                egui::Window::new(clone_title)
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                    .show(ctx, |ui| {
-                        ui.label(format!("New cloned instance name (from '{}'):", inst.name));
-                        ui.text_edit_singleline(&mut self.clone_name_input);
-                        ui.add_space(4.0);
-                        ui.checkbox(&mut self.clone_include_saves, include_saves_lbl);
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui.button(self.t("workspace.clone.action")).clicked() {
-                                let store = InstanceStore::new(&self.paths);
-                                match store.clone_instance(
-                                    &inst.instance_id,
-                                    &self.clone_name_input,
-                                    self.clone_include_saves,
-                                ) {
-                                    Ok(cloned) => {
-                                        self.selected_instance_id = Some(cloned.instance_id);
-                                        self.show_clone_modal = false;
-                                        self.reload_instances();
-                                        self.notice_banner = Some((
-                                            format!("Cloned instance to '{}'.", cloned.name),
-                                            false,
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        self.notice_banner =
-                                            Some((format!("Clone failed: {e}"), true));
+                let clone_act_lbl = self.t("workspace.clone.action").to_string();
+                let cancel_lbl = self.t("common.cancel").to_string();
+                let vp_id = egui::ViewportId::from_hash_of("mcw_vp_clone_instance");
+                let builder = centered_viewport_builder(
+                    ctx,
+                    format!("{clone_title} — {}", inst.name),
+                    [440.0, 210.0],
+                    [360.0, 180.0],
+                );
+                ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                    if vp_ctx.input(|i| i.viewport().close_requested()) {
+                        open = false;
+                    }
+                    egui::CentralPanel::default()
+                        .frame(
+                            Frame::new()
+                                .fill(p.canvas)
+                                .inner_margin(egui::Margin::same(14)),
+                        )
+                        .show(vp_ctx, |ui| {
+                            ui.label(format!("New cloned instance name (from '{}'):", inst.name));
+                            ui.text_edit_singleline(&mut self.clone_name_input);
+                            ui.add_space(6.0);
+                            ui.checkbox(&mut self.clone_include_saves, &include_saves_lbl);
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                let act_btn = Button::new(
+                                    RichText::new(&clone_act_lbl).color(p.accent_text).strong(),
+                                )
+                                .fill(p.accent);
+                                if ui.add(act_btn).clicked() {
+                                    let store = InstanceStore::new(&self.paths);
+                                    match store.clone_instance(
+                                        &inst.instance_id,
+                                        &self.clone_name_input,
+                                        self.clone_include_saves,
+                                    ) {
+                                        Ok(cloned) => {
+                                            self.selected_instance_id = Some(cloned.instance_id);
+                                            open = false;
+                                            self.reload_instances();
+                                            self.notice_banner = Some((
+                                                format!("Cloned instance to '{}'.", cloned.name),
+                                                false,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            self.notice_banner =
+                                                Some((format!("Clone failed: {e}"), true));
+                                        }
                                     }
                                 }
-                            }
-                            if ui.button(self.t("common.cancel")).clicked() {
-                                self.show_clone_modal = false;
-                            }
+                                if ui.button(&cancel_lbl).clicked() {
+                                    open = false;
+                                }
+                            });
                         });
-                    });
+                });
+                self.show_clone_modal = open;
             }
         }
 
-        // 3. Delete Instance Confirmation Modal (Data Safety Gate)
+        // 3. Delete Instance Confirmation Isolated OS Window (Centered, Data Safety Gate)
         if self.show_delete_modal {
             if let Some(inst) = self.selected_instance().cloned() {
-                egui::Window::new("Delete Instance")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                    .show(ctx, |ui| {
-                        ui.label(
-                            RichText::new(format!("Permanently delete '{}'?", inst.name))
-                                .strong()
-                                .color(p.danger),
-                        );
-                        ui.label(
-                            "This will permanently delete the instance folder including all saves, mods, and configs inside .minecraft/.",
-                        );
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            let confirm_btn = Button::new(
-                                RichText::new("Delete Permanently").color(Color32::WHITE).strong(),
-                            )
-                            .fill(p.danger);
-                            if ui.add(confirm_btn).clicked() {
-                                let store = InstanceStore::new(&self.paths);
-                                match store.delete_instance(&inst.instance_id) {
-                                    Ok(()) => {
-                                        self.show_delete_modal = false;
-                                        self.selected_instance_id = None;
-                                        self.reload_instances();
-                                        self.notice_banner = Some((
-                                            format!("Deleted instance '{}'.", inst.name),
-                                            false,
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        self.show_delete_modal = false;
-                                        self.notice_banner =
-                                            Some((format!("Delete failed: {e}"), true));
+                let mut open = self.show_delete_modal;
+                let vp_id = egui::ViewportId::from_hash_of("mcw_vp_delete_instance");
+                let builder = centered_viewport_builder(
+                    ctx,
+                    format!("Delete Instance — {}", inst.name),
+                    [460.0, 190.0],
+                    [380.0, 160.0],
+                );
+                ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                    if vp_ctx.input(|i| i.viewport().close_requested()) {
+                        open = false;
+                    }
+                    egui::CentralPanel::default()
+                        .frame(
+                            Frame::new()
+                                .fill(p.canvas)
+                                .inner_margin(egui::Margin::same(14)),
+                        )
+                        .show(vp_ctx, |ui| {
+                            ui.label(
+                                RichText::new(format!("Permanently delete '{}'?", inst.name))
+                                    .strong()
+                                    .color(p.danger),
+                            );
+                            ui.label(
+                                "This will permanently delete the instance folder including all saves, mods, and configs inside .minecraft/.",
+                            );
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                let confirm_btn = Button::new(
+                                    RichText::new("Delete Permanently")
+                                        .color(Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(p.danger);
+                                if ui.add(confirm_btn).clicked() {
+                                    let store = InstanceStore::new(&self.paths);
+                                    match store.delete_instance(&inst.instance_id) {
+                                        Ok(()) => {
+                                            open = false;
+                                            self.selected_instance_id = None;
+                                            self.reload_instances();
+                                            self.notice_banner = Some((
+                                                format!("Deleted instance '{}'.", inst.name),
+                                                false,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            open = false;
+                                            self.notice_banner =
+                                                Some((format!("Delete failed: {e}"), true));
+                                        }
                                     }
                                 }
-                            }
-                            if ui.button("Cancel").clicked() {
-                                self.show_delete_modal = false;
-                            }
+                                if ui.button("Cancel").clicked() {
+                                    open = false;
+                                }
+                            });
                         });
-                    });
+                });
+                self.show_delete_modal = open;
             }
         }
 
-        // 4. Account Manager Isolated OS Window
+        // 4. Account Manager Isolated OS Window (Centered)
         if self.show_account_modal {
             let mut open = self.show_account_modal;
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_accounts");
-            let builder = egui::ViewportBuilder::default()
-                .with_title("Accounts — MCW Launcher")
-                .with_inner_size([480.0, 440.0])
-                .with_min_inner_size([380.0, 340.0]);
+            let builder = centered_viewport_builder(
+                ctx,
+                "Accounts — MCW Launcher",
+                [480.0, 440.0],
+                [380.0, 340.0],
+            );
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
                 if vp_ctx.input(|i| i.viewport().close_requested()) {
                     open = false;
@@ -975,81 +1371,123 @@ impl McwApp {
             }
         }
 
-        // 5. Restore Backup Confirmation Modal
+        // 5. Restore Backup Confirmation Isolated OS Window (Centered)
         if let Some(backup_id) = self.pending_restore_backup_id.clone() {
-            egui::Window::new("Restore Backup")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(380.0);
-                    ui.label(
-                        RichText::new(format!("Restore backup '{backup_id}'?"))
-                            .strong()
-                            .color(p.warning),
-                    );
-                    ui.label(
-                        "Current .minecraft/ contents will be replaced using a safe staging & rollback swap (original data is preserved on rollback if restore fails).",
-                    );
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        let btn = Button::new(
-                            RichText::new("Confirm Restore").color(p.accent_text).strong(),
-                        )
-                        .fill(p.accent);
-                        if ui.add(btn).clicked() {
-                            self.pending_restore_backup_id = None;
-                            self.start_backup_restore(backup_id, ctx);
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.pending_restore_backup_id = None;
-                        }
+            let mut open = true;
+            let mut confirm_restore = false;
+            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_restore_backup");
+            let builder = centered_viewport_builder(
+                ctx,
+                format!("Restore Backup — {backup_id}"),
+                [460.0, 190.0],
+                [380.0, 160.0],
+            );
+            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                    open = false;
+                }
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::new()
+                            .fill(p.canvas)
+                            .inner_margin(egui::Margin::same(14)),
+                    )
+                    .show(vp_ctx, |ui| {
+                        ui.label(
+                            RichText::new(format!("Restore backup '{backup_id}'?"))
+                                .strong()
+                                .color(p.warning),
+                        );
+                        ui.label(
+                            "Current .minecraft/ contents will be replaced using a safe staging & rollback swap (original data is preserved on rollback if restore fails).",
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            let btn = Button::new(
+                                RichText::new("Confirm Restore")
+                                    .color(p.accent_text)
+                                    .strong(),
+                            )
+                            .fill(p.accent);
+                            if ui.add(btn).clicked() {
+                                confirm_restore = true;
+                                open = false;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                open = false;
+                            }
+                        });
                     });
-                });
+            });
+            if !open {
+                self.pending_restore_backup_id = None;
+            }
+            if confirm_restore {
+                self.start_backup_restore(backup_id, ctx);
+            }
         }
 
-        // 5b. Delete World Confirmation Modal (Data Safety Gate)
+        // 5b. Delete World Confirmation Isolated OS Window (Centered, Data Safety Gate)
         if let Some((inst_id, folder_name)) = self.pending_delete_world.clone() {
-            egui::Window::new("Delete World")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(360.0);
-                    ui.label(
-                        RichText::new(format!("Permanently delete world '{folder_name}'?"))
-                            .strong()
-                            .color(p.danger),
-                    );
-                    ui.label("This will permanently remove the world save folder from saves/.");
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        let confirm_btn = Button::new(
-                            RichText::new("Delete World").color(Color32::WHITE).strong(),
-                        )
-                        .fill(p.danger);
-                        if ui.add(confirm_btn).clicked() {
-                            let mc_dir = self.paths.minecraft_dir(&inst_id);
-                            match WorldManager::delete_world(&mc_dir, &folder_name) {
-                                Ok(()) => {
-                                    self.pending_delete_world = None;
-                                    self.worlds_cache.remove(&inst_id);
-                                    self.load_worlds_async(&inst_id, ctx, true);
-                                    self.notice_banner =
-                                        Some((format!("Deleted world '{folder_name}'."), false));
-                                }
-                                Err(e) => {
-                                    self.pending_delete_world = None;
-                                    self.notice_banner =
-                                        Some((format!("Delete world failed: {e}"), true));
-                                }
+            let mut open = true;
+            let mut confirm_delete = false;
+            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_delete_world");
+            let builder = centered_viewport_builder(
+                ctx,
+                format!("Delete World — {folder_name}"),
+                [440.0, 180.0],
+                [360.0, 150.0],
+            );
+            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                    open = false;
+                }
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::new()
+                            .fill(p.canvas)
+                            .inner_margin(egui::Margin::same(14)),
+                    )
+                    .show(vp_ctx, |ui| {
+                        ui.label(
+                            RichText::new(format!("Permanently delete world '{folder_name}'?"))
+                                .strong()
+                                .color(p.danger),
+                        );
+                        ui.label("This will permanently remove the world save folder from saves/.");
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            let confirm_btn = Button::new(
+                                RichText::new("Delete World").color(Color32::WHITE).strong(),
+                            )
+                            .fill(p.danger);
+                            if ui.add(confirm_btn).clicked() {
+                                confirm_delete = true;
+                                open = false;
                             }
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.pending_delete_world = None;
-                        }
+                            if ui.button("Cancel").clicked() {
+                                open = false;
+                            }
+                        });
                     });
-                });
+            });
+            if !open {
+                self.pending_delete_world = None;
+            }
+            if confirm_delete {
+                let mc_dir = self.paths.minecraft_dir(&inst_id);
+                match WorldManager::delete_world(&mc_dir, &folder_name) {
+                    Ok(()) => {
+                        self.worlds_cache.remove(&inst_id);
+                        self.load_worlds_async(&inst_id, ctx, true);
+                        self.notice_banner =
+                            Some((format!("Deleted world '{folder_name}'."), false));
+                    }
+                    Err(e) => {
+                        self.notice_banner = Some((format!("Delete world failed: {e}"), true));
+                    }
+                }
+            }
         }
 
         // 6. Launcher Settings Isolated OS Window (responsive: SidePanel when wide, TopBar when narrow)
@@ -1080,10 +1518,12 @@ impl McwApp {
                 ),
             ];
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_launcher_settings");
-            let builder = egui::ViewportBuilder::default()
-                .with_title(format!("{win_title} — MCW Launcher"))
-                .with_inner_size([740.0, 520.0])
-                .with_min_inner_size([400.0, 340.0]);
+            let builder = centered_viewport_builder(
+                ctx,
+                format!("{win_title} — MCW Launcher"),
+                [740.0, 520.0],
+                [400.0, 340.0],
+            );
 
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
                 if vp_ctx.input(|i| i.viewport().close_requested()) {
@@ -1782,14 +2222,16 @@ impl McwApp {
 
             let mut win_open = true;
             let vp_id = egui::ViewportId::from_hash_of(("mcw_vp_manual_downloads", &inst_id));
-            let builder = egui::ViewportBuilder::default()
-                .with_title(format!(
+            let builder = centered_viewport_builder(
+                ctx,
+                format!(
                     "Manual Downloads — {} ({} remaining)",
                     inst_name,
                     items.len()
-                ))
-                .with_inner_size([600.0, 500.0])
-                .with_min_inner_size([440.0, 340.0]);
+                ),
+                [600.0, 500.0],
+                [440.0, 340.0],
+            );
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
                 if vp_ctx.input(|i| i.viewport().close_requested()) {
                     win_open = false;
@@ -1989,10 +2431,7 @@ impl McwApp {
             self.modpack_dialog.pack_title, self.modpack_dialog.provider_label
         );
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_modpack_install");
-        let builder = egui::ViewportBuilder::default()
-            .with_title(title)
-            .with_inner_size([560.0, 560.0])
-            .with_min_inner_size([420.0, 420.0]);
+        let builder = centered_viewport_builder(ctx, title, [560.0, 560.0], [420.0, 420.0]);
 
         let filtered_options: Vec<ModpackVersionOption> = self
             .filtered_modpack_versions()
@@ -2317,10 +2756,12 @@ impl McwApp {
             _ => "Modrinth Modpacks",
         };
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_modpack_provider_browser");
-        let builder = egui::ViewportBuilder::default()
-            .with_title(format!("Browse {provider_name} — MCW Launcher"))
-            .with_inner_size([720.0, 560.0])
-            .with_min_inner_size([520.0, 400.0]);
+        let builder = centered_viewport_builder(
+            ctx,
+            format!("Browse {provider_name} — MCW Launcher"),
+            [720.0, 560.0],
+            [520.0, 400.0],
+        );
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
             if vp_ctx.input(|i| i.viewport().close_requested()) {
@@ -2898,13 +3339,15 @@ impl McwApp {
         let p = self.palette;
         let mut open = self.show_mod_browser_window;
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_browse_mods");
-        let builder = egui::ViewportBuilder::default()
-            .with_title(format!(
+        let builder = centered_viewport_builder(
+            ctx,
+            format!(
                 "Add Mods — {} (MC {} · {})",
                 inst.name, inst.version_id, inst.mod_loader.name
-            ))
-            .with_inner_size([720.0, 560.0])
-            .with_min_inner_size([520.0, 400.0]);
+            ),
+            [720.0, 560.0],
+            [520.0, 400.0],
+        );
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
             if vp_ctx.input(|i| i.viewport().close_requested()) {
@@ -3214,13 +3657,12 @@ impl McwApp {
             ContentKind::ShaderPack => "Shader Packs",
         };
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_browse_packs");
-        let builder = egui::ViewportBuilder::default()
-            .with_title(format!(
-                "Add {kind_label} — {} (MC {})",
-                inst.name, inst.version_id
-            ))
-            .with_inner_size([720.0, 540.0])
-            .with_min_inner_size([520.0, 380.0]);
+        let builder = centered_viewport_builder(
+            ctx,
+            format!("Add {kind_label} — {} (MC {})", inst.name, inst.version_id),
+            [720.0, 540.0],
+            [520.0, 380.0],
+        );
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
             if vp_ctx.input(|i| i.viewport().close_requested()) {

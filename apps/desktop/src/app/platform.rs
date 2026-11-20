@@ -2,6 +2,49 @@ use crate::theme::ThemePalette;
 use eframe::egui::{self, CornerRadius, Stroke, Vec2};
 use std::path::PathBuf;
 
+pub(crate) fn primary_screen_size(pixels_per_point: f32) -> Vec2 {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetSystemMetrics(n_index: i32) -> i32;
+        }
+        let scale = if pixels_per_point > 0.5 {
+            pixels_per_point
+        } else {
+            1.0
+        };
+        // SM_CXSCREEN = 0, SM_CYSCREEN = 1
+        let w = unsafe { GetSystemMetrics(0) };
+        let h = unsafe { GetSystemMetrics(1) };
+        if w > 0 && h > 0 {
+            return Vec2::new((w as f32) / scale, (h as f32) / scale);
+        }
+    }
+    let _ = pixels_per_point;
+    Vec2::new(1920.0, 1080.0)
+}
+
+/// Builds an OS viewport (`egui::ViewportBuilder`) positioned at the center of the active screen.
+pub(crate) fn centered_viewport_builder(
+    ctx: &egui::Context,
+    title: impl Into<String>,
+    size: [f32; 2],
+    min_size: [f32; 2],
+) -> egui::ViewportBuilder {
+    let screen = ctx
+        .input(|i| i.viewport().monitor_size)
+        .filter(|s| s.x > 100.0 && s.y > 100.0)
+        .unwrap_or_else(|| primary_screen_size(ctx.pixels_per_point()));
+    let x = ((screen.x - size[0]) * 0.5).max(24.0);
+    let y = ((screen.y - size[1]) * 0.5).max(24.0);
+    egui::ViewportBuilder::default()
+        .with_title(title)
+        .with_inner_size(size)
+        .with_min_inner_size(min_size)
+        .with_position(egui::pos2(x, y))
+}
+
 pub(crate) fn pick_file_dialog(title: &str, filter: &str) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
