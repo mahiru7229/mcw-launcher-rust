@@ -26,8 +26,8 @@ impl McwApp {
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::same(10))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(self.t("launcher_settings.theme.selector")).strong());
@@ -105,11 +105,17 @@ impl McwApp {
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::same(10))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new("Custom Accent Color (#RRGGBB)").strong());
+                ui.label(
+                    RichText::new(format!(
+                        "{} (#RRGGBB)",
+                        self.t("appearance.accent.mode.label")
+                    ))
+                    .strong(),
+                );
                 ui.label(
                     RichText::new(
                         "Override the primary accent color with contrast-aware button text.",
@@ -124,7 +130,7 @@ impl McwApp {
                     let (swatch_rect, _) =
                         ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::hover());
                     ui.painter()
-                        .rect_filled(swatch_rect, CornerRadius::same(3), preview_col);
+                        .rect_filled(swatch_rect, CornerRadius::same(6), preview_col);
 
                     ui.add(
                         TextEdit::singleline(&mut self.custom_accent_input)
@@ -144,7 +150,7 @@ impl McwApp {
                             ));
                         }
                     }
-                    if ui.button("Reset Accent").clicked() {
+                    if ui.button(self.t("appearance.accent.reset")).clicked() {
                         self.custom_accent_input.clear();
                         self.prefs.custom_accent_hex.clear();
                         self.apply_current_theme(ctx);
@@ -290,8 +296,8 @@ impl McwApp {
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::same(10))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -361,8 +367,8 @@ impl McwApp {
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::same(10))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new("Cache & Unused Version Cleanup").strong());
@@ -444,8 +450,8 @@ impl McwApp {
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::same(10))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
@@ -511,8 +517,8 @@ impl McwApp {
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::same(10))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
@@ -526,8 +532,8 @@ impl McwApp {
                     Frame::new()
                         .fill(p.elevated)
                         .stroke(Stroke::new(1.0_f32, p.warning))
-                        .corner_radius(CornerRadius::same(3))
-                        .inner_margin(egui::Margin::same(8))
+                        .corner_radius(CornerRadius::same(10))
+                        .inner_margin(egui::Margin::same(10))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.label(
@@ -660,7 +666,9 @@ impl McwApp {
         let builder = centered_viewport_builder(ctx, title, [560.0, 440.0], [440.0, 340.0]);
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| i.viewport().close_requested()) {
+            if vp_ctx.input(|i| {
+                i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)
+            }) {
                 open = false;
             }
             egui::TopBottomPanel::bottom("update_dialog_footer")
@@ -760,8 +768,8 @@ impl McwApp {
                     Frame::new()
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(3))
-                        .inner_margin(egui::Margin::same(10))
+                        .corner_radius(CornerRadius::same(12))
+                        .inner_margin(egui::Margin::same(12))
                         .show(ui, |ui| {
                             ScrollArea::vertical()
                                 .id_salt("update_release_notes_scroll")
@@ -795,13 +803,13 @@ impl McwApp {
         let mut skip_clicked = false;
         let mut use_recommended_clicked = false;
 
+        let first_run_title = format!("{} — MCW Launcher", self.t("first_run.title"));
+        let finish_lbl = self.t("first_run.finish").to_string();
+        let skip_lbl = self.t("first_run.skip").to_string();
+
         let vp_id = egui::ViewportId::from_hash_of("mcw_vp_first_run_setup");
-        let builder = centered_viewport_builder(
-            ctx,
-            "First-Run Setup Wizard — MCW Launcher",
-            [620.0, 520.0],
-            [480.0, 400.0],
-        );
+        let builder =
+            centered_viewport_builder(ctx, first_run_title, [620.0, 520.0], [480.0, 400.0]);
 
         let available_langs: Vec<(String, String)> = self
             .lang
@@ -811,7 +819,9 @@ impl McwApp {
             .collect();
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| i.viewport().close_requested()) {
+            if vp_ctx.input(|i| {
+                i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)
+            }) {
                 open = false;
             }
             egui::TopBottomPanel::bottom("first_run_footer")
@@ -824,7 +834,7 @@ impl McwApp {
                 .show(vp_ctx, |ui| {
                     ui.horizontal(|ui| {
                         let apply_btn = Button::new(
-                            RichText::new("Apply & Finish")
+                            RichText::new(&finish_lbl)
                                 .color(p.accent_text)
                                 .strong(),
                         )
@@ -832,7 +842,7 @@ impl McwApp {
                         if ui.add(apply_btn).clicked() {
                             apply_clicked = true;
                         }
-                        if ui.button("Skip for now").clicked() {
+                        if ui.button(&skip_lbl).clicked() {
                             skip_clicked = true;
                         }
                     });
@@ -867,8 +877,8 @@ impl McwApp {
                             Frame::new()
                                 .fill(p.surface)
                                 .stroke(Stroke::new(1.0_f32, p.border))
-                                .corner_radius(CornerRadius::same(3))
-                                .inner_margin(egui::Margin::same(10))
+                                .corner_radius(CornerRadius::same(12))
+                                .inner_margin(egui::Margin::same(12))
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
                                     ui.label(RichText::new("Detected Hardware & Java").strong());
@@ -921,8 +931,8 @@ impl McwApp {
                             Frame::new()
                                 .fill(p.surface)
                                 .stroke(Stroke::new(1.0_f32, p.border))
-                                .corner_radius(CornerRadius::same(3))
-                                .inner_margin(egui::Margin::same(10))
+                                .corner_radius(CornerRadius::same(12))
+                                .inner_margin(egui::Margin::same(12))
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
                                     ui.label(RichText::new("Default Launcher Settings").strong());

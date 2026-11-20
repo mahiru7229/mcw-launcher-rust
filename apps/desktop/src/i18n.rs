@@ -190,7 +190,6 @@ impl LanguageManager {
     }
 
     /// Translates a key and substitutes `{name}` placeholders (compatible with Python `.format()`).
-    #[allow(dead_code)]
     pub fn tr_fmt(&self, key: &str, vars: &[(&str, &str)]) -> String {
         let mut text = self.tr(key).to_string();
         for (k, v) in vars {

@@ -40,7 +40,8 @@ impl McwApp {
         let builder = centered_viewport_builder(ctx, title, [760.0, 520.0], [540.0, 360.0]);
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| i.viewport().close_requested()) {
+            if vp_ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
+            {
                 open = false;
             }
             egui::TopBottomPanel::bottom("lan_agent_log_footer")
@@ -82,10 +83,10 @@ impl McwApp {
                 .frame(
                     Frame::new()
                         .fill(p.canvas)
-                        .inner_margin(egui::Margin::same(14)),
+                        .inner_margin(egui::Margin::same(16)),
                 )
                 .show(vp_ctx, |ui| {
-                    ui.label(RichText::new(&desc).size(12.0).color(p.text));
+                    ui.label(RichText::new(&desc).size(12.5).color(p.text));
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(&path_line)
@@ -94,25 +95,29 @@ impl McwApp {
                             .color(p.text_muted),
                     );
                     ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    ScrollArea::vertical()
-                        .id_salt("lan_agent_log_scroll")
-                        .auto_shrink([false, false])
-                        .stick_to_bottom(true)
+                    Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .corner_radius(CornerRadius::same(12))
+                        .inner_margin(egui::Margin::same(10))
                         .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            let body = if self.lan_agent_log_text.is_empty() {
-                                self.t("lan.agent.log.not_found").to_string()
-                            } else {
-                                self.lan_agent_log_text.clone()
-                            };
-                            ui.add(
-                                egui::TextEdit::multiline(&mut body.as_str())
-                                    .font(egui::TextStyle::Monospace)
-                                    .desired_width(ui.available_width()),
-                            );
+                            ScrollArea::vertical()
+                                .id_salt("lan_agent_log_scroll")
+                                .auto_shrink([false, false])
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    let body = if self.lan_agent_log_text.is_empty() {
+                                        self.t("lan.agent.log.not_found").to_string()
+                                    } else {
+                                        self.lan_agent_log_text.clone()
+                                    };
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut body.as_str())
+                                            .font(egui::TextStyle::Monospace)
+                                            .desired_width(ui.available_width()),
+                                    );
+                                });
                         });
                 });
         });

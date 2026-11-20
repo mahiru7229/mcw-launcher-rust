@@ -38,16 +38,17 @@ pub enum ModpackChannel {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ModpackVersionOption {
     pub id: String,
     pub label: String,
+    #[allow(dead_code)]
     pub mc_version: String,
     pub loader: String,
     pub channel: ModpackChannel,
     pub download_url: Option<String>,
     pub file_name: String,
     pub file_size: u64,
+    #[allow(dead_code)]
     pub recommended_ram_mb: u32,
 }
 
@@ -248,20 +249,6 @@ pub enum AppEvent {
     },
     DeviceCodeReady(DeviceCodeResponse),
     MicrosoftLoginFinished(Result<StoredAccount, String>),
-    #[allow(dead_code)]
-    CurseForgeModInstallFinished {
-        task_id: u64,
-        mod_id: u64,
-        instance_id: String,
-        result: Result<String, String>,
-    },
-    #[allow(dead_code)]
-    ModrinthInstallFinished {
-        task_id: u64,
-        slug: String,
-        instance_id: String,
-        result: Result<usize, String>,
-    },
     JavaInstallFinished {
         task_id: u64,
         major: u32,

@@ -508,12 +508,6 @@ pub fn apply_theme_palette(
     p
 }
 
-/// Apply MCW DESIGN.md built-in palette tokens.
-#[allow(dead_code)]
-pub fn apply_theme(ctx: &Context, mode: ThemeMode) -> ThemePalette {
-    apply_theme_palette(ctx, mode, ThemePalette::for_mode(mode), MotionMode::Full)
-}
-
 /// Load system UI font (Segoe UI on Windows, Noto Sans on Linux) so Vietnamese diacritics
 /// render sharply, plus a system monospace font for Live Logs and file paths.
 pub fn configure_fonts(ctx: &Context) {

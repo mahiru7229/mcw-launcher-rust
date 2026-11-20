@@ -79,7 +79,7 @@ pub(crate) fn render_badge_pill(
         let painter = ui.painter();
         painter.rect(
             rect,
-            CornerRadius::same(3),
+            CornerRadius::same(8),
             bg_col,
             Stroke::new(1.0_f32, border_col),
             egui::StrokeKind::Inside,
@@ -205,7 +205,7 @@ pub(crate) fn gear_icon_button(ui: &mut egui::Ui, p: ThemePalette, active: bool)
         let painter = ui.painter();
         painter.rect(
             rect,
-            CornerRadius::same(3),
+            CornerRadius::same(8),
             bg,
             Stroke::new(1.0_f32, border),
             egui::StrokeKind::Inside,
@@ -241,7 +241,7 @@ pub(crate) fn star_icon_button(
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if resp.hovered() {
-            painter.rect_filled(rect, CornerRadius::same(3), p.surface);
+            painter.rect_filled(rect, CornerRadius::same(6), p.surface);
         }
         let col = if favorite {
             p.warning

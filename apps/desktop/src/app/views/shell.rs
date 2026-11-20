@@ -20,8 +20,8 @@ impl McwApp {
         let new_inst_lbl = format!("+ {}", self.t("workspace.create.title"));
         let new_btn = Button::new(RichText::new(new_inst_lbl).color(p.accent_text).strong())
             .fill(p.accent)
-            .min_size(Vec2::new(ui.available_width(), 28.0))
-            .corner_radius(CornerRadius::same(3));
+            .min_size(Vec2::new(ui.available_width(), 32.0))
+            .corner_radius(CornerRadius::same(10));
         if ui.add(new_btn).clicked() {
             self.create_tab = CreateInstanceTab::Custom;
             self.create_name.clear();
@@ -121,7 +121,7 @@ impl McwApp {
                 let frame_resp = Frame::new()
                     .fill(bg)
                     .stroke(Stroke::new(1.0_f32, border_col))
-                    .corner_radius(CornerRadius::same(3))
+                    .corner_radius(CornerRadius::same(10))
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -140,7 +140,7 @@ impl McwApp {
                                     egui::Sense::hover(),
                                 );
                                 ui.painter()
-                                    .rect_filled(rect, CornerRadius::same(1), bar_col);
+                                    .rect_filled(rect, CornerRadius::same(2), bar_col);
                             }
                             self.render_instance_icon(ui, inst, 28.0);
                             ui.add_space(4.0);
@@ -296,8 +296,8 @@ impl McwApp {
                 Frame::new()
                     .fill(p.surface)
                     .stroke(Stroke::new(1.0_f32, p.accent))
-                    .corner_radius(CornerRadius::same(4))
-                    .inner_margin(egui::Margin::same(6))
+                    .corner_radius(CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
                         ui.set_min_width(210.0);
                         ui.label(
@@ -438,6 +438,7 @@ impl McwApp {
         cancel_lbl: &str,
         paused_badge: &str,
         cancelling_badge: &str,
+        motion_secs: f32,
     ) {
         let is_paused = task.control.is_paused();
         let is_cancelled = task.control.is_cancelled();
@@ -451,8 +452,8 @@ impl McwApp {
         Frame::new()
             .fill(p.elevated)
             .stroke(Stroke::new(1.0_f32, border_col))
-            .corner_radius(CornerRadius::same(3))
-            .inner_margin(egui::Margin::symmetric(8, 6))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -523,16 +524,25 @@ impl McwApp {
                     ui.label(RichText::new(&task.message).size(11.0).color(p.text_muted));
                 }
                 ui.add_space(3.0);
-                let fraction = if task.total > 0 {
+                let target_fraction = if task.total > 0 {
                     (task.current as f32 / task.total as f32).clamp(0.0, 1.0)
                 } else {
                     0.0
                 };
-                let bar = egui::ProgressBar::new(fraction)
-                    .desired_height(6.0)
+                let animated_fraction = if task.total > 0 && motion_secs > 0.0 {
+                    ui.ctx().animate_value_with_time(
+                        egui::Id::new(("mcw_task_prog", task.id)),
+                        target_fraction,
+                        motion_secs,
+                    )
+                } else {
+                    target_fraction
+                };
+                let bar = egui::ProgressBar::new(animated_fraction)
+                    .desired_height(7.0)
                     .fill(if is_paused { p.warning } else { p.accent })
-                    .corner_radius(CornerRadius::same(2))
-                    .animate(task.total == 0 && !is_paused && !is_cancelled);
+                    .corner_radius(CornerRadius::same(4))
+                    .animate(task.total == 0 && !is_paused && !is_cancelled && motion_secs > 0.0);
                 ui.add(bar);
             });
     }
@@ -551,6 +561,7 @@ impl McwApp {
         let cancel_lbl = self.t("launch.cancel_button").to_string();
         let paused_badge = self.t("launch.paused_badge").to_string();
         let cancelling_badge = self.t("launch.cancelling_badge").to_string();
+        let motion_secs = self.motion_secs(0.15);
         let speed_text = if self.current_download_bps >= 1.0 {
             format!("↓ {}", format_speed(self.current_download_bps))
         } else {
@@ -560,9 +571,9 @@ impl McwApp {
         egui::TopBottomPanel::bottom("mcw_tasks_bar")
             .frame(
                 Frame::new()
-                    .fill(p.surface)
+                    .fill(p.glass(self.prefs.panel_opacity.max(0.88)).surface)
                     .stroke(Stroke::new(1.0_f32, p.border))
-                    .inner_margin(egui::Margin::symmetric(12, 8)),
+                    .inner_margin(egui::Margin::symmetric(14, 10)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -606,6 +617,7 @@ impl McwApp {
                             &cancel_lbl,
                             &paused_badge,
                             &cancelling_badge,
+                            motion_secs,
                         );
                         Self::render_single_task_card(
                             &mut cols[1],
@@ -617,6 +629,7 @@ impl McwApp {
                             &cancel_lbl,
                             &paused_badge,
                             &cancelling_badge,
+                            motion_secs,
                         );
                     });
                 } else {
@@ -631,6 +644,7 @@ impl McwApp {
                             &cancel_lbl,
                             &paused_badge,
                             &cancelling_badge,
+                            motion_secs,
                         );
                         if idx + 1 < visible.len() {
                             ui.add_space(4.0);
@@ -650,7 +664,9 @@ impl McwApp {
                 [380.0, 260.0],
             );
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                if vp_ctx
+                    .input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
+                {
                     open = false;
                 }
                 egui::CentralPanel::default()
@@ -683,6 +699,7 @@ impl McwApp {
                                         &cancel_lbl,
                                         &paused_badge,
                                         &cancelling_badge,
+                                        motion_secs,
                                     );
                                     ui.add_space(4.0);
                                 }
@@ -719,14 +736,14 @@ impl McwApp {
         if let Some(Some(tex)) = self.instance_icon_textures.get(&key) {
             ui.add(
                 egui::Image::new((tex.id(), Vec2::splat(size)))
-                    .corner_radius(CornerRadius::same(4)),
+                    .corner_radius(CornerRadius::same(8)),
             );
             return;
         }
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
         ui.painter().rect(
             rect,
-            CornerRadius::same(4),
+            CornerRadius::same(8),
             p.elevated,
             Stroke::new(1.0_f32, p.border),
             egui::StrokeKind::Inside,

@@ -1069,6 +1069,8 @@ impl McwApp {
         let tracked_pack = detect_installed_pack(&inst_dir);
         let optifine_state = OptiFineManager::state(&inst_dir);
         let browse_lbl = self.t("common.browse").to_string();
+        let optifine_title_lbl = self.t("optifine.title").to_string();
+        let optifine_choose_lbl = self.t("optifine.file.choose_title").to_string();
         let lan_log_btn_lbl = self.t("lan.agent.log.view").to_string();
         let save_inst_lbl = self.t("instance_settings.save").to_string();
         let is_forge_family = matches!(
@@ -1387,7 +1389,7 @@ impl McwApp {
                         ui.separator();
                         ui.add_space(10.0);
 
-                        ui.label(RichText::new("OptiFine").strong());
+                        ui.label(RichText::new(&optifine_title_lbl).strong());
                         ui.add_space(4.0);
                         if optifine_state.installed {
                             ui.horizontal_wrapped(|ui| {
@@ -1423,7 +1425,7 @@ impl McwApp {
                             );
                             if ui.button(&browse_lbl).clicked() {
                                 if let Some(chosen) = pick_file_dialog(
-                                    "Select OptiFine JAR",
+                                    &optifine_choose_lbl,
                                     "OptiFine JAR (*.jar)|*.jar|All Files (*.*)|*.*",
                                 ) {
                                     self.optifine_jar_input = chosen.display().to_string();

@@ -217,8 +217,6 @@ pub struct McwApp {
     installing_cf_packs: HashSet<u64>,
     installing_ext_packs: HashSet<String>,
     installing_archive_count: usize,
-    installing_cf_mods: HashSet<u64>,
-    installing_modrinth_slugs: HashSet<String>,
     installing_java_majors: HashSet<u32>,
 
     // UI state
@@ -419,6 +417,12 @@ pub struct McwApp {
     fade_page: AppPage,
     fade_tab: DetailTab,
     fade_since: Instant,
+
+    // v0.13 polish: global Ctrl+K quick search / command palette
+    show_quick_search: bool,
+    quick_search_query: String,
+    quick_search_open_since: Option<Instant>,
+    quick_search_focus_pending: bool,
 }
 
 impl McwApp {
@@ -516,8 +520,6 @@ impl McwApp {
             installing_cf_packs: HashSet::new(),
             installing_ext_packs: HashSet::new(),
             installing_archive_count: 0,
-            installing_cf_mods: HashSet::new(),
-            installing_modrinth_slugs: HashSet::new(),
             installing_java_majors: HashSet::new(),
             active_page: AppPage::Home,
             active_tab: DetailTab::Mods,
@@ -674,6 +676,10 @@ impl McwApp {
             fade_page: AppPage::Home,
             fade_tab: DetailTab::Mods,
             fade_since: Instant::now(),
+            show_quick_search: false,
+            quick_search_query: String::new(),
+            quick_search_open_since: None,
+            quick_search_focus_pending: false,
         };
 
         app.content_store_stats = Some(ContentStore::stats(&app.paths));
@@ -789,8 +795,20 @@ impl eframe::App for McwApp {
             ctx.request_repaint_after(Duration::from_secs(2));
         }
 
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::K)) {
+            self.show_quick_search = !self.show_quick_search;
+            if self.show_quick_search {
+                self.quick_search_query.clear();
+                self.quick_search_open_since = Some(Instant::now());
+                self.quick_search_focus_pending = true;
+                self.show_instance_flyout = false;
+            }
+        }
         if !self.show_launcher_settings {
             self.settings_open_since = None;
+        }
+        if !self.show_quick_search {
+            self.quick_search_open_since = None;
         }
         self.paint_background(ctx);
         self.render_top_bar(ctx);
@@ -799,5 +817,6 @@ impl eframe::App for McwApp {
         self.render_active_page(ctx);
         self.render_instance_flyout(ctx);
         self.render_modals(ctx);
+        self.render_quick_search_modal(ctx);
     }
 }

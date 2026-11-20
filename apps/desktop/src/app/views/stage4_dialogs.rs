@@ -28,7 +28,9 @@ impl McwApp {
         );
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| i.viewport().close_requested()) {
+            if vp_ctx.input(|i| {
+                i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)
+            }) {
                 open = false;
             }
             egui::TopBottomPanel::bottom("repair_center_footer")
@@ -49,7 +51,7 @@ impl McwApp {
                         if ui.add_enabled(!busy, repair_btn).clicked() {
                             repair_clicked = true;
                         }
-                        if ui.button("Re-scan Health").clicked() {
+                        if ui.button(self.t("common.refresh")).clicked() {
                             rescan_clicked = true;
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -82,8 +84,8 @@ impl McwApp {
                                 Frame::new()
                                     .fill(p.surface)
                                     .stroke(Stroke::new(1.0_f32, state_col))
-                                    .corner_radius(CornerRadius::same(3))
-                                    .inner_margin(egui::Margin::same(10))
+                                    .corner_radius(CornerRadius::same(12))
+                                    .inner_margin(egui::Margin::same(12))
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
                                         ui.horizontal_wrapped(|ui| {
@@ -133,8 +135,8 @@ impl McwApp {
                                         Frame::new()
                                             .fill(p.elevated)
                                             .stroke(Stroke::new(1.0_f32, col))
-                                            .corner_radius(CornerRadius::same(3))
-                                            .inner_margin(egui::Margin::symmetric(8, 6))
+                                            .corner_radius(CornerRadius::same(10))
+                                            .inner_margin(egui::Margin::symmetric(10, 7))
                                             .show(ui, |ui| {
                                                 ui.set_width(ui.available_width());
                                                 ui.label(
@@ -185,8 +187,8 @@ impl McwApp {
                                         Frame::new()
                                             .fill(p.elevated)
                                             .stroke(Stroke::new(1.0_f32, col))
-                                            .corner_radius(CornerRadius::same(3))
-                                            .inner_margin(egui::Margin::symmetric(8, 6))
+                                            .corner_radius(CornerRadius::same(10))
+                                            .inner_margin(egui::Margin::symmetric(10, 7))
                                             .show(ui, |ui| {
                                                 ui.set_width(ui.available_width());
                                                 ui.label(
@@ -250,7 +252,8 @@ impl McwApp {
         let needle = self.global_logs_filter.trim().to_ascii_lowercase();
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| i.viewport().close_requested()) {
+            if vp_ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
+            {
                 open = false;
             }
             egui::TopBottomPanel::top("global_logs_toolbar")
@@ -380,7 +383,9 @@ impl McwApp {
         );
 
         ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| i.viewport().close_requested()) {
+            if vp_ctx.input(|i| {
+                i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)
+            }) {
                 open = false;
             }
             egui::CentralPanel::default()
@@ -415,8 +420,8 @@ impl McwApp {
                     Frame::new()
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(3))
-                        .inner_margin(egui::Margin::same(10))
+                        .corner_radius(CornerRadius::same(12))
+                        .inner_margin(egui::Margin::same(12))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             egui::Grid::new("about_info_grid")

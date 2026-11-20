@@ -995,7 +995,7 @@ impl McwApp {
             if let Some(tex) = self.thumb_textures.get(u) {
                 ui.add(
                     egui::Image::new((tex.id(), Vec2::splat(size)))
-                        .corner_radius(CornerRadius::same(4)),
+                        .corner_radius(CornerRadius::same(8)),
                 );
                 return;
             }
@@ -1003,7 +1003,7 @@ impl McwApp {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
         ui.painter().rect(
             rect,
-            CornerRadius::same(4),
+            CornerRadius::same(8),
             p.elevated,
             Stroke::new(1.0_f32, p.border),
             egui::StrokeKind::Inside,
@@ -2268,57 +2268,6 @@ impl McwApp {
                         }
                     }
                 }
-                AppEvent::CurseForgeModInstallFinished {
-                    task_id,
-                    mod_id,
-                    instance_id,
-                    result,
-                } => {
-                    self.finish_task(task_id);
-                    self.installing_cf_mods.remove(&mod_id);
-                    match result {
-                        Ok(file_name) => {
-                            self.mods_cache.remove(&instance_id);
-                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
-                                && self.active_tab == DetailTab::Mods
-                            {
-                                self.load_mods_async(&instance_id, ctx, true);
-                            }
-                            self.notice_banner =
-                                Some((format!("Installed CurseForge mod '{file_name}'."), false));
-                        }
-                        Err(err) => {
-                            self.notice_banner =
-                                Some((format!("CurseForge install failed: {err}"), true));
-                        }
-                    }
-                }
-                AppEvent::ModrinthInstallFinished {
-                    task_id,
-                    slug,
-                    instance_id,
-                    result,
-                } => {
-                    self.finish_task(task_id);
-                    self.installing_modrinth_slugs.remove(&slug);
-                    match result {
-                        Ok(count) => {
-                            self.mods_cache.remove(&instance_id);
-                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
-                                && self.active_tab == DetailTab::Mods
-                            {
-                                self.load_mods_async(&instance_id, ctx, true);
-                            }
-                            self.notice_banner = Some((
-                                format!("Installed {count} mod file(s) from Modrinth."),
-                                false,
-                            ));
-                        }
-                        Err(err) => {
-                            self.notice_banner = Some((format!("Mod install failed: {err}"), true));
-                        }
-                    }
-                }
                 AppEvent::JavaInstallFinished {
                     task_id,
                     major,
@@ -3405,12 +3354,12 @@ impl McwApp {
             ui.add(
                 egui::Image::new(tex)
                     .fit_to_exact_size(Vec2::splat(size))
-                    .corner_radius(CornerRadius::same(2)),
+                    .corner_radius(CornerRadius::same(6)),
             );
         } else {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
             ui.painter()
-                .rect_filled(rect, CornerRadius::same(2), self.palette.elevated);
+                .rect_filled(rect, CornerRadius::same(6), self.palette.elevated);
         }
     }
 

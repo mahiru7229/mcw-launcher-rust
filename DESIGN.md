@@ -49,17 +49,17 @@ Stack: `egui` / `eframe` (pure Rust, no WebView). Reference mood: "Horizon"-styl
 1. **`v0.11.0-beta.1` — Foundation + Shell** *(Completed)*
    - Background image system (bundled default, user picture, panel transparency, dim sliders).
    - New palette model + presets (Violet default, Sunrise, Neon, Ocean, Emerald) + custom accent; keep `themes/*.json`.
-   - Shell: top pill nav, left icon rail, instance flyout, account chip, Settings → in-app modal. (Global `Ctrl+K` search is deferred to v0.13.)
+   - Shell: top pill nav, left icon rail, instance flyout, account chip, Settings → in-app modal.
    - Simple animation helpers (hover/fade) honoring `MotionMode`.
 2. **`v0.12.0-beta.1` — Pages** *(Completed)*
    - Home/instance page (title, Play, quick icons, floating tabbed panel, `...` menu).
    - Versions page (`cache/versions/` + Mojang manifest browser).
    - New centered OS-window content browser (`Mods`, `Modpacks`, `Resource packs`, `Shader packs`, `Data packs` — `ComboBox` filters + split list & detail panel).
    - Servers/LAN page (`servers.dat` NBT manager + Quick Play + LAN/e4mc), Logs page (unified Global & per-instance viewer).
-3. **`v0.13.0-beta.1` — Polish**
-   - Restyle every remaining dialog (create instance, accounts, repair, manual downloads, optional files, etc.).
-   - Final animation pass, i18n gaps, remove dead UI code.
-   - Update `README.md`, `CHANGELOG.md`, this file's status.
+3. **`v0.13.0-beta.1` — Polish** *(Completed)*
+   - Global `Ctrl+K` Quick Search / Command Palette (`quick_search.rs`) + top-bar trigger pill.
+   - Restyle every remaining dialog, card, badge, thumbnail, context menu, and tasks bar to UI v2.0 rounded tokens + `Esc`-to-close consistency.
+   - Smooth animated progress bars honoring `MotionMode`, verified i18n polish, dead UI code cleanup, `settings_modal.rs` extraction, and docs sync (`README.md`, `CHANGELOG.md`, `DESIGN.md`, `docs/BACKLOG.md`).
 
 Each stage ends with: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, release build, manual QA list, local commit + annotated tag (no push unless asked).
 

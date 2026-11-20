@@ -262,6 +262,75 @@ impl McwApp {
                         {
                             self.show_account_modal = true;
                         }
+                        ui.add_space(6.0);
+
+                        // Compact Horizon-style Quick Search (Ctrl+K) trigger pill
+                        let search_lbl = self.t("common.search").to_string();
+                        let (qs_rect, qs_resp) =
+                            ui.allocate_exact_size(Vec2::new(168.0, 34.0), egui::Sense::click());
+                        if ui.is_rect_visible(qs_rect) {
+                            let painter = ui.painter();
+                            let border_col = if self.show_quick_search || qs_resp.hovered() {
+                                p.accent
+                            } else {
+                                p.border
+                            };
+                            painter.rect(
+                                qs_rect,
+                                CornerRadius::same(17),
+                                p.surface,
+                                Stroke::new(1.0_f32, border_col),
+                                egui::StrokeKind::Inside,
+                            );
+                            // Vector magnifying glass icon
+                            let icon_c = egui::pos2(qs_rect.min.x + 17.0, qs_rect.center().y - 1.0);
+                            let icon_col = if qs_resp.hovered() {
+                                p.text
+                            } else {
+                                p.text_muted
+                            };
+                            painter.circle_stroke(icon_c, 4.6, Stroke::new(1.5_f32, icon_col));
+                            painter.line_segment(
+                                [icon_c + Vec2::new(3.2, 3.2), icon_c + Vec2::new(6.8, 6.8)],
+                                Stroke::new(1.6_f32, icon_col),
+                            );
+                            painter.text(
+                                egui::pos2(qs_rect.min.x + 30.0, qs_rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                format!("{search_lbl}..."),
+                                egui::FontId::proportional(12.0),
+                                p.text_muted,
+                            );
+                            let kbd_rect = egui::Rect::from_min_max(
+                                egui::pos2(qs_rect.max.x - 52.0, qs_rect.center().y - 10.0),
+                                egui::pos2(qs_rect.max.x - 8.0, qs_rect.center().y + 10.0),
+                            );
+                            painter.rect(
+                                kbd_rect,
+                                CornerRadius::same(6),
+                                p.elevated,
+                                Stroke::new(1.0_f32, p.border),
+                                egui::StrokeKind::Inside,
+                            );
+                            painter.text(
+                                kbd_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "Ctrl K",
+                                egui::FontId::monospace(10.0),
+                                p.text_muted,
+                            );
+                        }
+                        if qs_resp.clicked() {
+                            self.show_quick_search = !self.show_quick_search;
+                            if self.show_quick_search {
+                                self.quick_search_query.clear();
+                                self.quick_search_open_since = Some(Instant::now());
+                                self.quick_search_focus_pending = true;
+                                self.show_instance_flyout = false;
+                            }
+                        }
+
+                        ui.add_space(6.0);
                         if ui
                             .selectable_label(self.show_about_window, self.t("navigation.about"))
                             .clicked()
