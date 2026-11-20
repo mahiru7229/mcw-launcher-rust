@@ -9,9 +9,13 @@ use mcw_providers::{
     ModrinthSearchHit,
 };
 use mcw_runtime::{
-    JavaInstallation, LogLine, LogSink, McLogsUploadResult, ProcessControl, ProcessExitReport,
+    FirstRunRecommendation, JavaInstallation, LogLine, LogSink, McLogsUploadResult, ProcessControl,
+    ProcessExitReport,
 };
-use mcw_storage::{BackupInfo, RestoreOutcome};
+use mcw_storage::{
+    BackupInfo, RestoreOutcome, StorageCleanupReport, StorageSummary, UnusedVersionCandidate,
+};
+use mcw_updater::{StagedUpdate, UpdateCheckResult};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
@@ -203,6 +207,28 @@ pub enum AppEvent {
         task_id: u64,
         major: u32,
         result: Result<JavaInstallation, String>,
+    },
+    UpdateCheckFinished {
+        manual: bool,
+        result: Result<UpdateCheckResult, String>,
+    },
+    UpdateInstallPrepared {
+        task_id: u64,
+        result: Result<StagedUpdate, String>,
+    },
+    AccountAvatarLoaded {
+        account_uuid: String,
+        size: [usize; 2],
+        rgba: Vec<u8>,
+    },
+    FirstRunRecommendationReady(FirstRunRecommendation),
+    StorageUsageScanned {
+        summary: StorageSummary,
+        unused_versions: Vec<UnusedVersionCandidate>,
+    },
+    StorageCleanupFinished {
+        kind: String,
+        report: StorageCleanupReport,
     },
 }
 

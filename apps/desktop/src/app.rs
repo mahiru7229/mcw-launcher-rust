@@ -4,16 +4,23 @@ mod views;
 
 use self::platform::default_user_downloads_dir;
 use crate::i18n::{LanguageManager, LauncherPrefs};
+use crate::skin_render::{default_skin_face_rgba, render_skin_face_rgba};
 use crate::state::{
     ActiveTask, AppEvent, ChannelLogSink, ChannelProgressSink, ModVersionChoice, ModpackChannel,
     ModpackVersionOption,
 };
-use crate::theme::{apply_theme, configure_fonts, ThemeMode, ThemePalette};
+use crate::theme::{
+    apply_custom_accent, apply_theme_palette, configure_fonts, format_hex_color, parse_hex_color,
+    MotionMode, ThemeCatalog, ThemeMode, ThemePalette,
+};
 use eframe::egui::{
     self, Align, Button, Color32, CornerRadius, Frame, Layout, RichText, ScrollArea, Stroke,
     TextEdit, Vec2,
 };
-use mcw_auth::{AccountStore, DeviceCodeResponse, MicrosoftAuthClient, OfflineAuth, StoredAccount};
+use mcw_auth::{
+    AccountSkinManager, AccountStore, DeviceCodeResponse, MicrosoftAuthClient, OfflineAuth,
+    StoredAccount,
+};
 use mcw_minecraft::{
     is_quick_play_supported, OptiFineManager, RepairService, ScreenshotInfo, ScreenshotManager,
     VanillaLaunchPipeline, VersionManifestService, WorldInfo, WorldManager,
@@ -34,11 +41,19 @@ use mcw_providers::{
 };
 use mcw_runtime::{
     detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
-    recommended_modpack_ram_mb, DiagnosticsExporter, ExitClassification, JavaDiscovery,
-    JavaInstallation, JavaProvisioner, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine,
-    LogStream, McLogsClient, ProcessControl, SupervisedProcess,
+    recommended_modpack_ram_mb, DiagnosticsExporter, DiscordRpcService, ExitClassification,
+    FirstRunRecommendation, FirstRunRecommendationService, JavaDiscovery, JavaInstallation,
+    JavaProvisioner, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine, LogStream,
+    McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
 };
-use mcw_storage::{BackupInfo, BackupManager, InstanceRunLock, InstanceStore, LauncherPaths};
+use mcw_storage::{
+    BackupInfo, BackupManager, InstanceRunLock, InstanceStore, LauncherPaths,
+    StorageCleanupService, StorageSummary, UnusedVersionCandidate,
+};
+use mcw_updater::{
+    ReleaseInfo, UpdateChannel, UpdateCheckResult, UpdateChecker, UpdateInstaller,
+    UpdateSourcePreference,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -81,6 +96,8 @@ enum LauncherSettingsTab {
     Downloads,
     Runtime,
     Appearance,
+    Storage,
+    Updates,
 }
 
 enum LaunchState {
@@ -128,9 +145,13 @@ pub struct McwApp {
     rx: Receiver<AppEvent>,
 
     theme_mode: ThemeMode,
+    theme_catalog: ThemeCatalog,
+    motion_mode: MotionMode,
+    custom_accent_input: String,
     prefs: LauncherPrefs,
     lang: LanguageManager,
     palette: ThemePalette,
+    discord_rpc: DiscordRpcService,
 
     // Core data (lightweight metadata + lazy per-instance caches so switching is instant)
     instances: Vec<Instance>,
@@ -313,16 +334,50 @@ pub struct McwApp {
     show_pack_browser_window: bool,
     show_modpack_provider_window: Option<CreateInstanceTab>,
     show_group_tags_modal: bool,
+
+    // Stage 3: Account 2D Avatars, Auto-Updater, First-Run Wizard & Storage Inspector
+    account_avatars: HashMap<String, egui::TextureHandle>,
+    account_avatars_loading: HashSet<String>,
+    update_checking: bool,
+    update_downloading: bool,
+    update_status_text: String,
+    last_update_check: Option<UpdateCheckResult>,
+    show_update_dialog: bool,
+    show_first_run_wizard: bool,
+    first_run_scanning: bool,
+    first_run_rec: Option<FirstRunRecommendation>,
+    first_run_min_ram: u32,
+    first_run_max_ram: u32,
+    first_run_language: String,
+    first_run_auto_updates: bool,
+    first_run_discord_rpc: bool,
+    storage_scanning: bool,
+    storage_cleaning: bool,
+    storage_summary: Option<StorageSummary>,
+    storage_unused_versions: Vec<UnusedVersionCandidate>,
 }
 
 impl McwApp {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: LauncherPaths) -> Self {
         configure_fonts(&cc.egui_ctx);
         let prefs = LauncherPrefs::load(&paths);
-        let theme_mode = prefs.theme_mode();
+        let theme_catalog = ThemeCatalog::load(&paths.theme_root);
+        let motion_mode = MotionMode::parse(&prefs.motion_mode);
+        let custom_accent_input = prefs.custom_accent_hex.clone();
+        let active_def = theme_catalog.find(&prefs.theme).clone();
+        let theme_mode = active_def.base_mode;
+        let mut active_pal = active_def.palette;
+        if !custom_accent_input.trim().is_empty() {
+            let _ = apply_custom_accent(&mut active_pal, &custom_accent_input);
+        }
         let lang = LanguageManager::load(&paths, &prefs.normalized_locale());
-        let palette = apply_theme(&cc.egui_ctx, theme_mode);
+        let palette = apply_theme_palette(&cc.egui_ctx, theme_mode, active_pal, motion_mode);
         let init_show_snapshots = prefs.show_snapshots;
+        let first_run_language = prefs.normalized_locale();
+        let first_run_auto_updates = prefs.auto_check_updates;
+        let first_run_discord_rpc = prefs.discord_rpc_enabled;
+        let discord_rpc =
+            DiscordRpcService::new(prefs.discord_rpc_enabled, prefs.discord_client_id.clone());
 
         let runtime = Arc::new(
             tokio::runtime::Builder::new_multi_thread()
@@ -342,9 +397,13 @@ impl McwApp {
             tx,
             rx,
             theme_mode,
+            theme_catalog,
+            motion_mode,
+            custom_accent_input,
             prefs,
             lang,
             palette,
+            discord_rpc,
             instances: Vec::new(),
             selected_instance_id: None,
             selected_settings: None,
@@ -483,19 +542,53 @@ impl McwApp {
             show_pack_browser_window: false,
             show_modpack_provider_window: None,
             show_group_tags_modal: false,
+            account_avatars: HashMap::new(),
+            account_avatars_loading: HashSet::new(),
+            update_checking: false,
+            update_downloading: false,
+            update_status_text: "Not checked yet".to_string(),
+            last_update_check: None,
+            show_update_dialog: false,
+            show_first_run_wizard: false,
+            first_run_scanning: false,
+            first_run_rec: None,
+            first_run_min_ram: 1024,
+            first_run_max_ram: 2048,
+            first_run_language,
+            first_run_auto_updates,
+            first_run_discord_rpc,
+            storage_scanning: false,
+            storage_cleaning: false,
+            storage_summary: None,
+            storage_unused_versions: Vec::new(),
         };
 
         app.reload_instances();
         app.reload_accounts();
         app.reload_java();
         app.fetch_versions(&cc.egui_ctx);
+        app.ensure_account_avatars_loaded(&cc.egui_ctx);
+
+        if !app.prefs.first_run_completed && app.instances.is_empty() {
+            app.open_first_run_wizard(&cc.egui_ctx);
+        }
+        if app.prefs.auto_check_updates {
+            app.start_update_check(false, &cc.egui_ctx);
+        }
         app
+    }
+}
+
+impl Drop for McwApp {
+    fn drop(&mut self) {
+        self.discord_rpc.shutdown();
     }
 }
 
 impl eframe::App for McwApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_events(ctx);
+        self.ensure_account_avatars_loaded(ctx);
 
         // Auto-dismiss notice_banner after `notification_timeout_secs` (default 8s; 0 = disabled)
         let current_notice_msg = self.notice_banner.as_ref().map(|(m, _)| m.clone());

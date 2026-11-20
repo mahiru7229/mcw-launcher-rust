@@ -26,6 +26,23 @@ impl McwApp {
                             .size(11.0)
                             .color(p.text_muted),
                     );
+                    if let Some(ref upd) = self.last_update_check {
+                        if upd.update_available {
+                            if let Some(ref latest) = upd.latest {
+                                let badge_btn = Button::new(
+                                    RichText::new(format!("Update v{}", latest.version))
+                                        .size(11.0)
+                                        .strong()
+                                        .color(p.accent_text),
+                                )
+                                .fill(p.accent)
+                                .corner_radius(CornerRadius::same(3));
+                                if ui.add(badge_btn).clicked() {
+                                    self.show_update_dialog = true;
+                                }
+                            }
+                        }
+                    }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // Gear icon button for Launcher Settings (separate window)
@@ -38,18 +55,19 @@ impl McwApp {
 
                         ui.separator();
 
-                        // Account switcher button
-                        let acc_label = match self.active_account() {
-                            Some(a) => {
-                                let kind = match a.account_type {
-                                    AccountSource::Microsoft => "MSA",
-                                    AccountSource::Offline => "Offline",
-                                };
-                                format!("Account: {} ({kind})", a.username)
+                        // Account switcher button with crisp 2D skin face avatar
+                        if let Some(acc) = self.active_account().cloned() {
+                            let kind = match acc.account_type {
+                                AccountSource::Microsoft => "MSA",
+                                AccountSource::Offline => "Offline",
+                            };
+                            let clicked_label =
+                                ui.button(format!("{} ({kind})", acc.username)).clicked();
+                            self.render_account_avatar(ui, &acc.uuid, 20.0);
+                            if clicked_label {
+                                self.show_account_modal = true;
                             }
-                            None => self.t("Sign in / Add Account").to_string(),
-                        };
-                        if ui.button(acc_label).clicked() {
+                        } else if ui.button(self.t("Sign in / Add Account")).clicked() {
                             self.show_account_modal = true;
                         }
                     });

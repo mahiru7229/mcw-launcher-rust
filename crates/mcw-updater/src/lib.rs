@@ -1,5 +1,7 @@
+pub mod installer;
 pub mod version;
 
+pub use installer::{StagedUpdate, UpdateInstaller};
 pub use version::{LauncherVersion, PrereleaseKind};
 
 use mcw_models::GITHUB_REPOSITORY;
@@ -17,8 +19,14 @@ pub enum UpdateError {
     InvalidVersion(String),
     #[error("Both Cloudflare CDN and GitHub Releases failed: cloudflare=({cloudflare}), github=({github})")]
     AllSourcesFailed { cloudflare: String, github: String },
+    #[error("Update source '{source_name}' failed: {reason}")]
+    SourceFailed { source_name: String, reason: String },
+    #[error("Update installation failed: {0}")]
+    InstallFailed(String),
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, UpdateError>;
@@ -38,6 +46,40 @@ impl UpdateChannel {
             Self::Stable
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateSourcePreference {
+    #[default]
+    Auto,
+    Cloudflare,
+    Github,
+}
+
+impl UpdateSourcePreference {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cloudflare" => Self::Cloudflare,
+            "github" => Self::Github,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cloudflare => "cloudflare",
+            Self::Github => "github",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +91,10 @@ pub struct ReleaseInfo {
     pub notes: String,
     pub html_url: String,
     pub download_url: Option<String>,
+    #[serde(default)]
+    pub asset_name: Option<String>,
+    #[serde(default)]
+    pub asset_size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,60 +121,97 @@ impl UpdateChecker {
             .ok()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_CLOUDFLARE_MANIFEST_URL.to_string());
+        let github_repo = std::env::var("MCW_GITHUB_REPOSITORY")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| GITHUB_REPOSITORY.to_string());
         Ok(Self {
             http,
             cloudflare_url,
-            github_repo: GITHUB_REPOSITORY.to_string(),
+            github_repo,
         })
     }
 
-    /// Check for updates on the requested channel.
-    /// Lesson #3: If Cloudflare CDN fails or returns empty, BOTH `stable` and `beta`
-    /// channels automatically fall back to GitHub Releases API.
+    /// Check for updates on the requested channel using Auto failover (`Cloudflare -> GitHub`).
     pub async fn check(
         &self,
         current_version: &str,
         channel: UpdateChannel,
     ) -> Result<UpdateCheckResult> {
+        self.check_with_source(current_version, channel, UpdateSourcePreference::Auto)
+            .await
+    }
+
+    /// Check for updates on the requested channel and preferred update source.
+    /// In `Auto` mode, if Cloudflare CDN fails or returns empty, BOTH `stable` and `beta`
+    /// channels automatically fall back to GitHub Releases API (Lesson #3).
+    pub async fn check_with_source(
+        &self,
+        current_version: &str,
+        channel: UpdateChannel,
+        source: UpdateSourcePreference,
+    ) -> Result<UpdateCheckResult> {
         let current = LauncherVersion::parse(current_version)
             .ok_or_else(|| UpdateError::InvalidVersion(current_version.to_string()))?;
 
-        let mut cf_err: Option<String> = None;
-        let cf_releases = match self.fetch_cloudflare_releases().await {
-            Ok(list) if !list.is_empty() => Some(list),
-            Ok(_) => {
-                warn!("Cloudflare CDN release manifest was empty; falling back to GitHub Releases");
-                cf_err = Some("empty manifest".to_string());
-                None
+        let best = match source {
+            UpdateSourcePreference::Cloudflare => {
+                let list = self.fetch_cloudflare_releases().await.map_err(|e| {
+                    UpdateError::SourceFailed {
+                        source_name: "cloudflare".to_string(),
+                        reason: e.to_string(),
+                    }
+                })?;
+                select_best_release(&list, channel)
             }
-            Err(err) => {
-                warn!(error = %err, "Cloudflare CDN check failed; falling back to GitHub Releases");
-                cf_err = Some(err.to_string());
-                None
+            UpdateSourcePreference::Github => {
+                let list =
+                    self.fetch_github_releases()
+                        .await
+                        .map_err(|e| UpdateError::SourceFailed {
+                            source_name: "github".to_string(),
+                            reason: e.to_string(),
+                        })?;
+                select_best_release(&list, channel)
             }
-        };
+            UpdateSourcePreference::Auto => {
+                let mut cf_err: Option<String> = None;
+                let cf_releases = match self.fetch_cloudflare_releases().await {
+                    Ok(list) if !list.is_empty() => Some(list),
+                    Ok(_) => {
+                        warn!(
+                            "Cloudflare CDN release manifest was empty; falling back to GitHub Releases"
+                        );
+                        cf_err = Some("empty manifest".to_string());
+                        None
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "Cloudflare CDN check failed; falling back to GitHub Releases");
+                        cf_err = Some(err.to_string());
+                        None
+                    }
+                };
 
-        let mut candidates = cf_releases.unwrap_or_default();
-
-        // Lesson #3: Fallback to GitHub Releases for BOTH stable and beta if Cloudflare
-        // yielded no eligible release for this channel.
-        let mut best = select_best_release(&candidates, channel);
-        if best.is_none() {
-            match self.fetch_github_releases().await {
-                Ok(gh_list) => {
-                    candidates = gh_list;
-                    best = select_best_release(&candidates, channel);
-                }
-                Err(gh_err) => {
-                    if let Some(cf) = cf_err {
-                        return Err(UpdateError::AllSourcesFailed {
-                            cloudflare: cf,
-                            github: gh_err.to_string(),
-                        });
+                let candidates = cf_releases.unwrap_or_default();
+                let mut selected = select_best_release(&candidates, channel);
+                if selected.is_none() {
+                    match self.fetch_github_releases().await {
+                        Ok(gh_list) => {
+                            selected = select_best_release(&gh_list, channel);
+                        }
+                        Err(gh_err) => {
+                            if let Some(cf) = cf_err {
+                                return Err(UpdateError::AllSourcesFailed {
+                                    cloudflare: cf,
+                                    github: gh_err.to_string(),
+                                });
+                            }
+                        }
                     }
                 }
+                selected
             }
-        }
+        };
 
         let update_available = best
             .as_ref()
@@ -178,6 +261,92 @@ impl UpdateChecker {
     }
 }
 
+pub fn select_platform_asset(
+    assets: &[serde_json::Value],
+) -> Option<(String, Option<String>, Option<u64>)> {
+    if assets.is_empty() {
+        return None;
+    }
+
+    let extract = |asset: &serde_json::Value| -> Option<(String, Option<String>, Option<u64>)> {
+        let url = asset
+            .get("browser_download_url")
+            .or_else(|| asset.get("url"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())?
+            .to_string();
+        let name = asset
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                url.split(['/', '?'])
+                    .rfind(|seg| !seg.is_empty())
+                    .map(String::from)
+            });
+        let size = asset.get("size").and_then(|v| v.as_u64());
+        Some((url, name, size))
+    };
+
+    let scored = assets.iter().filter_map(|asset| {
+        let (url, name, size) = extract(asset)?;
+        let lower_name = name.as_deref().unwrap_or(&url).to_ascii_lowercase();
+
+        #[cfg(target_os = "windows")]
+        let score: u32 = {
+            let is_win = lower_name.contains("windows")
+                || lower_name.contains("win64")
+                || lower_name.contains("win-x64")
+                || lower_name.contains("win_x64");
+            let is_zip = lower_name.ends_with(".zip");
+            let is_exe = lower_name.ends_with(".exe");
+            if is_win && is_zip {
+                100
+            } else if is_win && is_exe {
+                95
+            } else if is_win {
+                85
+            } else if is_zip && !lower_name.contains("linux") && !lower_name.contains("mac") {
+                60
+            } else if is_exe {
+                55
+            } else {
+                10
+            }
+        };
+
+        #[cfg(target_os = "linux")]
+        let score: u32 = {
+            let is_lin = lower_name.contains("linux");
+            let is_tar = lower_name.ends_with(".tar.gz") || lower_name.ends_with(".tgz");
+            let is_zip = lower_name.ends_with(".zip");
+            let is_appimage = lower_name.ends_with(".appimage");
+            if is_lin && is_tar {
+                100
+            } else if is_lin && is_zip {
+                95
+            } else if is_lin && is_appimage {
+                90
+            } else if is_lin {
+                80
+            } else if is_tar || is_zip {
+                40
+            } else {
+                10
+            }
+        };
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        let score: u32 = 50;
+
+        Some((score, (url, name, size)))
+    });
+
+    scored.max_by_key(|(s, _)| *s).map(|(_, tuple)| tuple)
+}
+
 fn parse_release_entries(items: &[serde_json::Value], source: &str) -> Vec<ReleaseInfo> {
     let mut out = Vec::new();
     for item in items {
@@ -213,17 +382,12 @@ fn parse_release_entries(items: &[serde_json::Value], source: &str) -> Vec<Relea
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let download_url = item
+        let (download_url, asset_name, asset_size) = item
             .get("assets")
             .and_then(|a| a.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|asset| {
-                asset
-                    .get("browser_download_url")
-                    .or_else(|| asset.get("url"))
-            })
-            .and_then(|v| v.as_str())
-            .map(String::from);
+            .and_then(|arr| select_platform_asset(arr))
+            .map(|(u, n, s)| (Some(u), n, s))
+            .unwrap_or((None, None, None));
 
         out.push(ReleaseInfo {
             version: tag.trim_start_matches(['v', 'V']).to_string(),
@@ -233,6 +397,8 @@ fn parse_release_entries(items: &[serde_json::Value], source: &str) -> Vec<Relea
             notes,
             html_url,
             download_url,
+            asset_name,
+            asset_size,
         });
     }
     out
@@ -256,6 +422,7 @@ pub fn select_best_release(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn selects_highest_release_respecting_channel() {
@@ -268,6 +435,8 @@ mod tests {
                 notes: String::new(),
                 html_url: String::new(),
                 download_url: None,
+                asset_name: None,
+                asset_size: None,
             },
             ReleaseInfo {
                 tag_name: "v2.0.0-beta.1".to_string(),
@@ -277,6 +446,8 @@ mod tests {
                 notes: String::new(),
                 html_url: String::new(),
                 download_url: None,
+                asset_name: None,
+                asset_size: None,
             },
         ];
 
@@ -285,5 +456,54 @@ mod tests {
 
         let beta = select_best_release(&releases, UpdateChannel::Beta).unwrap();
         assert_eq!(beta.version, "2.0.0-beta.1");
+    }
+
+    #[test]
+    fn parses_source_preference_and_semver_build_tags() {
+        assert_eq!(
+            UpdateSourcePreference::parse("cloudflare"),
+            UpdateSourcePreference::Cloudflare
+        );
+        assert_eq!(
+            UpdateSourcePreference::parse("github"),
+            UpdateSourcePreference::Github
+        );
+        assert_eq!(
+            UpdateSourcePreference::parse("anything_else"),
+            UpdateSourcePreference::Auto
+        );
+
+        let b1 = LauncherVersion::parse("v0.8.0-beta.1").unwrap();
+        let b2 = LauncherVersion::parse("v0.8.0-beta.2").unwrap();
+        assert!(b2 > b1);
+    }
+
+    #[test]
+    fn prefers_current_platform_archive_asset() {
+        let assets = vec![
+            json!({
+                "name": "mcw-launcher-linux-x64.tar.gz",
+                "browser_download_url": "https://example.com/linux.tar.gz",
+                "size": 100
+            }),
+            json!({
+                "name": "mcw-launcher-windows-x64.zip",
+                "browser_download_url": "https://example.com/win.zip",
+                "size": 200
+            }),
+        ];
+        let (url, name, size) = select_platform_asset(&assets).unwrap();
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(url, "https://example.com/win.zip");
+            assert_eq!(name.as_deref(), Some("mcw-launcher-windows-x64.zip"));
+            assert_eq!(size, Some(200));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(url, "https://example.com/linux.tar.gz");
+            assert_eq!(name.as_deref(), Some("mcw-launcher-linux-x64.tar.gz"));
+            assert_eq!(size, Some(100));
+        }
     }
 }

@@ -299,10 +299,12 @@ impl McwApp {
             }
         }
 
-        // 1a-0. Dedicated Isolated OS Windows for Online Resource Browsers (Modpack Providers, Mods, Resource/Shader Packs)
+        // 1a-0. Dedicated Isolated OS Windows for Online Resource Browsers, Updater & First-Run Setup
         self.render_modpack_provider_window(ctx);
         self.render_mod_browser_window(ctx);
         self.render_pack_browser_window(ctx);
+        self.render_update_dialog(ctx);
+        self.render_first_run_wizard(ctx);
 
         // 1a. Modpack Install Configuration Isolated OS Window (Version + Beta/Alpha + RAM + Java + Open Web)
         self.render_modpack_install_dialog(ctx);
@@ -1209,6 +1211,7 @@ impl McwApp {
                         let mut remove_uuid: Option<String> = None;
                         for acc in &self.accounts {
                             ui.horizontal(|ui| {
+                                self.render_account_avatar(ui, &acc.uuid, 22.0);
                                 let badge = if acc.account_type == AccountSource::Microsoft {
                                     "MSA"
                                 } else {
@@ -1519,6 +1522,11 @@ impl McwApp {
             let mut reset_defaults = false;
             let mut reload_langs = false;
             let mut scan_java = false;
+            let mut discord_changed = false;
+            let mut open_first_run = false;
+            let trigger_storage_scan = self.launcher_settings_tab == LauncherSettingsTab::Storage
+                && self.storage_summary.is_none()
+                && !self.storage_scanning;
             let mut install_java_major: Option<u32> = None;
             let win_title = self.t("launcher_settings.page.title").to_string();
             let nav_tabs = [
@@ -1538,6 +1546,11 @@ impl McwApp {
                     LauncherSettingsTab::Appearance,
                     self.t("settings.section.appearance").to_string(),
                 ),
+                (
+                    LauncherSettingsTab::Storage,
+                    self.t("storage.settings.section").to_string(),
+                ),
+                (LauncherSettingsTab::Updates, "Updates".to_string()),
             ];
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_launcher_settings");
             let builder = centered_viewport_builder(
@@ -1775,7 +1788,87 @@ impl McwApp {
 
                                         ui.add_space(8.0);
 
-                                        // Card 3: Reset to defaults
+                                        // Card 3: Discord Rich Presence
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new("Discord Rich Presence").strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(
+                                                        "Show active instance status in Discord while browsing or playing.",
+                                                    )
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(6.0);
+                                                if ui
+                                                    .checkbox(
+                                                        &mut self.prefs.discord_rpc_enabled,
+                                                        "Enable Discord Rich Presence",
+                                                    )
+                                                    .changed()
+                                                {
+                                                    prefs_dirty = true;
+                                                    discord_changed = true;
+                                                }
+                                                ui.add_space(4.0);
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label("Application ID (optional):");
+                                                    ui.add(
+                                                        TextEdit::singleline(
+                                                            &mut self.prefs.discord_client_id,
+                                                        )
+                                                        .hint_text(DEFAULT_DISCORD_CLIENT_ID)
+                                                        .desired_width(210.0),
+                                                    );
+                                                    if ui.button("Apply").clicked() {
+                                                        prefs_dirty = true;
+                                                        discord_changed = true;
+                                                    }
+                                                });
+                                            });
+
+                                        ui.add_space(8.0);
+
+                                        // Card 4: First-Run Setup Wizard
+                                        Frame::new()
+                                            .fill(p.surface)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(3))
+                                            .inner_margin(egui::Margin::same(10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("launcher_settings.first_run.title"),
+                                                    )
+                                                    .strong(),
+                                                );
+                                                ui.label(
+                                                    RichText::new(
+                                                        self.t("launcher_settings.first_run.detail"),
+                                                    )
+                                                    .size(11.5)
+                                                    .color(p.text_muted),
+                                                );
+                                                ui.add_space(6.0);
+                                                let btn_lbl = self
+                                                    .t("launcher_settings.first_run.button")
+                                                    .to_string();
+                                                if ui.button(btn_lbl).clicked() {
+                                                    open_first_run = true;
+                                                }
+                                            });
+
+                                        ui.add_space(8.0);
+
+                                        // Card 5: Reset to defaults
                                         Frame::new()
                                             .fill(p.surface)
                                             .stroke(Stroke::new(1.0_f32, p.border))
@@ -2119,71 +2212,25 @@ impl McwApp {
                                             });
                                     }
                                     LauncherSettingsTab::Appearance => {
-                                        ui.label(
-                                            RichText::new(self.t("settings.section.appearance"))
-                                                .strong()
-                                                .size(15.0)
-                                                .color(p.text),
+                                        self.render_settings_appearance_tab(
+                                            ui,
+                                            vp_ctx,
+                                            &mut prefs_dirty,
                                         );
-                                        ui.label(
-                                            RichText::new(
-                                                self.t("settings.section.appearance_detail"),
-                                            )
-                                            .size(11.5)
-                                            .color(p.text_muted),
+                                    }
+                                    LauncherSettingsTab::Storage => {
+                                        self.render_settings_storage_tab(
+                                            ui,
+                                            vp_ctx,
+                                            &mut prefs_dirty,
                                         );
-                                        ui.add_space(10.0);
-
-                                        Frame::new()
-                                            .fill(p.surface)
-                                            .stroke(Stroke::new(1.0_f32, p.border))
-                                            .corner_radius(CornerRadius::same(3))
-                                            .inner_margin(egui::Margin::same(10))
-                                            .show(ui, |ui| {
-                                                ui.set_width(ui.available_width());
-                                                ui.label(
-                                                    RichText::new(self.t("Launcher theme"))
-                                                        .strong(),
-                                                );
-                                                ui.add_space(8.0);
-                                                let cur_theme_lbl = match self.theme_mode {
-                                                    ThemeMode::Dark => "Dark (Default)",
-                                                    ThemeMode::Light => "Light",
-                                                };
-                                                egui::ComboBox::from_id_salt(
-                                                    "launcher_settings_theme_combo",
-                                                )
-                                                .selected_text(cur_theme_lbl)
-                                                .width(220.0)
-                                                .show_ui(ui, |ui| {
-                                                    if ui
-                                                        .selectable_value(
-                                                            &mut self.theme_mode,
-                                                            ThemeMode::Dark,
-                                                            "Dark (Default)",
-                                                        )
-                                                        .changed()
-                                                    {
-                                                        self.prefs.theme = "dark".to_string();
-                                                        self.palette =
-                                                            apply_theme(ctx, self.theme_mode);
-                                                        prefs_dirty = true;
-                                                    }
-                                                    if ui
-                                                        .selectable_value(
-                                                            &mut self.theme_mode,
-                                                            ThemeMode::Light,
-                                                            "Light",
-                                                        )
-                                                        .changed()
-                                                    {
-                                                        self.prefs.theme = "light".to_string();
-                                                        self.palette =
-                                                            apply_theme(ctx, self.theme_mode);
-                                                        prefs_dirty = true;
-                                                    }
-                                                });
-                                            });
+                                    }
+                                    LauncherSettingsTab::Updates => {
+                                        self.render_settings_updates_tab(
+                                            ui,
+                                            vp_ctx,
+                                            &mut prefs_dirty,
+                                        );
                                     }
                                 }
                             });
@@ -2205,15 +2252,31 @@ impl McwApp {
                     false,
                 ));
             }
+            if discord_changed {
+                self.discord_rpc.configure(
+                    self.prefs.discord_rpc_enabled,
+                    self.prefs.discord_client_id.clone(),
+                );
+            }
+            if open_first_run {
+                self.open_first_run_wizard(ctx);
+            }
+            if trigger_storage_scan {
+                self.start_storage_scan(ctx);
+            }
             if let Some(major) = install_java_major {
                 self.start_java_install(major, ctx);
             }
             if reset_defaults {
                 self.prefs = LauncherPrefs::default();
-                self.theme_mode = self.prefs.theme_mode();
-                self.palette = apply_theme(ctx, self.theme_mode);
+                self.custom_accent_input = self.prefs.custom_accent_hex.clone();
+                self.apply_current_theme(ctx);
                 self.lang.set_language(&self.prefs.normalized_locale());
                 self.create_show_snapshots = self.prefs.show_snapshots;
+                self.discord_rpc.configure(
+                    self.prefs.discord_rpc_enabled,
+                    self.prefs.discord_client_id.clone(),
+                );
                 self.save_prefs();
                 self.notice_banner =
                     Some(("Launcher settings restored to defaults.".to_string(), false));

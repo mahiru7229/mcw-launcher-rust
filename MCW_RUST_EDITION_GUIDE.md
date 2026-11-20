@@ -204,7 +204,7 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 ### 7.7. Tài khoản & Bảo mật
 
 **Chưa làm trong bản Rust:**
-- [ ] **Hiển thị Avatar / Skin 2D cho tài khoản** (`account_skin_manager.py`, `minecraft_skin.py`, `account_page.py`): Rust đã lấy `skin_url` từ Microsoft và tính Steve/Alex mặc định cho Offline, nhưng GUI chưa tải & vẽ đầu nhân vật (avatar) mà mới hiện chữ `"MSA"` / `"Offline"`.
+- [x] **Hiển thị Avatar / Skin 2D cho tài khoản** (`account_skin_manager.py`, `minecraft_skin.py` → `AccountSkinManager` trong `crates/mcw-auth/src/skin.rs` + `apps/desktop/src/skin_render.rs` với đầu Steve/Alex nhúng sẵn, lọc mũ `(40,8,8,8)` + Nearest-Neighbor hiển thị ở Top Bar & cửa sổ Accounts).
 - [ ] **Kiểm tra toàn vẹn dữ liệu tài khoản (Account Integrity Manifest)** (`account_integrity.py`, `account_security_manager.py`): Ký HMAC xác thực file lưu tài khoản bên cạnh lớp mã hóa DPAPI cho refresh token.
 
 ---
@@ -212,11 +212,11 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 ### 7.8. Launcher Settings, Theme, i18n, Auto-Updater & Tích hợp hệ thống
 
 **Chưa làm trong bản Rust:**
-- [ ] **Giao diện Auto-Updater & Tự động cài bản cập nhật theo Build** (`update_manager.py`, `windows_update_installer.py`, `linux_update_installer.py`, `update_dialog.py`): Crate `mcw-updater` đã viết phần kiểm tra bản mới (Cloudflare CDN + GitHub failover), **nhưng chưa được gắn vào `apps/desktop/Cargo.toml`**, chưa có kiểm tra cập nhật khi mở app, chưa có tab Updates trong Settings (`auto_check`, kênh `stable`/`beta`, nguồn `cloudflare`/`github`) và chưa có cơ chế tự tải & thay thế binary (phát hành theo `Build 001`, `Build 002`..., không dùng hệ thống hotfix riêng).
-- [ ] **Discord Rich Presence** (`discord_rpc.py`, `rpc_bridge.py`): Hiển thị trạng thái đang ở Launcher hoặc đang chơi Instance nào trên Discord, kèm cấu hình bật/tắt & Client ID trong Settings.
-- [ ] **Trình hướng dẫn lần đầu (First-Run Setup Wizard) & Gợi ý phần cứng** (`first_run_recommendation_service.py`, `first_run_setup_dialog.py`): Tự đo RAM/Java lần chạy đầu để gợi ý cấu hình mặc định an toàn và cho phép chạy lại từ Settings.
-- [ ] **Hệ thống Theme mở rộng & Tùy biến màu sắc / chuyển động** (`src/core/theme/*`, `src/gui/animation/*`): Nạp gói `themes/*.json` bên ngoài, đổi màu Accent/Text tùy chọn, reload theme nóng và chế độ giảm chuyển động (`motion_mode`: `full` / `reduced` / `off`).
-- [ ] **Tab Storage trong Launcher Settings & Dọn dẹp Cache cũ** (`legacy_storage_migration_service.py`, `legacy_storage_cleanup_dialog.py`): Thêm mục thứ 5 (*Storage*) cho `unused_version_retention_days` và công cụ dọn cache cũ.
+- [x] **Giao diện Auto-Updater & Tự động cài bản cập nhật theo Build** (`update_manager.py`, `windows_update_installer.py`, `linux_update_installer.py`, `update_dialog.py` → `UpdateChecker` & `UpdateInstaller` trong `crates/mcw-updater/` + gắn vào Desktop GUI, tab *Updates*, tự kiểm tra khi mở app, chọn kênh `stable`/`beta`, nguồn `Auto`/`Cloudflare`/`GitHub`, cửa sổ cài đặt cập nhật tách rời và cơ chế tự tải/thay thế binary theo tag SemVer chuẩn, không dùng hotfix riêng).
+- [x] **Discord Rich Presence** (`discord_rpc.py` → `DiscordRpcService` native Windows Named Pipe / Unix Socket trong `crates/mcw-runtime/src/discord_rpc.rs`, tự hiển thị trạng thái duyệt Launcher hoặc đang chơi Instance nào, kèm cấu hình bật/tắt & Client ID trong *Launcher Settings → General*).
+- [x] **Trình hướng dẫn lần đầu (First-Run Setup Wizard) & Gợi ý phần cứng** (`first_run_recommendation_service.py`, `first_run_setup_dialog.py` → `FirstRunRecommendationService` trong `crates/mcw-runtime/src/first_run.rs` + cửa sổ *First-Run Setup Wizard* tự đo RAM/Java lần chạy đầu và cho phép chạy lại từ *Launcher Settings → General*).
+- [x] **Hệ thống Theme mở rộng & Tùy biến màu sắc / chuyển động** (`src/core/theme/*` → `ThemeCatalog`, `apply_custom_accent`, `MotionMode` trong `apps/desktop/src/theme.rs` + `themes/mcw-default/theme.json`, nạp `themes/*.json` & `themes/*/theme.json`, đổi màu Accent `#RRGGBB` có tính độ tương phản chữ, reload nóng và chế độ giảm chuyển động `Full`/`Reduced`/`Off`).
+- [x] **Tab Storage trong Launcher Settings & Dọn dẹp Cache cũ** (`storage_controller.py`, `legacy_storage_cleanup` → `StorageCleanupService` trong `crates/mcw-storage/src/cleanup.rs` + tab *Storage* đo dung lượng theo thư mục, cấu hình `unused_version_retention_days`, dọn API/temp cache an toàn và xóa cache version không còn instance tham chiếu).
 - [ ] **Trang About, Màn hình khởi động (Startup Splash) & Các tiện ích GUI phụ**: Trang About, lưu kích thước/vị trí cửa sổ (`remember_window_size`), chọn trang khởi đầu (`start_page`), cảnh báo chưa lưu thay đổi (`unsaved_changes_dialog.py`), và hệ thống Toast Notification thay cho 1 banner đơn phía trên.
 
 **Khác biệt logic / cần rà soát:**

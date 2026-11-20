@@ -7,10 +7,13 @@ impl McwApp {
     }
 
     pub(crate) fn save_prefs(&mut self) {
-        self.prefs.theme = match self.theme_mode {
-            ThemeMode::Dark => "dark".to_string(),
-            ThemeMode::Light => "light".to_string(),
-        };
+        if self.prefs.theme.trim().is_empty() {
+            self.prefs.theme = match self.theme_mode {
+                ThemeMode::Dark => "dark".to_string(),
+                ThemeMode::Light => "light".to_string(),
+            };
+        }
+        self.prefs.motion_mode = self.motion_mode.as_str().to_string();
         self.prefs.language = self.lang.current_locale().to_string();
         self.prefs.save(&self.paths);
     }
@@ -544,6 +547,7 @@ impl McwApp {
     pub(crate) fn reload_accounts(&mut self) {
         let store = AccountStore::new(&self.paths);
         self.accounts = store.list().unwrap_or_default();
+        self.account_avatars_loading.clear();
     }
 
     pub(crate) fn reload_java(&mut self) {
@@ -2354,6 +2358,14 @@ impl McwApp {
                     if let Some(tid) = self.launch_task_ids.remove(&instance_id) {
                         self.finish_task(tid);
                     }
+                    if let Some(inst) = self.instances.iter().find(|i| i.instance_id == instance_id)
+                    {
+                        self.discord_rpc.on_game_started(
+                            inst.name.clone(),
+                            inst.version_id.clone(),
+                            inst.mod_loader.name.clone(),
+                        );
+                    }
                     self.launch_states
                         .insert(instance_id, LaunchState::Running { pid, control });
                 }
@@ -2372,6 +2384,13 @@ impl McwApp {
                         self.finish_task(tid);
                     }
                     self.launch_states.insert(instance_id, LaunchState::Idle);
+                    let any_running = self
+                        .launch_states
+                        .values()
+                        .any(|s| matches!(s, LaunchState::Running { .. }));
+                    if !any_running {
+                        self.discord_rpc.on_game_stopped();
+                    }
                     self.reload_instances();
                     match report {
                         Ok(rep) => match rep.classification {
@@ -2409,7 +2428,10 @@ impl McwApp {
                     self.ms_device_code = None;
                     match res {
                         Ok(acc) => {
+                            self.account_avatars.remove(&acc.uuid);
+                            self.account_avatars_loading.remove(&acc.uuid);
                             self.reload_accounts();
+                            self.ensure_account_avatars_loaded(ctx);
                             self.notice_banner = Some((
                                 format!("Signed in as Microsoft account '{}'.", acc.username),
                                 false,
@@ -2706,6 +2728,139 @@ impl McwApp {
                                 Some((format!("Export .mrpack failed: {err}"), true));
                         }
                     }
+                }
+                AppEvent::UpdateCheckFinished { manual, result } => {
+                    self.update_checking = false;
+                    match result {
+                        Ok(res) => {
+                            let avail = res.update_available && res.latest.is_some();
+                            let status = if let Some(ref latest) = res.latest {
+                                if res.update_available {
+                                    format!(
+                                        "Update available: v{} ({})",
+                                        latest.version, latest.source
+                                    )
+                                } else {
+                                    format!(
+                                        "Up to date (latest v{} on {})",
+                                        latest.version,
+                                        res.channel.as_str()
+                                    )
+                                }
+                            } else {
+                                format!(
+                                    "No published releases found on {} channel yet.",
+                                    res.channel.as_str()
+                                )
+                            };
+                            self.update_status_text = status.clone();
+                            self.last_update_check = Some(res);
+                            if avail {
+                                self.show_update_dialog = true;
+                                self.notice_banner = Some((status, false));
+                            } else if manual {
+                                self.notice_banner = Some((status, false));
+                            }
+                        }
+                        Err(err) => {
+                            let msg = format!("Update check failed: {err}");
+                            self.update_status_text = msg.clone();
+                            if manual {
+                                self.notice_banner = Some((msg, true));
+                            }
+                        }
+                    }
+                }
+                AppEvent::UpdateInstallPrepared { task_id, result } => {
+                    self.finish_task(task_id);
+                    self.update_downloading = false;
+                    match result {
+                        Ok(staged) => {
+                            let current_exe = std::env::current_exe().ok();
+                            match current_exe.as_deref() {
+                                Some(exe) => {
+                                    match UpdateInstaller::launch_self_update(
+                                        &staged,
+                                        exe,
+                                        std::process::id(),
+                                    ) {
+                                        Ok(()) => {
+                                            self.show_update_dialog = false;
+                                            self.update_status_text = format!(
+                                                "Installing v{} and restarting...",
+                                                staged.version
+                                            );
+                                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                        }
+                                        Err(e) => {
+                                            self.notice_banner = Some((
+                                                format!("Failed to launch updater: {e}"),
+                                                true,
+                                            ));
+                                        }
+                                    }
+                                }
+                                None => {
+                                    self.notice_banner = Some((
+                                        "Could not resolve current launcher executable path."
+                                            .to_string(),
+                                        true,
+                                    ));
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Update download failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::AccountAvatarLoaded {
+                    account_uuid,
+                    size,
+                    rgba,
+                } => {
+                    self.account_avatars_loading.remove(&account_uuid);
+                    let image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                    let tex = ctx.load_texture(
+                        format!("mcw_avatar_{account_uuid}"),
+                        image,
+                        egui::TextureOptions::NEAREST,
+                    );
+                    self.account_avatars.insert(account_uuid, tex);
+                }
+                AppEvent::FirstRunRecommendationReady(rec) => {
+                    self.first_run_scanning = false;
+                    self.first_run_min_ram = rec.recommended_min_memory_mb;
+                    self.first_run_max_ram = rec.recommended_max_memory_mb;
+                    self.first_run_rec = Some(rec);
+                }
+                AppEvent::StorageUsageScanned {
+                    summary,
+                    unused_versions,
+                } => {
+                    self.storage_scanning = false;
+                    self.storage_summary = Some(summary);
+                    self.storage_unused_versions = unused_versions;
+                }
+                AppEvent::StorageCleanupFinished { kind, report } => {
+                    self.storage_cleaning = false;
+                    let msg = if report.errors.is_empty() {
+                        format!(
+                            "{kind}: removed {} item(s), reclaimed {}.",
+                            report.removed_count,
+                            format_bytes(report.reclaimed_bytes)
+                        )
+                    } else {
+                        format!(
+                            "{kind}: reclaimed {} with {} error(s): {}",
+                            format_bytes(report.reclaimed_bytes),
+                            report.errors.len(),
+                            report.errors[0]
+                        )
+                    };
+                    self.notice_banner = Some((msg, !report.errors.is_empty()));
+                    self.start_storage_scan(ctx);
                 }
             }
         }
@@ -3221,6 +3376,277 @@ impl McwApp {
                     result: res,
                 });
             }
+            ctx_c.request_repaint();
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // Stage 3 Controllers: Themes, Account 2D Avatars, Auto-Updater,
+    // First-Run Setup Wizard & Storage Cleanup
+    // -------------------------------------------------------------------------
+
+    pub(crate) fn apply_current_theme(&mut self, ctx: &egui::Context) {
+        let def = self.theme_catalog.find(&self.prefs.theme).clone();
+        self.theme_mode = def.base_mode;
+        let mut pal = def.palette;
+        if !self.prefs.custom_accent_hex.trim().is_empty() {
+            let _ = apply_custom_accent(&mut pal, &self.prefs.custom_accent_hex);
+        }
+        self.motion_mode = MotionMode::parse(&self.prefs.motion_mode);
+        self.palette = apply_theme_palette(ctx, self.theme_mode, pal, self.motion_mode);
+    }
+
+    pub(crate) fn reload_theme_catalog(&mut self, ctx: &egui::Context) {
+        self.theme_catalog = ThemeCatalog::load(&self.paths.theme_root);
+        self.apply_current_theme(ctx);
+        self.notice_banner = Some((
+            format!("Loaded {} theme(s).", self.theme_catalog.themes.len()),
+            false,
+        ));
+    }
+
+    pub(crate) fn ensure_account_avatars_loaded(&mut self, ctx: &egui::Context) {
+        for acc in self.accounts.clone() {
+            if self.account_avatars.contains_key(&acc.uuid)
+                || !self.account_avatars_loading.insert(acc.uuid.clone())
+            {
+                continue;
+            }
+            let accounts_root = self.paths.accounts_root.clone();
+            let tx = self.tx.clone();
+            let ctx_c = ctx.clone();
+
+            self.runtime.spawn(async move {
+                let mut rendered: Option<([usize; 2], Vec<u8>)> = None;
+                if acc.account_type == AccountSource::Microsoft {
+                    if let Some(tex_path) =
+                        AccountSkinManager::cache_texture(&accounts_root, &acc).await
+                    {
+                        if let Ok(bytes) = std::fs::read(&tex_path) {
+                            rendered = render_skin_face_rgba(&bytes, 32);
+                        }
+                    }
+                }
+                if rendered.is_none() {
+                    let variant = AccountSkinManager::default_skin_variant(&acc.uuid);
+                    rendered = default_skin_face_rgba(variant, 32);
+                }
+                if let Some((size, rgba)) = rendered {
+                    let _ = tx.send(AppEvent::AccountAvatarLoaded {
+                        account_uuid: acc.uuid,
+                        size,
+                        rgba,
+                    });
+                    ctx_c.request_repaint();
+                }
+            });
+        }
+    }
+
+    pub(crate) fn render_account_avatar(&self, ui: &mut egui::Ui, uuid: &str, size: f32) {
+        if let Some(tex) = self.account_avatars.get(uuid) {
+            ui.add(
+                egui::Image::new(tex)
+                    .fit_to_exact_size(Vec2::splat(size))
+                    .corner_radius(CornerRadius::same(2)),
+            );
+        } else {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(2), self.palette.elevated);
+        }
+    }
+
+    pub(crate) fn start_update_check(&mut self, manual: bool, ctx: &egui::Context) {
+        if self.update_checking {
+            return;
+        }
+        self.update_checking = true;
+        self.update_status_text = "Checking for updates...".to_string();
+        let channel = UpdateChannel::parse(&self.prefs.update_channel);
+        let source = UpdateSourcePreference::parse(&self.prefs.update_source);
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = match UpdateChecker::new() {
+                Ok(checker) => checker
+                    .check_with_source(mcw_models::APP_VERSION, channel, source)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = tx.send(AppEvent::UpdateCheckFinished {
+                manual,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_update_download_and_install(
+        &mut self,
+        release: ReleaseInfo,
+        ctx: &egui::Context,
+    ) {
+        if self.update_downloading {
+            return;
+        }
+        let any_running = self
+            .launch_states
+            .values()
+            .any(|s| matches!(s, LaunchState::Running { .. }));
+        if any_running {
+            self.notice_banner = Some((
+                "Close running Minecraft instance(s) before installing launcher update."
+                    .to_string(),
+                true,
+            ));
+            return;
+        }
+
+        self.update_downloading = true;
+        self.update_status_text = format!("Downloading v{}...", release.version);
+        let task_id = self.begin_task(
+            format!("Launcher Update v{}", release.version),
+            "Downloading release package...",
+        );
+        let staging_root = self.paths.cache_root.join("updates");
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let tx_p = tx.clone();
+            let ctx_p = ctx_c.clone();
+            let prog: Arc<dyn Fn(u64, u64) + Send + Sync> = Arc::new(move |cur, tot| {
+                let _ = tx_p.send(AppEvent::TaskProgress {
+                    task_id,
+                    message: format!(
+                        "Downloading update ({} / {})",
+                        format_bytes(cur),
+                        format_bytes(tot)
+                    ),
+                    current: cur,
+                    total: tot,
+                });
+                ctx_p.request_repaint();
+            });
+            let res = UpdateInstaller::download_and_stage(&release, &staging_root, Some(prog))
+                .await
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::UpdateInstallPrepared {
+                task_id,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn open_first_run_wizard(&mut self, ctx: &egui::Context) {
+        self.show_first_run_wizard = true;
+        self.first_run_language = self.lang.current_locale().to_string();
+        self.first_run_auto_updates = self.prefs.auto_check_updates;
+        self.first_run_discord_rpc = self.prefs.discord_rpc_enabled;
+        self.start_first_run_scan(ctx);
+    }
+
+    pub(crate) fn start_first_run_scan(&mut self, ctx: &egui::Context) {
+        if self.first_run_scanning {
+            return;
+        }
+        self.first_run_scanning = true;
+        let runtimes_root = self.paths.runtimes_root.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let rec = tokio::task::spawn_blocking(move || {
+                FirstRunRecommendationService::inspect(&runtimes_root)
+            })
+            .await
+            .unwrap_or_else(|_| FirstRunRecommendationService::inspect(&PathBuf::from("runtimes")));
+            let _ = tx.send(AppEvent::FirstRunRecommendationReady(rec));
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_storage_scan(&mut self, ctx: &egui::Context) {
+        if self.storage_scanning {
+            return;
+        }
+        self.storage_scanning = true;
+        let paths = self.paths.clone();
+        let retention = self.prefs.unused_version_retention_days;
+        let active_versions: HashSet<String> = self
+            .instances
+            .iter()
+            .map(|i| i.version_id.clone())
+            .collect();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let (summary, unused_versions) = tokio::task::spawn_blocking(move || {
+                let s = StorageCleanupService::inspect_usage(&paths);
+                let u = StorageCleanupService::scan_unused_versions(
+                    &paths,
+                    retention,
+                    &active_versions,
+                );
+                (s, u)
+            })
+            .await
+            .unwrap_or_default();
+            let _ = tx.send(AppEvent::StorageUsageScanned {
+                summary,
+                unused_versions,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_clear_cache(&mut self, ctx: &egui::Context) {
+        if self.storage_cleaning {
+            return;
+        }
+        self.storage_cleaning = true;
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let report = tokio::task::spawn_blocking(move || {
+                StorageCleanupService::clear_api_and_temp_cache(&paths)
+            })
+            .await
+            .unwrap_or_default();
+            let _ = tx.send(AppEvent::StorageCleanupFinished {
+                kind: "API & Temp Cache".to_string(),
+                report,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_prune_unused_versions(&mut self, ctx: &egui::Context) {
+        if self.storage_cleaning || self.storage_unused_versions.is_empty() {
+            return;
+        }
+        self.storage_cleaning = true;
+        let candidates = self.storage_unused_versions.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let report = tokio::task::spawn_blocking(move || {
+                StorageCleanupService::prune_unused_versions(&candidates)
+            })
+            .await
+            .unwrap_or_default();
+            let _ = tx.send(AppEvent::StorageCleanupFinished {
+                kind: "Unused Minecraft Versions".to_string(),
+                report,
+            });
             ctx_c.request_repaint();
         });
     }

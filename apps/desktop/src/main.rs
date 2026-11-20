@@ -2,6 +2,7 @@
 
 mod app;
 mod i18n;
+mod skin_render;
 mod state;
 mod theme;
 

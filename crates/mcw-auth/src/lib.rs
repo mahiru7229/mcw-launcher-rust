@@ -2,6 +2,7 @@ pub mod account_store;
 pub mod microsoft;
 pub mod offline;
 pub mod pkce;
+pub mod skin;
 
 pub use account_store::{AccountStore, StoredAccount};
 pub use microsoft::{
@@ -10,6 +11,7 @@ pub use microsoft::{
 };
 pub use offline::OfflineAuth;
 pub use pkce::PkceChallenge;
+pub use skin::AccountSkinManager;
 
 use thiserror::Error;
 

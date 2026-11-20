@@ -1,4 +1,3 @@
-use crate::theme::ThemeMode;
 use mcw_storage::LauncherPaths;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -233,6 +232,24 @@ pub struct LauncherPrefs {
     pub default_fullscreen: bool,
     #[serde(default = "default_notification_timeout")]
     pub notification_timeout_secs: u32,
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+    #[serde(default = "default_update_channel")]
+    pub update_channel: String,
+    #[serde(default = "default_update_source")]
+    pub update_source: String,
+    #[serde(default)]
+    pub first_run_completed: bool,
+    #[serde(default = "default_true")]
+    pub discord_rpc_enabled: bool,
+    #[serde(default)]
+    pub discord_client_id: String,
+    #[serde(default = "default_retention_days")]
+    pub unused_version_retention_days: u32,
+    #[serde(default)]
+    pub custom_accent_hex: String,
+    #[serde(default = "default_motion_mode")]
+    pub motion_mode: String,
 }
 
 fn default_theme() -> String {
@@ -267,6 +284,22 @@ fn default_notification_timeout() -> u32 {
     8
 }
 
+fn default_update_channel() -> String {
+    "beta".to_string()
+}
+
+fn default_update_source() -> String {
+    "auto".to_string()
+}
+
+fn default_retention_days() -> u32 {
+    14
+}
+
+fn default_motion_mode() -> String {
+    "full".to_string()
+}
+
 impl Default for LauncherPrefs {
     fn default() -> Self {
         Self {
@@ -284,6 +317,15 @@ impl Default for LauncherPrefs {
             default_height: default_height(),
             default_fullscreen: false,
             notification_timeout_secs: default_notification_timeout(),
+            auto_check_updates: true,
+            update_channel: default_update_channel(),
+            update_source: default_update_source(),
+            first_run_completed: false,
+            discord_rpc_enabled: true,
+            discord_client_id: String::new(),
+            unused_version_retention_days: default_retention_days(),
+            custom_accent_hex: String::new(),
+            motion_mode: default_motion_mode(),
         }
     }
 }
@@ -301,14 +343,6 @@ impl LauncherPrefs {
         let path = paths.config_root.join("launcher_settings.json");
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = mcw_storage::atomic_write_text(&path, &json);
-        }
-    }
-
-    pub fn theme_mode(&self) -> ThemeMode {
-        if self.theme.eq_ignore_ascii_case("light") {
-            ThemeMode::Light
-        } else {
-            ThemeMode::Dark
         }
     }
 

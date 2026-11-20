@@ -1,6 +1,8 @@
 pub mod bytecode;
 pub mod compactor;
 pub mod diagnostics;
+pub mod discord_rpc;
+pub mod first_run;
 pub mod java;
 pub mod jvm_presets;
 pub mod lan_agent;
@@ -13,6 +15,10 @@ pub use bytecode::{detect_jar_required_java, detect_mods_required_java};
 pub use compactor::JavaCommandCompactor;
 pub use diagnostics::{
     find_latest_crash_report, DiagnosticsExporter, LaunchErrorPresenter, LaunchErrorView,
+};
+pub use discord_rpc::{DiscordActivity, DiscordRpcService, DEFAULT_DISCORD_CLIENT_ID};
+pub use first_run::{
+    detect_available_memory_mb, FirstRunRecommendation, FirstRunRecommendationService,
 };
 pub use java::{
     prefer_javaw_on_windows, JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver,
