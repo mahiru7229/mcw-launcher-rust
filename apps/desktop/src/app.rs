@@ -3,6 +3,7 @@ mod platform;
 mod views;
 
 use self::platform::default_user_downloads_dir;
+use crate::background::BackgroundManager;
 use crate::i18n::{LanguageManager, LauncherPrefs};
 use crate::skin_render::{default_skin_face_rgba, render_skin_face_rgba};
 use crate::state::{
@@ -392,6 +393,15 @@ pub struct McwApp {
     content_store_stats: Option<ContentStoreStats>,
     dedup_running: bool,
     optifine_installing: bool,
+
+    // v0.11 shell: background picture, icon rail flyout, in-app Settings modal, page fade
+    background: BackgroundManager,
+    show_instance_flyout: bool,
+    flyout_toggle_rect: Option<egui::Rect>,
+    settings_search: String,
+    settings_open_since: Option<Instant>,
+    fade_tab: DetailTab,
+    fade_since: Instant,
 }
 
 impl McwApp {
@@ -416,7 +426,8 @@ impl McwApp {
             let _ = apply_custom_accent(&mut active_pal, &custom_accent_input);
         }
         let lang = LanguageManager::load(&paths, &prefs.normalized_locale());
-        let palette = apply_theme_palette(&cc.egui_ctx, theme_mode, active_pal, motion_mode);
+        let palette = apply_theme_palette(&cc.egui_ctx, theme_mode, active_pal, motion_mode)
+            .glass(prefs.panel_opacity);
         let init_show_snapshots = prefs.show_snapshots;
         let first_run_language = prefs.normalized_locale();
         let first_run_auto_updates = prefs.auto_check_updates;
@@ -633,6 +644,13 @@ impl McwApp {
             content_store_stats: None,
             dedup_running: false,
             optifine_installing: false,
+            background: BackgroundManager::new(),
+            show_instance_flyout: false,
+            flyout_toggle_rect: None,
+            settings_search: String::new(),
+            settings_open_since: None,
+            fade_tab: DetailTab::Overview,
+            fade_since: Instant::now(),
         };
 
         app.content_store_stats = Some(ContentStore::stats(&app.paths));
@@ -748,10 +766,15 @@ impl eframe::App for McwApp {
             ctx.request_repaint_after(Duration::from_secs(2));
         }
 
+        if !self.show_launcher_settings {
+            self.settings_open_since = None;
+        }
+        self.paint_background(ctx);
         self.render_top_bar(ctx);
         self.render_tasks_bar(ctx);
-        self.render_sidebar(ctx);
+        self.render_instance_rail(ctx);
         self.render_detail_pane(ctx);
+        self.render_instance_flyout(ctx);
         self.render_modals(ctx);
     }
 }

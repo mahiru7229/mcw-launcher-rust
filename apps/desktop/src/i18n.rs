@@ -266,6 +266,22 @@ pub struct LauncherPrefs {
     pub curseforge_failure_policy: String,
     #[serde(default = "default_policy_warn")]
     pub forge_preflight_failure_policy: String,
+    #[serde(default = "default_true")]
+    pub background_enabled: bool,
+    #[serde(default)]
+    pub background_image_path: String,
+    #[serde(default = "default_panel_opacity")]
+    pub panel_opacity: f32,
+    #[serde(default = "default_background_dim")]
+    pub background_dim: f32,
+}
+
+fn default_panel_opacity() -> f32 {
+    0.78
+}
+
+fn default_background_dim() -> f32 {
+    0.35
 }
 
 fn default_policy_block() -> String {
@@ -277,7 +293,7 @@ fn default_policy_warn() -> String {
 }
 
 fn default_theme() -> String {
-    "dark".to_string()
+    "violet".to_string()
 }
 
 fn default_lang() -> String {
@@ -362,6 +378,10 @@ impl Default for LauncherPrefs {
             modrinth_failure_policy: default_policy_block(),
             curseforge_failure_policy: default_policy_block(),
             forge_preflight_failure_policy: default_policy_warn(),
+            background_enabled: true,
+            background_image_path: String::new(),
+            panel_opacity: default_panel_opacity(),
+            background_dim: default_background_dim(),
         }
     }
 }

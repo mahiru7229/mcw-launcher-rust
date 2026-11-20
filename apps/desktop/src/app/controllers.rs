@@ -3584,7 +3584,8 @@ impl McwApp {
             let _ = apply_custom_accent(&mut pal, &self.prefs.custom_accent_hex);
         }
         self.motion_mode = MotionMode::parse(&self.prefs.motion_mode);
-        self.palette = apply_theme_palette(ctx, self.theme_mode, pal, self.motion_mode);
+        self.palette = apply_theme_palette(ctx, self.theme_mode, pal, self.motion_mode)
+            .glass(self.prefs.panel_opacity);
     }
 
     pub(crate) fn reload_theme_catalog(&mut self, ctx: &egui::Context) {

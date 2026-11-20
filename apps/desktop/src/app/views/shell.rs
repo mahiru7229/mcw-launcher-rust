@@ -2,360 +2,242 @@ use crate::app::platform::*;
 use crate::app::*;
 
 impl McwApp {
-    pub(crate) fn render_top_bar(&mut self, ctx: &egui::Context) {
+    /// Instance list (search, favorites, group/tag chips) shown inside the instance flyout.
+    pub(crate) fn render_instance_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        max_h: f32,
+    ) {
         let p = self.palette;
-        egui::TopBottomPanel::top("mcw_top_bar")
-            .exact_height(42.0)
-            .frame(
-                Frame::new()
-                    .fill(p.surface)
-                    .stroke(Stroke::new(1.0_f32, p.border))
-                    .inner_margin(egui::Margin::symmetric(12, 6)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.label(
-                        RichText::new("MCW Launcher: Rust Edition")
-                            .strong()
-                            .size(14.0)
-                            .color(p.text),
-                    );
-                    ui.label(
-                        RichText::new(format!("v{}", mcw_models::APP_VERSION))
-                            .monospace()
-                            .size(11.0)
-                            .color(p.text_muted),
-                    );
-                    if mcw_updater::UPDATES_ENABLED {
-                        if let Some(ref upd) = self.last_update_check {
-                            if upd.update_available {
-                                if let Some(ref latest) = upd.latest {
-                                    let badge_btn = Button::new(
-                                        RichText::new(format!("Update v{}", latest.version))
-                                            .size(11.0)
-                                            .strong()
-                                            .color(p.accent_text),
-                                    )
-                                    .fill(p.accent)
-                                    .corner_radius(CornerRadius::same(3));
-                                    if ui.add(badge_btn).clicked() {
-                                        self.show_update_dialog = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
+        ui.label(
+            RichText::new(format!("INSTANCES ({})", self.instances.len()))
+                .strong()
+                .size(11.5)
+                .color(p.text_muted),
+        );
+        ui.add_space(4.0);
+        let new_inst_lbl = format!("+ {}", self.t("workspace.create.title"));
+        let new_btn = Button::new(RichText::new(new_inst_lbl).color(p.accent_text).strong())
+            .fill(p.accent)
+            .min_size(Vec2::new(ui.available_width(), 28.0))
+            .corner_radius(CornerRadius::same(3));
+        if ui.add(new_btn).clicked() {
+            self.create_tab = CreateInstanceTab::Custom;
+            self.create_name.clear();
+            self.create_error = None;
+            self.modpack_manual_downloads.clear();
+            let latest = self.latest_mc_version(self.create_show_snapshots);
+            if !latest.is_empty() {
+                self.create_version = latest;
+            }
+            self.show_create_modal = true;
+        }
 
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // Gear icon button for Launcher Settings (separate window)
-                        if gear_icon_button(ui, p, self.show_launcher_settings)
-                            .on_hover_text(self.t("Launcher Settings"))
-                            .clicked()
-                        {
-                            self.show_launcher_settings = !self.show_launcher_settings;
-                        }
-                        if ui
-                            .selectable_label(self.show_about_window, self.t("navigation.about"))
-                            .clicked()
-                        {
-                            self.show_about_window = !self.show_about_window;
-                        }
-                        if ui
-                            .selectable_label(
-                                self.show_global_logs_window,
-                                self.t("navigation.logs"),
-                            )
-                            .clicked()
-                        {
-                            self.show_global_logs_window = !self.show_global_logs_window;
-                        }
+        ui.add_space(6.0);
+        let search_hint = self.t("workspace.library.search_placeholder").to_string();
+        ui.add(
+            TextEdit::singleline(&mut self.sidebar_search_query)
+                .hint_text(search_hint)
+                .desired_width(ui.available_width()),
+        );
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
 
-                        ui.separator();
-
-                        // Account switcher button with crisp 2D skin face avatar
-                        if let Some(acc) = self.active_account().cloned() {
-                            let kind = match acc.account_type {
-                                AccountSource::Microsoft => "MSA",
-                                AccountSource::Offline => "Offline",
-                            };
-                            let clicked_label =
-                                ui.button(format!("{} ({kind})", acc.username)).clicked();
-                            self.render_account_avatar(ui, &acc.uuid, 20.0);
-                            if clicked_label {
-                                self.show_account_modal = true;
-                            }
-                        } else if ui.button(self.t("Sign in / Add Account")).clicked() {
-                            self.show_account_modal = true;
-                        }
-                    });
-                });
-            });
-    }
-
-    pub(crate) fn render_sidebar(&mut self, ctx: &egui::Context) {
-        let p = self.palette;
-        egui::SidePanel::left("mcw_instance_sidebar")
-            .default_width(250.0)
-            .min_width(210.0)
-            .max_width(340.0)
-            .frame(
-                Frame::new()
-                    .fill(p.surface)
-                    .stroke(Stroke::new(1.0_f32, p.border))
-                    .inner_margin(egui::Margin::same(10)),
-            )
-            .show(ctx, |ui| {
+        if self.instances.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(24.0);
                 ui.label(
-                    RichText::new(format!("INSTANCES ({})", self.instances.len()))
+                    RichText::new("No instances yet")
                         .strong()
-                        .size(11.5)
                         .color(p.text_muted),
                 );
-                ui.add_space(4.0);
-                let new_inst_lbl = format!("+ {}", self.t("workspace.create.title"));
-                let new_btn =
-                    Button::new(RichText::new(new_inst_lbl).color(p.accent_text).strong())
-                        .fill(p.accent)
-                        .min_size(Vec2::new(ui.available_width(), 28.0))
-                        .corner_radius(CornerRadius::same(3));
-                if ui.add(new_btn).clicked() {
-                    self.create_tab = CreateInstanceTab::Custom;
-                    self.create_name.clear();
-                    self.create_error = None;
-                    self.modpack_manual_downloads.clear();
-                    let latest = self.latest_mc_version(self.create_show_snapshots);
-                    if !latest.is_empty() {
-                        self.create_version = latest;
-                    }
-                    self.show_create_modal = true;
-                }
-
-                ui.add_space(6.0);
-                let search_hint = self.t("workspace.library.search_placeholder").to_string();
-                ui.add(
-                    TextEdit::singleline(&mut self.sidebar_search_query)
-                        .hint_text(search_hint)
-                        .desired_width(ui.available_width()),
+                ui.label(
+                    RichText::new("Create an instance to get started.")
+                        .size(12.0)
+                        .color(p.text_muted),
                 );
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
+            });
+            return;
+        }
 
-                if self.instances.is_empty() {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(24.0);
-                        ui.label(
-                            RichText::new("No instances yet")
-                                .strong()
-                                .color(p.text_muted),
-                        );
-                        ui.label(
-                            RichText::new("Create an instance to get started.")
-                                .size(12.0)
-                                .color(p.text_muted),
-                        );
-                    });
-                    return;
+        // Ensure local icons are loaded for all instances so they display in sidebar & header
+        let inst_snapshots: Vec<Instance> = self.instances.clone();
+        for inst_snap in &inst_snapshots {
+            self.ensure_instance_icon(inst_snap, ctx);
+        }
+
+        let q = self.sidebar_search_query.trim().to_ascii_lowercase();
+        let mut newly_selected: Option<String> = None;
+        let mut toggle_fav: Option<(String, bool)> = None;
+        ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
+            for inst in &self.instances {
+                if !q.is_empty() {
+                    let match_name = inst.name.to_ascii_lowercase().contains(&q);
+                    let match_ver = inst.version_id.to_ascii_lowercase().contains(&q);
+                    let match_grp = inst.group.to_ascii_lowercase().contains(&q);
+                    let match_tag = inst
+                        .tags
+                        .iter()
+                        .any(|t| t.to_ascii_lowercase().contains(&q));
+                    if !(match_name || match_ver || match_grp || match_tag) {
+                        continue;
+                    }
                 }
+                let is_selected =
+                    self.selected_instance_id.as_deref() == Some(inst.instance_id.as_str());
+                let missing_manual = self
+                    .pending_manual_counts
+                    .get(&inst.instance_id)
+                    .copied()
+                    .unwrap_or(0);
+                let (status_text, status_color, is_running) = match self
+                    .launch_states
+                    .get(&inst.instance_id)
+                {
+                    Some(LaunchState::Running { .. }) => ("Running".to_string(), p.accent, true),
+                    Some(LaunchState::Preparing(_)) => ("Preparing".to_string(), p.warning, true),
+                    _ if missing_manual > 0 => {
+                        (format!("Incomplete ({missing_manual})"), p.warning, false)
+                    }
+                    _ => match inst.last_launch_state.as_str() {
+                        "crashed" => ("Crashed".to_string(), p.danger, false),
+                        "finished" => ("Finished".to_string(), p.text_muted, false),
+                        _ => ("Ready".to_string(), p.text_muted, false),
+                    },
+                };
 
-                // Ensure local icons are loaded for all instances so they display in sidebar & header
-                let inst_snapshots: Vec<Instance> = self.instances.clone();
-                for inst_snap in &inst_snapshots {
-                    self.ensure_instance_icon(inst_snap, ctx);
-                }
+                let bg = if is_selected { p.elevated } else { p.surface };
+                let border_col = if is_selected {
+                    p.accent
+                } else if missing_manual > 0 {
+                    p.warning
+                } else {
+                    p.border
+                };
 
-                let q = self.sidebar_search_query.trim().to_ascii_lowercase();
-                let mut newly_selected: Option<String> = None;
-                let mut toggle_fav: Option<(String, bool)> = None;
-                ScrollArea::vertical().show(ui, |ui| {
-                    for inst in &self.instances {
-                        if !q.is_empty() {
-                            let match_name = inst.name.to_ascii_lowercase().contains(&q);
-                            let match_ver = inst.version_id.to_ascii_lowercase().contains(&q);
-                            let match_grp = inst.group.to_ascii_lowercase().contains(&q);
-                            let match_tag = inst
-                                .tags
-                                .iter()
-                                .any(|t| t.to_ascii_lowercase().contains(&q));
-                            if !(match_name || match_ver || match_grp || match_tag) {
-                                continue;
+                let mut star_clicked = false;
+                let frame_resp = Frame::new()
+                    .fill(bg)
+                    .stroke(Stroke::new(1.0_f32, border_col))
+                    .corner_radius(CornerRadius::same(3))
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            // Signature Moment #1: Left vertical accent bar (Emerald or Warning if incomplete)
+                            if is_selected || is_running || missing_manual > 0 {
+                                let bar_col = if is_running {
+                                    p.accent
+                                } else if missing_manual > 0 && !is_selected {
+                                    p.warning
+                                } else {
+                                    p.accent
+                                };
+                                let (rect, _) = ui.allocate_exact_size(
+                                    Vec2::new(3.0, 32.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter()
+                                    .rect_filled(rect, CornerRadius::same(1), bar_col);
                             }
-                        }
-                        let is_selected =
-                            self.selected_instance_id.as_deref() == Some(inst.instance_id.as_str());
-                        let missing_manual = self
-                            .pending_manual_counts
-                            .get(&inst.instance_id)
-                            .copied()
-                            .unwrap_or(0);
-                        let (status_text, status_color, is_running) =
-                            match self.launch_states.get(&inst.instance_id) {
-                                Some(LaunchState::Running { .. }) => {
-                                    ("Running".to_string(), p.accent, true)
-                                }
-                                Some(LaunchState::Preparing(_)) => {
-                                    ("Preparing".to_string(), p.warning, true)
-                                }
-                                _ if missing_manual > 0 => {
-                                    (format!("Incomplete ({missing_manual})"), p.warning, false)
-                                }
-                                _ => match inst.last_launch_state.as_str() {
-                                    "crashed" => ("Crashed".to_string(), p.danger, false),
-                                    "finished" => ("Finished".to_string(), p.text_muted, false),
-                                    _ => ("Ready".to_string(), p.text_muted, false),
-                                },
-                            };
-
-                        let bg = if is_selected { p.elevated } else { p.surface };
-                        let border_col = if is_selected {
-                            p.accent
-                        } else if missing_manual > 0 {
-                            p.warning
-                        } else {
-                            p.border
-                        };
-
-                        let mut star_clicked = false;
-                        let frame_resp = Frame::new()
-                            .fill(bg)
-                            .stroke(Stroke::new(1.0_f32, border_col))
-                            .corner_radius(CornerRadius::same(3))
-                            .inner_margin(egui::Margin::symmetric(10, 8))
-                            .show(ui, |ui| {
+                            self.render_instance_icon(ui, inst, 28.0);
+                            ui.add_space(4.0);
+                            ui.vertical(|ui| {
                                 ui.set_width(ui.available_width());
+                                // Row 1: Star + Instance Name (left) + Status (right)
                                 ui.horizontal(|ui| {
-                                    // Signature Moment #1: Left vertical accent bar (Emerald or Warning if incomplete)
-                                    if is_selected || is_running || missing_manual > 0 {
-                                        let bar_col = if is_running {
-                                            p.accent
-                                        } else if missing_manual > 0 && !is_selected {
-                                            p.warning
-                                        } else {
-                                            p.accent
-                                        };
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            Vec2::new(3.0, 32.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        ui.painter().rect_filled(
-                                            rect,
-                                            CornerRadius::same(1),
-                                            bar_col,
-                                        );
+                                    if star_icon_button(ui, p, inst.favorite)
+                                        .on_hover_text("Toggle favorite")
+                                        .clicked()
+                                    {
+                                        star_clicked = true;
+                                        toggle_fav =
+                                            Some((inst.instance_id.clone(), !inst.favorite));
                                     }
-                                    self.render_instance_icon(ui, inst, 28.0);
-                                    ui.add_space(4.0);
-                                    ui.vertical(|ui| {
-                                        ui.set_width(ui.available_width());
-                                        // Row 1: Star + Instance Name (left) + Status (right)
-                                        ui.horizontal(|ui| {
-                                            if star_icon_button(ui, p, inst.favorite)
-                                                .on_hover_text("Toggle favorite")
-                                                .clicked()
-                                            {
-                                                star_clicked = true;
-                                                toggle_fav = Some((
-                                                    inst.instance_id.clone(),
-                                                    !inst.favorite,
-                                                ));
-                                            }
-                                            ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(&inst.name)
-                                                        .strong()
-                                                        .size(13.5)
-                                                        .color(p.text),
-                                                )
-                                                .truncate(),
-                                            );
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    ui.label(
-                                                        RichText::new(status_text)
-                                                            .size(10.5)
-                                                            .color(status_color),
-                                                    );
-                                                },
-                                            );
-                                        });
-                                        // Row 2: Minecraft version · Loader
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&inst.name)
+                                                .strong()
+                                                .size(13.5)
+                                                .color(p.text),
+                                        )
+                                        .truncate(),
+                                    );
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         ui.label(
-                                            RichText::new(format!(
-                                                "{} · {}",
-                                                inst.version_id, inst.mod_loader.name
-                                            ))
-                                            .monospace()
-                                            .size(11.0)
-                                            .color(p.text_muted),
+                                            RichText::new(status_text)
+                                                .size(10.5)
+                                                .color(status_color),
                                         );
-                                        // Row 3: Responsive auto-sized Group & Tag pill badges (wraps automatically)
-                                        let has_group = !inst.group.trim().is_empty();
-                                        let has_tags =
-                                            inst.tags.iter().any(|t| !t.trim().is_empty());
-                                        if has_group || has_tags {
-                                            ui.add_space(2.0);
-                                            ui.horizontal_wrapped(|ui| {
-                                                ui.spacing_mut().item_spacing = Vec2::new(4.0, 3.0);
-                                                if has_group {
-                                                    render_badge_pill(
-                                                        ui,
-                                                        &inst.group,
-                                                        true,
-                                                        true,
-                                                        p,
-                                                    );
-                                                }
-                                                for tag in &inst.tags {
-                                                    render_badge_pill(ui, tag, false, true, p);
-                                                }
-                                            });
-                                        }
                                     });
                                 });
+                                // Row 2: Minecraft version · Loader
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} · {}",
+                                        inst.version_id, inst.mod_loader.name
+                                    ))
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(p.text_muted),
+                                );
+                                // Row 3: Responsive auto-sized Group & Tag pill badges (wraps automatically)
+                                let has_group = !inst.group.trim().is_empty();
+                                let has_tags = inst.tags.iter().any(|t| !t.trim().is_empty());
+                                if has_group || has_tags {
+                                    ui.add_space(2.0);
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 3.0);
+                                        if has_group {
+                                            render_badge_pill(ui, &inst.group, true, true, p);
+                                        }
+                                        for tag in &inst.tags {
+                                            render_badge_pill(ui, tag, false, true, p);
+                                        }
+                                    });
+                                }
                             });
+                        });
+                    });
 
-                        let card_hovered = ui.rect_contains_pointer(frame_resp.response.rect);
-                        let card_clicked = !star_clicked
-                            && card_hovered
-                            && ui.input(|i| i.pointer.primary_clicked());
-                        if card_clicked {
-                            newly_selected = Some(inst.instance_id.clone());
-                            self.sidebar_context_menu = None;
-                        }
-                        let right_clicked = !star_clicked
-                            && card_hovered
-                            && ui.input(|i| i.pointer.secondary_clicked());
-                        if right_clicked {
-                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                newly_selected = Some(inst.instance_id.clone());
-                                self.sidebar_context_menu = Some((inst.instance_id.clone(), pos));
-                            }
-                        }
-                        ui.add_space(4.0);
-                    }
-                });
-
-                if let Some((fav_id, new_fav)) = toggle_fav {
-                    let store = InstanceStore::new(&self.paths);
-                    if store
-                        .set_library_metadata(&fav_id, Some(new_fav), None, None)
-                        .is_ok()
-                    {
-                        self.reload_instances();
+                let card_hovered = ui.rect_contains_pointer(frame_resp.response.rect);
+                let card_clicked =
+                    !star_clicked && card_hovered && ui.input(|i| i.pointer.primary_clicked());
+                if card_clicked {
+                    newly_selected = Some(inst.instance_id.clone());
+                    self.sidebar_context_menu = None;
+                }
+                let right_clicked =
+                    !star_clicked && card_hovered && ui.input(|i| i.pointer.secondary_clicked());
+                if right_clicked {
+                    if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                        newly_selected = Some(inst.instance_id.clone());
+                        self.sidebar_context_menu = Some((inst.instance_id.clone(), pos));
                     }
                 }
-                if let Some(id) = newly_selected {
-                    self.selected_instance_id = Some(id);
-                    self.sync_selected_from_cache();
-                    self.ensure_active_tab_loaded(ctx);
-                }
-            });
+                ui.add_space(4.0);
+            }
+        });
 
-        self.render_sidebar_context_menu(ctx);
+        if let Some((fav_id, new_fav)) = toggle_fav {
+            let store = InstanceStore::new(&self.paths);
+            if store
+                .set_library_metadata(&fav_id, Some(new_fav), None, None)
+                .is_ok()
+            {
+                self.reload_instances();
+            }
+        }
+        if let Some(id) = newly_selected {
+            self.selected_instance_id = Some(id);
+            self.sync_selected_from_cache();
+            self.ensure_active_tab_loaded(ctx);
+        }
     }
 
-    fn render_sidebar_context_menu(&mut self, ctx: &egui::Context) {
+    pub(crate) fn render_sidebar_context_menu(&mut self, ctx: &egui::Context) {
         let Some((menu_inst_id, pos)) = self.sidebar_context_menu.clone() else {
             return;
         };

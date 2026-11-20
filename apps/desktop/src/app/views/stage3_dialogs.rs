@@ -176,8 +176,96 @@ impl McwApp {
                     *prefs_dirty = true;
                 }
             });
-    }
 
+        ui.add_space(8.0);
+
+        // Card 3: Home background picture, panel transparency & dimming (no blur)
+        Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Home background").strong());
+                ui.label(
+                    RichText::new(
+                        "Pick a PNG, JPEG or WebP picture. Panels stay translucent over it; there is no blur.",
+                    )
+                    .size(11.0)
+                    .color(p.text_muted),
+                );
+                ui.add_space(6.0);
+                if ui
+                    .checkbox(
+                        &mut self.prefs.background_enabled,
+                        "Show background picture",
+                    )
+                    .changed()
+                {
+                    *prefs_dirty = true;
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Choose a picture...").clicked() {
+                        if let Some(path) = pick_file_dialog(
+                            "Choose a background picture",
+                            "Pictures (*.png;*.jpg;*.jpeg;*.webp)|*.png;*.jpg;*.jpeg;*.webp|All Files (*.*)|*.*",
+                        ) {
+                            self.prefs.background_image_path = path.display().to_string();
+                            self.prefs.background_enabled = true;
+                            *prefs_dirty = true;
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.prefs.background_image_path.is_empty(),
+                            Button::new("Use default"),
+                        )
+                        .clicked()
+                    {
+                        self.prefs.background_image_path.clear();
+                        *prefs_dirty = true;
+                    }
+                });
+                let shown = if self.prefs.background_image_path.is_empty() {
+                    "Default pixel landscape".to_string()
+                } else {
+                    self.prefs.background_image_path.clone()
+                };
+                ui.label(
+                    RichText::new(shown)
+                        .monospace()
+                        .size(10.5)
+                        .color(p.text_muted),
+                );
+                ui.add_space(8.0);
+                let mut opacity_pct = self.prefs.panel_opacity * 100.0;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut opacity_pct, 25.0..=100.0)
+                            .suffix("%")
+                            .text("Panel opacity (lower = more transparent)"),
+                    )
+                    .changed()
+                {
+                    self.prefs.panel_opacity = (opacity_pct / 100.0).clamp(0.25, 1.0);
+                    self.apply_current_theme(ctx);
+                    *prefs_dirty = true;
+                }
+                let mut dim_pct = self.prefs.background_dim * 100.0;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut dim_pct, 0.0..=85.0)
+                            .suffix("%")
+                            .text("Background dimming"),
+                    )
+                    .changed()
+                {
+                    self.prefs.background_dim = (dim_pct / 100.0).clamp(0.0, 0.85);
+                    *prefs_dirty = true;
+                }
+            });
+    }
     pub(crate) fn render_settings_storage_tab(
         &mut self,
         ui: &mut egui::Ui,

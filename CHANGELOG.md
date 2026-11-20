@@ -2,6 +2,20 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [0.11.0-beta.1] — 2026-11-20
+
+### Added
+- **UI v2.0 foundation (Horizon-style, see DESIGN.md)**: full-window background picture (user PNG/JPEG/WebP or a bundled procedural pixel landscape) with *Panel opacity* and *Background dimming* sliders in Launcher Settings → Appearance (no blur).
+- **Theme presets**: Violet (new default), Sunrise, Neon, Ocean, plus the classic Emerald (`dark`) and Light; custom accent and `themes/*.json` keep working.
+- **New shell**: floating top pill navigation (Home, Mods, Servers, Versions, Logs), slim instance icon rail with status dots and right-click menu, instance flyout (search, favorites, groups, tags).
+- **Launcher Settings is now an in-app centered modal** with category list + search (Esc / click outside to close).
+- Simple animations only (hover/fade, page and modal fade-in), honoring Motion Full / Reduced / Off.
+
+### Changed
+- Global corner radii enlarged; panels are translucent over the background.
+- Interim nav wiring until v0.12 pages: Servers → instance Settings tab, Versions → Settings → Storage, Logs → Global Logs window.
+
+---
 ## [0.5.0-beta.1] — 2026-11-19
 
 ### Added

@@ -94,6 +94,49 @@ impl ThemePalette {
     }
 }
 
+impl ThemePalette {
+    /// Returns a copy whose `surface` / `elevated` fills are translucent so the
+    /// launcher background picture shows through floating panels. `canvas`,
+    /// borders and text stay opaque (OS windows still paint an opaque canvas).
+    pub fn glass(mut self, opacity: f32) -> Self {
+        let op = opacity.clamp(0.25, 1.0);
+        let surface_a = (op * 255.0).round() as u8;
+        let elevated_a = ((op + (1.0 - op) * 0.30) * 255.0).round() as u8;
+        let with_alpha =
+            |c: Color32, a: u8| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+        self.surface = with_alpha(self.surface, surface_a);
+        self.elevated = with_alpha(self.elevated, elevated_a);
+        self
+    }
+
+    fn preset(
+        canvas: u32,
+        surface: u32,
+        elevated: u32,
+        border: u32,
+        text: u32,
+        muted: u32,
+        accent: u32,
+    ) -> Self {
+        let rgb = |v: u32| Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8);
+        let mut pal = Self {
+            canvas: rgb(canvas),
+            surface: rgb(surface),
+            elevated: rgb(elevated),
+            border: rgb(border),
+            text: rgb(text),
+            text_muted: rgb(muted),
+            accent: rgb(accent),
+            accent_text: Color32::WHITE,
+            warning: Color32::from_rgb(0xE0, 0xA1, 0x3A),
+            danger: Color32::from_rgb(0xEF, 0x44, 0x44),
+            focus: rgb(accent),
+        };
+        apply_custom_accent(&mut pal, &format!("#{accent:06x}"));
+        pal
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ThemeDefinition {
     pub id: String,
@@ -166,11 +209,51 @@ const EMBEDDED_MCW_DEFAULT_THEME_JSON: &str = r##"{
 
 impl ThemeCatalog {
     pub fn load(theme_root: &Path) -> Self {
+        let preset_def = |id: &str, name: &str, desc: &str, pal: ThemePalette| ThemeDefinition {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: desc.to_string(),
+            base_mode: ThemeMode::Dark,
+            palette: pal,
+            source_path: None,
+        };
         let mut themes = vec![
+            preset_def(
+                "violet",
+                "Violet (Default)",
+                "Pixel dusk with a violet accent.",
+                ThemePalette::preset(
+                    0x0E0A1F, 0x181230, 0x241B45, 0x3A2F66, 0xF2EEFF, 0xA79CCB, 0x8B5CF6,
+                ),
+            ),
+            preset_def(
+                "sunrise",
+                "Sunrise",
+                "A warm dawn with a rose accent.",
+                ThemePalette::preset(
+                    0x1A0C16, 0x2A1422, 0x3B1D2F, 0x5C2D48, 0xFFEEF5, 0xCFA3B8, 0xEC4899,
+                ),
+            ),
+            preset_def(
+                "neon",
+                "Neon",
+                "Near-black with a cyan neon accent.",
+                ThemePalette::preset(
+                    0x05070A, 0x0D1218, 0x151C25, 0x23303D, 0xE8FBFF, 0x8FB2BD, 0x22D3EE,
+                ),
+            ),
+            preset_def(
+                "ocean",
+                "Ocean",
+                "Deep teal water with a mint accent.",
+                ThemePalette::preset(
+                    0x06141A, 0x0C222B, 0x133440, 0x1F4C5C, 0xE6FFFA, 0x8FBFB6, 0x14B8A6,
+                ),
+            ),
             ThemeDefinition {
                 id: "dark".to_string(),
-                name: "Dark (Default)".to_string(),
-                description: "Built-in MCW Slate & Emerald dark palette.".to_string(),
+                name: "Emerald (Classic Dark)".to_string(),
+                description: "Classic MCW Slate & Emerald dark palette.".to_string(),
                 base_mode: ThemeMode::Dark,
                 palette: ThemePalette::for_mode(ThemeMode::Dark),
                 source_path: None,
@@ -376,9 +459,9 @@ pub fn apply_theme_palette(
         ThemeMode::Light => Visuals::light(),
     };
 
-    let radius = CornerRadius::same(3);
-    visuals.window_corner_radius = CornerRadius::same(4);
-    visuals.menu_corner_radius = CornerRadius::same(3);
+    let radius = CornerRadius::same(8);
+    visuals.window_corner_radius = CornerRadius::same(14);
+    visuals.menu_corner_radius = CornerRadius::same(8);
     visuals.window_fill = p.surface;
     visuals.panel_fill = p.canvas;
     visuals.faint_bg_color = p.elevated;
@@ -541,7 +624,7 @@ mod tests {
         .unwrap();
 
         let catalog = ThemeCatalog::load(dir.path());
-        assert_eq!(catalog.themes.len(), 4);
+        assert_eq!(catalog.themes.len(), 8);
         assert_eq!(
             catalog.find("mcw-default").name,
             "MCW Default (Emerald Block)"

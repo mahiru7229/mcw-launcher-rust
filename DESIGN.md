@@ -1,72 +1,73 @@
 # MCW Launcher Rust Edition — Product Design Direction
 
-Status: **APPROVED (v1.0 — Confirmed with Product Owner)**
+Status: **v2.0 APPROVED by Product Owner (2026-11-20)** — supersedes v1.0 (Slate/Emerald, sharp master–detail). Source of truth for `apps/desktop` GUI decisions.
 
-This file defines MCW Launcher Rust Edition's visual identity and desktop architecture. Treat this document as the source of truth for `apps/desktop` GUI decisions.
+Stack: `egui` / `eframe` (pure Rust, no WebView). Reference mood: "Horizon"-style launcher screenshots provided by the owner (pixel-landscape background, floating translucent rounded panels, violet accent). We copy the **vibe**, not the brand, content, ads, or feature set.
+
+---
 
 ## 1. Product character
+- Purpose-built native launcher: technical but approachable, efficient for frequent tasks (select instance, Play, manage content, inspect logs), honest about progress/errors.
+- Warm and atmospheric, but never noisy. Hierarchy before decoration.
 
-MCW Launcher should feel:
-- **Purpose-built:** a lightweight, native Rust desktop utility for managing and launching game instances, not a generic analytics dashboard.
-- **Technical but approachable:** crisp, structured engineering precision without intimidating jargon where simpler wording works.
-- **Efficient:** frequent tasks (select instance, launch/stop, manage mods, inspect logs) are immediately visible and executable with pointer or keyboard.
-- **Trustworthy:** progress, errors, and destructive consequences are communicated honestly.
-- **Distinctive:** a recognizable, sharp technical identity built from a few consistent choices rather than decoration everywhere.
+## 2. Confirmed decisions (owner answers)
 
-## 2. Visual direction — Confirmed Decisions
+| # | Topic | Decision |
+|---|-------|----------|
+| 1 | Scope | Rebuild **both style and navigation layout** like the reference, **keeping all features** and all existing OS-window rules. |
+| 2 | Background | User-selectable picture (PNG/JPEG/WebP) + one bundled default pixel-landscape. Two sliders in *Launcher Settings → Appearance*: **panel transparency** and **background dimming**. **No blur** (egui has none): translucent panels over the image only. |
+| 3 | Colors | Default **violet accent** as in reference. Theme presets: Violet (default), Sunrise, Neon, Ocean, plus the old MCW **Emerald**. Free custom accent `#RRGGBB` stays. Existing `themes/*.json` keep working. Dark/Light remain. |
+| 4 | Top nav (pill bar) | **Home, Mods, Servers/LAN, Versions, Logs.** Names/grouping follow the Python launcher. **No** Shop, Wardrobe, partner ads, sponsor banners. |
+| 5 | Left side | Slim **icon rail** (add instance `+`, instance icons, bottom utility icons incl. Settings, version label). Click rail header/avatar opens an **instance flyout** (Add instance, instance list with status, tags/groups, search, links). |
+| 6 | Home = selected instance | Large title, stats line, large **Play** button (+ `...` menu), quick icon buttons (Folder / Edit / Add mod), and one floating panel with tabs: **Mods, Worlds, Resource packs, Shaders, Screenshots, Backups, Logs, Settings**. Old *Overview/Actions* become the `...` menu + Edit. Group/Tags live in Actions (per earlier request). |
+| 7 | Settings | **In-app centered modal overlay** (left category list + search box + content), like reference. Categories map to existing tabs (General, Appearance, Accounts, Downloads, Runtime/Game, Storage, Network, Data & privacy…, About). Updates category stays present but disabled (`UPDATES_ENABLED = false`, no Python/Cloudflare feed). |
+| 8 | OS windows | Still **separate, centered OS windows** for: Mods/Modpacks/Resource/Shader/Data-pack browsing, Global Logs, Repair Center, LAN Agent Log, Manual Downloads, version pickers. |
+| 9 | Mods nav tab | Opens the **OS-window browser** laid out like the reference: title, pill row (Mods / Modpacks / Resource packs / Shader packs / Data packs), search + Sort `ComboBox`, provider pills, result list with **right-hand detail panel** (Install in…, open page, policy). Inside an instance page: only the installed list (scrollable) + **Add mod** button. |
+| 10 | Animation | **Simple only**: hover/fade on buttons & cards (~120 ms), fade-in on page change / modal open (~150 ms), smooth progress bar, spinner while loading. **No** background motion, parallax, or sliding pages. Must respect `MotionMode` Full / Reduced / Off (Off = instant). |
 
-- **GUI Framework / Stack:** `egui` (`eframe`) — 100% pure Rust native desktop app (no WebView, low RAM, instant startup, direct access to all Core Rust crates).
-- **Overall direction:** Restrained modern desktop utility — crisp, compact technical tool with clear hierarchy and zero visual clutter.
-- **Light/dark theme support:** Both supported — **Dark mode default** with an explicit **Light mode toggle** in the top utility bar.
-- **Neutral/background palette:** Slate neutral foundation:
-  - Dark mode: Canvas `#111317`, Surface `#181B21`, Elevated `#20242C`, Border `#2B303B`, Text `#E6E9EF`, Muted `#8E96A6`.
-  - Light mode: Canvas `#F7F8FA`, Surface `#FFFFFF`, Elevated `#EEF0F4`, Border `#D6DBE3`, Text `#181B21`, Muted `#5A6374`.
-- **Primary accent:** Restrained Emerald green (`#10B981` in Dark, `#059669` in Light) for primary actions (`Launch`), active selection indicator, and running/ready semantic emphasis.
-- **Semantic status colors:** Success `#10B981`, Warning `#D97706`, Danger `#DC2626`, Focus `#34D399` (Dark) / `#059669` (Light). Always paired with text labels, never color alone.
-- **Typography family and fallback:** Crisp technical sans-serif loaded from system UI font with full Vietnamese diacritic support (Windows `Segoe UI` / Linux `Noto Sans`, fallback `egui` proportional) + Monospace (`Cascadia Mono` / `Consolas` / `egui` monospace) for Live Logs, file paths, versions, and UUIDs.
-- **Shape language:** Sharp, disciplined technical geometry — tight corner radii (`2px–4px` on buttons, inputs, tabs, and containers), crisp `1px` borders, no heavy drop shadows, no glass/blur effects.
-- **Icon family:** Minimalist, single-style monochrome geometric/glyph icons paired with clear text labels for all primary controls; no mixed emoji styles.
-- **Illustration/mascot policy:** No decorative mascots, hero illustrations, or filler banners. Only authentic product visuals (instance identity / account status).
-- **Navigation & layout model:** 2-column **Master–Detail** desktop layout:
-  - **Top utility bar:** Active account switcher (Offline & Microsoft OAuth), Dark/Light theme toggle, and update check indicator.
-  - **Left sidebar (Master):** Scannable instance list (name, MC version, loader, live status badge) + `+ New Instance` action.
-  - **Right pane (Detail):** Selected instance header + primary `Launch` / `Stop` action + honest real-time `ProgressStage` bar + 4 tabs: **Overview**, **Mods** (local `mcw-mods` + Modrinth v2 browser/installer), **Logs** (live monospace stdout/stderr stream), and **Settings** (memory, resolution, Java selection & Temurin provisioning).
+## 3. Carry-over rules (unchanged, from `.agent/rules` + earlier owner requests)
+- Multi-choice options use `ComboBox`, never rows of buttons.
+- Every list inside a panel is scrollable (`ScrollArea`, `auto_shrink([false,false])`), never hidden under another widget.
+- Every OS window opens centered on screen.
+- Every save/export uses `SaveFileDialog`; dismissible notices auto-hide after 8 s (configurable).
+- Tags/groups chips auto-size to text and wrap responsively.
+- Reuse Python i18n keys (`lang/en-US.json`, `lang/vi-VN.json`); no invented translations. Always check the Python source first.
+- `VerificationCache` / no re-download of unchanged assets.
+- SOLID: each new view in its own module; split `dialogs.rs`, `controllers.rs`, `workspace.rs` while rebuilding (see `docs/BACKLOG.md`).
+- Updater stays disabled; no Python/Cloudflare update branch.
 
-## 3. Visual principles
+## 4. Visual language
+- **Canvas:** full-window background image (dimmed) → large rounded floating panels (radius ≈ 10–14 px) with 1 px soft border and semi-transparent fill; pills (radius full) for nav and tabs; primary button = accent fill, large rounded.
+- **Shadows/gradients:** only subtle panel border/overlay needed for legibility; no decorative gradients beyond the background image itself.
+- **Typography:** system UI sans (Segoe UI / Noto Sans, full Vietnamese diacritics), monospace for paths/versions/logs. Big bold page titles (~28–32 px), compact body (12–13 px).
+- **Icons:** single-style monochrome line icons with text labels for primary actions; no mixed emoji.
+- **Contrast:** text color is always computed against the panel+background mix (accent-aware); status never by color alone.
+- **Default window:** ~1100×700, minimum ~860×560; panels reflow on resize.
 
-- Use hierarchy before decoration.
-- Let instance identity, version, status, and primary action be easy to recognize.
-- Use color semantically and consistently.
-- Make technical detail available without forcing it into every user's primary path.
-- Prefer a coherent visual rhythm over individually flashy components.
-- Use expressive elements selectively where they strengthen product identity.
-- A little warmth and personality is welcome; visual noise is not.
+## 5. Delivery plan (SemVer tags, no separate hotfix system)
 
-## 4. Desktop-first behavior
+1. **`v0.11.0-beta.1` — Foundation + Shell**
+   - Background image system (bundled default, user picture, panel transparency, dim sliders).
+   - New palette model + presets (Violet default, Sunrise, Neon, Ocean, Emerald) + custom accent; keep `themes/*.json`.
+   - Shell: top pill nav, left icon rail, instance flyout, account chip, Settings → in-app modal. (Global `Ctrl+K` search is deferred to v0.13.)
+   - Simple animation helpers (hover/fade) honoring `MotionMode`.
+   - Interim nav wiring until v0.12 pages exist: Servers → instance Settings tab, Versions → Settings → Storage, Logs → Global Logs window (OS window).
+2. **`v0.12.0-beta.1` — Pages**
+   - Home/instance page (title, Play, quick icons, floating tabbed panel, `...` menu).
+   - Versions page.
+   - New centered OS-window content browser (Mods/Modpacks/Resource/Shader/Data packs, list + detail panel).
+   - Servers/LAN page, Logs page.
+3. **`v0.13.0-beta.1` — Polish**
+   - Restyle every remaining dialog (create instance, accounts, repair, manual downloads, optional files, etc.).
+   - Final animation pass, i18n gaps, remove dead UI code.
+   - Update `README.md`, `CHANGELOG.md`, this file's status.
 
-- Optimize primary workflows for desktop pointer and keyboard use.
-- Keep important actions visible at common laptop window sizes (minimum sensible width ~840×560, default ~1040×680).
-- Reflow gracefully when the window is resized or display scaling changes.
-- Use compact, scannable layouts for instance management and clearer spacing for setup dialogs.
-- Avoid mobile-style oversized controls.
+Each stage ends with: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, release build, manual QA list, local commit + annotated tag (no push unless asked).
 
-## 5. Signature moments
-
-MCW Launcher expresses its restrained technical personality in two deliberate places:
-1. **Selected & Running Instance Accent Bar:** Sharp `2px–4px` instance list rows featuring a crisp left vertical Emerald accent bar indicating the active/running instance.
-2. **Truthful Launch Status Strip:** A clean, sharp status & progress strip in the detail header transitioning honestly through `Preparing` → `Downloading` → `Running` → `Finished`/`Crashed`, using Emerald emphasis purposefully without decorative animation.
-
-Do not spread decorative motifs across every surface.
-
-## 6. What MCW should avoid
-
-- Generic SaaS dashboard styling unrelated to launcher workflows.
-- Trend-driven glass/blur/gradient effects without a role.
-- Excessive cards, pills, badges, and status colors.
-- Decorative statistics or fake progress indicators.
-- Random mixtures of icon styles and emoji.
-- Huge empty hero areas that push useful controls below the fold.
+## 6. What MCW still avoids
+- Ads, sponsor banners, shop/wardrobe/fake stats, fake progress bars.
+- Heavy or continuous animation; blur/glass effects that egui cannot do honestly.
+- Mixed icon styles, oversized mobile-style controls, huge empty hero areas that push controls below the fold.
 
 ## 7. Approval rule
-
-Changes to foundational visual identity — palette, typography, icon system, navigation model, or global component language — require product-owner review before being treated as the new standard.
+Changes to foundational identity (palette model, typography, icon system, navigation model, global component language) require owner review. This v2.0 document is that approval for the Horizon-style rebuild.

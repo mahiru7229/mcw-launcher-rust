@@ -1607,88 +1607,125 @@ impl McwApp {
                 ),
                 (LauncherSettingsTab::Updates, "Updates".to_string()),
             ];
-            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_launcher_settings");
-            let builder = centered_viewport_builder(
-                ctx,
-                format!("{win_title} — MCW Launcher"),
-                [740.0, 520.0],
-                [400.0, 340.0],
-            );
-
-            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-                if vp_ctx.input(|i| i.viewport().close_requested()) {
-                    open = false;
-                }
-                let vp_width = vp_ctx.screen_rect().width();
-                let is_wide = vp_width >= 580.0;
-
-                if is_wide {
-                    egui::SidePanel::left("launcher_settings_nav_rail")
-                        .exact_width(172.0)
-                        .resizable(false)
-                        .frame(
-                            Frame::new()
-                                .fill(p.surface)
-                                .stroke(Stroke::new(1.0_f32, p.border))
-                                .inner_margin(egui::Margin::same(10)),
-                        )
-                        .show(vp_ctx, |ui| {
-                            ui.vertical(|ui| {
+            let vp_ctx = ctx;
+            let screen = ctx.screen_rect();
+            let modal_w = (screen.width() - 80.0).clamp(420.0, 900.0);
+            let modal_h = (screen.height() - 90.0).clamp(320.0, 620.0);
+            let opened_at = *self.settings_open_since.get_or_insert_with(Instant::now);
+            let fade_secs = self.motion_secs(0.15);
+            let fade = if fade_secs <= 0.0 {
+                1.0
+            } else {
+                (opened_at.elapsed().as_secs_f32() / fade_secs).clamp(0.0, 1.0)
+            };
+            if fade < 1.0 {
+                ctx.request_repaint();
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
+            let close_lbl = self.t("common.close").to_string();
+            let search_hint = self.t("Search settings").to_string();
+            let settings_q = self.settings_search.trim().to_lowercase();
+            egui::Area::new(egui::Id::new("mcw_settings_backdrop"))
+                .order(egui::Order::Middle)
+                .fixed_pos(screen.min)
+                .show(ctx, |ui| {
+                    let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                    ui.painter().rect_filled(
+                        rect,
+                        0.0,
+                        Color32::from_black_alpha((150.0 * fade) as u8),
+                    );
+                    if resp.clicked() {
+                        open = false;
+                    }
+                });
+            egui::Window::new(win_title.clone())
+                .id(egui::Id::new("mcw_settings_modal"))
+                .order(egui::Order::Foreground)
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .movable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .fixed_size([modal_w, modal_h])
+                .frame(
+                    Frame::new()
+                        .fill(Color32::from_rgba_unmultiplied(
+                            p.canvas.r(),
+                            p.canvas.g(),
+                            p.canvas.b(),
+                            246,
+                        ))
+                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .corner_radius(CornerRadius::same(18))
+                        .inner_margin(egui::Margin::same(16)),
+                )
+                .show(ctx, |ui| {
+                    ui.set_opacity(0.4 + 0.6 * fade);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&win_title).strong().size(20.0).color(p.text));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add(Button::new(close_lbl.as_str()).corner_radius(CornerRadius::same(14)))
+                                .clicked()
+                            {
+                                open = false;
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+                    let body_h = ui.available_height();
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(190.0, body_h),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                ui.add(
+                                    TextEdit::singleline(&mut self.settings_search)
+                                        .hint_text(search_hint.as_str())
+                                        .desired_width(ui.available_width()),
+                                );
+                                ui.add_space(8.0);
                                 for (tab, label) in &nav_tabs {
+                                    if !settings_q.is_empty()
+                                        && !label.to_lowercase().contains(&settings_q)
+                                    {
+                                        continue;
+                                    }
                                     let active = self.launcher_settings_tab == *tab;
                                     let btn = Button::new(
-                                        RichText::new(label).strong().size(13.0).color(if active {
-                                            p.accent_text
-                                        } else {
-                                            p.text
-                                        }),
+                                        RichText::new(label).strong().size(13.0).color(
+                                            if active { p.text } else { p.text_muted },
+                                        ),
                                     )
-                                    .fill(if active { p.accent } else { p.elevated })
-                                    .min_size(Vec2::new(ui.available_width(), 34.0))
-                                    .corner_radius(CornerRadius::same(3));
+                                    .fill(if active {
+                                        p.accent.gamma_multiply(0.30)
+                                    } else {
+                                        Color32::TRANSPARENT
+                                    })
+                                    .stroke(if active {
+                                        Stroke::new(1.0_f32, p.accent)
+                                    } else {
+                                        Stroke::NONE
+                                    })
+                                    .min_size(Vec2::new(ui.available_width(), 36.0))
+                                    .corner_radius(CornerRadius::same(10));
                                     if ui.add(btn).clicked() {
                                         self.launcher_settings_tab = *tab;
                                     }
-                                    ui.add_space(6.0);
+                                    ui.add_space(4.0);
                                 }
-                            });
-                        });
-                } else {
-                    egui::TopBottomPanel::top("launcher_settings_nav_top")
-                        .frame(
-                            Frame::new()
-                                .fill(p.surface)
-                                .stroke(Stroke::new(1.0_f32, p.border))
-                                .inner_margin(egui::Margin::symmetric(10, 8)),
-                        )
-                        .show(vp_ctx, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                for (tab, label) in &nav_tabs {
-                                    let active = self.launcher_settings_tab == *tab;
-                                    let btn = Button::new(
-                                        RichText::new(label).strong().size(12.5).color(if active {
-                                            p.accent_text
-                                        } else {
-                                            p.text
-                                        }),
-                                    )
-                                    .fill(if active { p.accent } else { p.elevated })
-                                    .corner_radius(CornerRadius::same(3));
-                                    if ui.add(btn).clicked() {
-                                        self.launcher_settings_tab = *tab;
-                                    }
-                                }
-                            });
-                        });
-                }
-
-                egui::CentralPanel::default()
-                    .frame(
-                        Frame::new()
-                            .fill(p.canvas)
-                            .inner_margin(egui::Margin::same(14)),
-                    )
-                    .show(vp_ctx, |ui| {
+                            },
+                        );
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(ui.available_width(), body_h),
+                            Layout::top_down(Align::Min),
+                            |ui| {
                         ScrollArea::vertical()
                             .id_salt("launcher_settings_content_scroll")
                             .auto_shrink([false, false])
@@ -2677,8 +2714,10 @@ impl McwApp {
                                     }
                                 }
                             });
+                            },
+                        );
                     });
-            });
+                });
 
             self.show_launcher_settings = open;
             if reload_langs {

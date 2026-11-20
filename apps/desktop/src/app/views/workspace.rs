@@ -4,13 +4,27 @@ use crate::app::*;
 impl McwApp {
     pub(crate) fn render_detail_pane(&mut self, ctx: &egui::Context) {
         let p = self.palette;
+        if self.fade_tab != self.active_tab {
+            self.fade_tab = self.active_tab;
+            self.fade_since = Instant::now();
+        }
+        let fade_secs = self.motion_secs(0.15);
+        let fade = if fade_secs <= 0.0 {
+            1.0
+        } else {
+            (self.fade_since.elapsed().as_secs_f32() / fade_secs).clamp(0.0, 1.0)
+        };
+        if fade < 1.0 {
+            ctx.request_repaint();
+        }
         egui::CentralPanel::default()
             .frame(
                 Frame::new()
-                    .fill(p.canvas)
+                    .fill(Color32::TRANSPARENT)
                     .inner_margin(egui::Margin::same(16)),
             )
             .show(ctx, |ui| {
+                ui.set_opacity(0.35 + 0.65 * fade);
                 // Notice / Error banner
                 if let Some((msg, is_err)) = self.notice_banner.clone() {
                     let banner_stroke = if is_err { p.danger } else { p.accent };
