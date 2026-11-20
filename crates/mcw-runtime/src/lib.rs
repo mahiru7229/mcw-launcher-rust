@@ -1,5 +1,6 @@
 pub mod bytecode;
 pub mod compactor;
+pub mod diagnostics;
 pub mod java;
 pub mod jvm_presets;
 pub mod lan_agent;
@@ -10,6 +11,9 @@ pub mod supervisor;
 
 pub use bytecode::{detect_jar_required_java, detect_mods_required_java};
 pub use compactor::JavaCommandCompactor;
+pub use diagnostics::{
+    find_latest_crash_report, DiagnosticsExporter, LaunchErrorPresenter, LaunchErrorView,
+};
 pub use java::{
     prefer_javaw_on_windows, JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver,
 };

@@ -913,12 +913,44 @@ impl McwApp {
             }
         }
 
+        let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let provenance = ModProvenanceRegistry::load(&inst_dir);
+        let unlocked_updates = self
+            .mod_update_candidates
+            .iter()
+            .filter(|c| c.update_available && !c.locked)
+            .count();
+
         ui.add_space(8.0);
-        ui.label(
-            RichText::new(format!("Installed Mods ({})", self.selected_mods.len()))
-                .strong()
-                .color(p.text),
-        );
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!("Installed Mods ({})", self.selected_mods.len()))
+                    .strong()
+                    .color(p.text),
+            );
+            let check_lbl = if self.checking_mod_updates {
+                "Checking Updates..."
+            } else {
+                "Check Mod Updates"
+            };
+            if ui
+                .add_enabled(!self.checking_mod_updates, Button::new(check_lbl))
+                .clicked()
+            {
+                self.start_check_mod_updates(ctx);
+            }
+            if unlocked_updates > 0 {
+                let upd_btn = Button::new(
+                    RichText::new(format!("Update Unlocked ({unlocked_updates})"))
+                        .color(p.accent_text)
+                        .strong(),
+                )
+                .fill(p.accent);
+                if ui.add(upd_btn).clicked() {
+                    self.start_apply_mod_updates(ctx);
+                }
+            }
+        });
         ui.add_space(4.0);
 
         if self.selected_mods.is_empty() {
@@ -933,6 +965,7 @@ impl McwApp {
 
         let mut toggle_action: Option<(String, bool)> = None;
         let mut delete_action: Option<String> = None;
+        let mut lock_toggle_action: Option<(String, bool)> = None;
 
         ScrollArea::vertical()
             .id_salt("local_mods_scroll")
@@ -975,6 +1008,26 @@ impl McwApp {
                                                     .color(p.warning),
                                             );
                                         }
+                                        let clean_fname = m.file_name.trim_end_matches(".disabled");
+                                        if let Some(cand) =
+                                            self.mod_update_candidates.iter().find(|c| {
+                                                c.current_file_name.trim_end_matches(".disabled")
+                                                    == clean_fname
+                                            })
+                                        {
+                                            if cand.update_available {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "UPDATE -> {}",
+                                                        cand.latest_version_number
+                                                    ))
+                                                    .strong()
+                                                    .monospace()
+                                                    .size(10.5)
+                                                    .color(p.accent),
+                                                );
+                                            }
+                                        }
                                     });
                                     ui.label(
                                         RichText::new(&m.file_name)
@@ -988,6 +1041,30 @@ impl McwApp {
                                     {
                                         delete_action = Some(m.file_name.clone());
                                     }
+                                    let clean_fname = m.file_name.trim_end_matches(".disabled");
+                                    if let Some(tracked) = provenance.mods.values().find(|e| {
+                                        e.file_name.trim_end_matches(".disabled") == clean_fname
+                                    }) {
+                                        let lock_lbl =
+                                            if tracked.locked { "Locked" } else { "Lock" };
+                                        let lock_col = if tracked.locked {
+                                            p.warning
+                                        } else {
+                                            p.text_muted
+                                        };
+                                        if ui
+                                            .button(
+                                                RichText::new(lock_lbl).size(11.0).color(lock_col),
+                                            )
+                                            .on_hover_text(
+                                                "Lock or unlock this mod from automatic updates",
+                                            )
+                                            .clicked()
+                                        {
+                                            lock_toggle_action =
+                                                Some((m.file_name.clone(), !tracked.locked));
+                                        }
+                                    }
                                 });
                             });
                         });
@@ -995,6 +1072,16 @@ impl McwApp {
                 }
             });
 
+        if let Some((file_name, new_locked)) = lock_toggle_action {
+            let _ =
+                ModProvenanceRegistry::set_locked_by_filename(&inst_dir, &file_name, new_locked);
+            let clean = file_name.trim_end_matches(".disabled");
+            for c in &mut self.mod_update_candidates {
+                if c.current_file_name.trim_end_matches(".disabled") == clean {
+                    c.locked = new_locked;
+                }
+            }
+        }
         if let Some((file_name, enable)) = toggle_action {
             if let Err(e) = ModManager::new(&mods_dir).set_enabled(&file_name, enable) {
                 self.notice_banner = Some((format!("Failed to toggle mod: {e}"), true));
@@ -1334,6 +1421,7 @@ impl McwApp {
             .unwrap_or(0);
         let has_account = self.active_account().is_some();
 
+        let mut import_world_clicked = false;
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!(
@@ -1351,8 +1439,32 @@ impl McwApp {
                 if ui.button("Refresh").clicked() {
                     self.load_worlds_async(&inst.instance_id, ctx, true);
                 }
+                if ui
+                    .add_enabled(!busy, Button::new("Import World (.zip)"))
+                    .clicked()
+                {
+                    import_world_clicked = true;
+                }
             });
         });
+        if import_world_clicked {
+            if let Some(chosen) = pick_file_dialog(
+                "Import Minecraft World (.zip)",
+                "World Archives (*.zip)|*.zip|All Files (*.*)|*.*",
+            ) {
+                match WorldManager::import_world(&mc_dir, &chosen) {
+                    Ok(world_name) => {
+                        self.worlds_cache.remove(&inst.instance_id);
+                        self.load_worlds_async(&inst.instance_id, ctx, true);
+                        self.notice_banner =
+                            Some((format!("Imported world '{world_name}'."), false));
+                    }
+                    Err(e) => {
+                        self.notice_banner = Some((format!("World import failed: {e}"), true));
+                    }
+                }
+            }
+        }
 
         ui.add_space(6.0);
 
@@ -1368,6 +1480,7 @@ impl McwApp {
 
         let mut quick_play_target: Option<String> = None;
         let mut duplicate_target: Option<String> = None;
+        let mut backup_target: Option<String> = None;
         let mut delete_target: Option<String> = None;
 
         ScrollArea::vertical()
@@ -1431,6 +1544,12 @@ impl McwApp {
                                     if ui.add_enabled(!busy, Button::new("Duplicate")).clicked() {
                                         duplicate_target = Some(w.folder_name.clone());
                                     }
+                                    if ui
+                                        .add_enabled(!busy, Button::new("Backup (.zip)"))
+                                        .clicked()
+                                    {
+                                        backup_target = Some(w.folder_name.clone());
+                                    }
                                     if quick_play_ok {
                                         let can_play = !busy && has_account && missing_manual == 0;
                                         let play_btn = Button::new(
@@ -1453,6 +1572,19 @@ impl McwApp {
 
         if let Some(folder) = quick_play_target {
             self.start_launch_with_world(Some(folder), ctx);
+        }
+        if let Some(folder) = backup_target {
+            match WorldManager::backup_world(&mc_dir, &folder, None) {
+                Ok(zip_path) => {
+                    self.notice_banner = Some((
+                        format!("Backed up world '{}' to {}", folder, zip_path.display()),
+                        false,
+                    ));
+                }
+                Err(e) => {
+                    self.notice_banner = Some((format!("World backup failed: {e}"), true));
+                }
+            }
         }
         if let Some(folder) = duplicate_target {
             match WorldManager::duplicate_world(&mc_dir, &folder) {
@@ -1581,12 +1713,14 @@ impl McwApp {
         inst: &Instance,
     ) {
         let p = self.palette;
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let latest_crash = find_latest_crash_report(&mc_dir);
         let log_file = self
             .paths
             .logs_root
             .join(format!("{}-latest.log", inst.instance_id));
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut self.logs_errors_only, "Stderr / Errors only");
             if ui.button("Copy Logs").clicked() {
                 if let Some(lines) = self.instance_logs.get(&inst.instance_id) {
@@ -1604,6 +1738,53 @@ impl McwApp {
             }
             if log_file.is_file() && ui.button("Open Log File").clicked() {
                 open_external(&log_file.display().to_string());
+            }
+            if let Some(ref crash_path) = latest_crash {
+                let crash_btn = Button::new(
+                    RichText::new("Open Latest Crash Report")
+                        .color(p.warning)
+                        .strong(),
+                );
+                if ui.add(crash_btn).clicked() {
+                    open_external(&crash_path.display().to_string());
+                }
+            }
+            if ui.button("Export Diagnostic Bundle (.zip)").clicked() {
+                let epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let out_zip = self
+                    .paths
+                    .logs_root
+                    .join(format!("diagnostics-{}-{epoch}.zip", inst.instance_id));
+                let live_lines: Vec<String> = self
+                    .instance_logs
+                    .get(&inst.instance_id)
+                    .map(|v| v.iter().map(|l| l.text.clone()).collect())
+                    .unwrap_or_default();
+                match DiagnosticsExporter::export_bundle(
+                    &mc_dir,
+                    &inst.name,
+                    &inst.version_id,
+                    &inst.mod_loader.name,
+                    self.pc_ram_mb,
+                    &self.java_installations,
+                    &live_lines,
+                    &out_zip,
+                ) {
+                    Ok(path) => {
+                        self.notice_banner = Some((
+                            format!("Exported sanitized diagnostic bundle to {}", path.display()),
+                            false,
+                        ));
+                        open_external(&self.paths.logs_root.display().to_string());
+                    }
+                    Err(e) => {
+                        self.notice_banner =
+                            Some((format!("Failed to export diagnostic bundle: {e}"), true));
+                    }
+                }
             }
             let upload_label = if self.uploading_mclogs {
                 "Uploading..."
@@ -1732,6 +1913,7 @@ impl McwApp {
         let mut install_java_major: Option<u32> = None;
         let mut optifine_install_mods = false;
         let mut optifine_launch_installer = false;
+        let mut prepare_lan_provider: Option<String> = None;
 
         let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
         let inst_dir = self.paths.instance_dir(&inst.instance_id);
@@ -1944,6 +2126,31 @@ impl McwApp {
                                 }
                             }
                         });
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("LAN Connection Provider:");
+                            let is_e4mc =
+                                settings.lan_connection_provider.eq_ignore_ascii_case("e4mc");
+                            if ui
+                                .selectable_label(!is_e4mc, "Manual (Local LAN / VPN)")
+                                .clicked()
+                                && is_e4mc
+                            {
+                                settings.lan_connection_provider = "manual".to_string();
+                                prepare_lan_provider = Some("manual".to_string());
+                            }
+                            if ui
+                                .selectable_label(
+                                    is_e4mc,
+                                    "e4mc (Public Tunnel — auto-installs e4mc mod)",
+                                )
+                                .clicked()
+                                && !is_e4mc
+                            {
+                                settings.lan_connection_provider = "e4mc".to_string();
+                                prepare_lan_provider = Some("e4mc".to_string());
+                            }
+                        });
 
                         ui.add_space(10.0);
                         ui.separator();
@@ -2099,6 +2306,15 @@ impl McwApp {
         }
         if let Some(major) = install_java_major {
             self.start_java_install(major, ctx);
+        }
+        if let Some(provider) = prepare_lan_provider {
+            if let Some(ref s) = self.selected_settings {
+                let store = InstanceStore::new(&self.paths);
+                let _ = store.save_settings(&inst.instance_id, s);
+                self.settings_cache
+                    .insert(inst.instance_id.clone(), s.clone());
+            }
+            self.start_prepare_lan_hosting(provider, ctx);
         }
     }
 }

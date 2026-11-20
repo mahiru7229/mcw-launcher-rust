@@ -27,14 +27,16 @@ use mcw_mods::{
 use mcw_net::{DownloadClient, TaskControl};
 use mcw_providers::{
     load_curseforge_api_key, ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient,
-    CurseForgeMod, CurseForgeSearchParams, FtbClient, FtbPackSummary, ManualDownloadItem,
+    CurseForgeMod, CurseForgeSearchParams, FtbClient, FtbPackSummary, LanHostingManager,
+    ManualDownloadItem, ModProvenanceRegistry, ModUpdateCandidate, ModUpdateManager,
     ModpackExportMode, ModpackExportOptions, ModpackInstaller, ModpackProgressCallback,
-    ModrinthClient, ModrinthSearchHit, ModrinthSearchParams,
+    ModrinthClient, ModrinthSearchHit, ModrinthSearchParams, TrackedModEntry,
 };
 use mcw_runtime::{
-    detect_preset, detect_total_memory_mb, get_preset_flags, recommended_modpack_ram_mb,
-    ExitClassification, JavaDiscovery, JavaInstallation, JavaProvisioner, JvmPresetId,
-    LanAgentManager, LogLine, LogStream, McLogsClient, ProcessControl, SupervisedProcess,
+    detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
+    recommended_modpack_ram_mb, DiagnosticsExporter, ExitClassification, JavaDiscovery,
+    JavaInstallation, JavaProvisioner, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine,
+    LogStream, McLogsClient, ProcessControl, SupervisedProcess,
 };
 use mcw_storage::{BackupInfo, BackupManager, InstanceRunLock, InstanceStore, LauncherPaths};
 use std::collections::{HashMap, HashSet};
@@ -291,6 +293,10 @@ pub struct McwApp {
 
     // OptiFine JAR path input inside Instance Settings tab
     optifine_jar_input: String,
+
+    // Mod Provenance & Update Manager state
+    mod_update_candidates: Vec<ModUpdateCandidate>,
+    checking_mod_updates: bool,
 }
 
 impl McwApp {
@@ -447,6 +453,8 @@ impl McwApp {
             version_picker_items: Vec::new(),
             version_picker_error: None,
             optifine_jar_input: String::new(),
+            mod_update_candidates: Vec::new(),
+            checking_mod_updates: false,
         };
 
         app.reload_instances();

@@ -5,7 +5,8 @@ use mcw_models::progress::{ProgressEvent, ProgressSink};
 use mcw_mods::{ContentKind, ContentPackInfo, ModInfo};
 use mcw_net::TaskControl;
 use mcw_providers::{
-    AtLauncherPack, CurseForgeMod, FtbPackSummary, ModpackInstallReport, ModrinthSearchHit,
+    AtLauncherPack, CurseForgeMod, FtbPackSummary, ModUpdateCandidate, ModpackInstallReport,
+    ModrinthSearchHit,
 };
 use mcw_runtime::{
     JavaInstallation, LogLine, LogSink, McLogsUploadResult, ProcessControl, ProcessExitReport,
@@ -75,6 +76,20 @@ pub enum AppEvent {
         versions: Result<Vec<ModpackVersionOption>, String>,
     },
     DirectModFileInstalled {
+        task_id: u64,
+        instance_id: String,
+        result: Result<String, String>,
+    },
+    ModUpdatesChecked {
+        instance_id: String,
+        candidates: Vec<ModUpdateCandidate>,
+    },
+    ModUpdatesApplied {
+        task_id: u64,
+        instance_id: String,
+        result: Result<usize, String>,
+    },
+    LanHostingPrepared {
         task_id: u64,
         instance_id: String,
         result: Result<String, String>,

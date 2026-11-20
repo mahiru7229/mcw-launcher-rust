@@ -2,6 +2,7 @@ pub mod atlauncher;
 pub mod cache;
 pub mod curseforge;
 pub mod ftb;
+pub mod mod_updates;
 pub mod modpack;
 pub mod modrinth;
 
@@ -12,6 +13,10 @@ pub use curseforge::{
     CurseForgeMod, CurseForgeSearchParams, CurseForgeSearchResult,
 };
 pub use ftb::{FtbClient, FtbPackSummary, FtbVersionSummary};
+pub use mod_updates::{
+    LanHostingManager, ModProvenanceFile, ModProvenanceRegistry, ModUpdateCandidate,
+    ModUpdateManager, TrackedModEntry,
+};
 pub use modpack::{
     normalize_modloader, parse_cf_loader_id, ManualDownloadItem, ModpackExportMode,
     ModpackExportOptions, ModpackInstallReport, ModpackInstaller, ModpackProgressCallback,

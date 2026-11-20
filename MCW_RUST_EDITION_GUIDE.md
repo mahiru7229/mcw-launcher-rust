@@ -160,9 +160,9 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 ### 7.4. Hệ sinh thái Mod, Modpack & Content Pack
 
 **Chưa làm trong bản Rust:**
-- [ ] **Hệ thống Registry & Kiểm tra/Cập nhật Mod + Modpack 1 chạm + Khóa phiên bản (Version Lock)** (`mod_provenance_registry.py`, `modrinth_registry.py`, `curseforge_registry.py`, `modrinth_mod_update_manager.py`, `modrinth_pack_update_manager.py`, `modrinth_pack_repair_manager.py`): Theo dõi nguồn gốc mod đã cài, kiểm tra bản mới, cập nhật hàng loạt, khóa mod không cho update, và sửa file modpack bị thiếu/sửa đổi theo manifest.
+- [x] **Hệ thống Registry & Kiểm tra/Cập nhật Mod 1 chạm + Khóa phiên bản (Version Lock)** (`ModProvenanceRegistry` & `ModUpdateManager` trong `crates/mcw-providers/src/mod_updates.rs` + UI trong tab *Mods*).
 - [ ] **Bộ phân tích tương thích & xung đột Mod** (`mod_compatibility_manager.py`, `mod_capability_index.py`, `mod_provider_alias_registry.py`, `compatible_instance_dialog.py`): Phát hiện thiếu dependency, trùng mod ID, lệch loader/MC version và gợi ý tạo/chọn instance tương thích.
-- [ ] **Tự động giải quyết Dependency đệ quy cho CurseForge** (`curseforge_mod_installer.py`, `modpack_dependency_resolver.py`): Hiện tại `ModrinthClient` đã tải dependency đệ quy, nhưng `CurseForgeClient::install_mod` mới tải đúng 1 file mod được chọn (chưa tải các mod phụ thuộc bắt buộc).
+- [x] **Tự động giải quyết Dependency đệ quy cho CurseForge** (`CurseForgeClient::install_mod` & `install_required_dependencies_for_file` tải đệ quy mọi mod `relationType == 3`).
 - [ ] **Chọn lọc các file tùy chọn (Optional Files) khi cài Modpack**: Cho phép tick chọn/bỏ chọn optional mods trong Modrinth / CurseForge / ATLauncher modpack ngay trên dialog cài đặt.
 - [ ] **Thư viện nội dung đã cài & Kho chống trùng lặp (Content Store Deduplication)** (`installed_content_library.py`, `content_store.py`, `shared_file_materializer.py`): Quản lý nội dung dùng chung xuyên suốt các instance và tối ưu dung lượng ổ cứng bằng hardlink/content-addressing.
 - [ ] **Chính sách xử lý lỗi nội dung khi Launch** (`managed_content_policy.py`): Cấu hình `modrinth_failure_policy` / `curseforge_failure_policy` (`block` hoặc `warn`).
@@ -177,9 +177,9 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 ### 7.5. Worlds, Screenshots, Logs & Chẩn đoán lỗi
 
 **Chưa làm trong bản Rust:**
-- [ ] **World Backup, Restore & Import** (`world_manager.py`): Rust đã có danh sách world, Duplicate, Delete và Quick Play (`>= 1.20` / `23w14a`), nhưng **chưa có sao lưu từng world (`backup_world`), khôi phục world (`restore_world`) và nhập world từ `.zip`/thư mục (`import_world`)**.
-- [ ] **Tự phát hiện Crash Report & Trình diễn giải lỗi Launch thân thiện** (`launch_error_presenter.py`, `GameRuntimeManager.latest_crash_report`): Tự tìm `crash-reports/crash-*.txt` mới nhất sau khi crash, thêm nút mở nhanh crash report và diễn giải chi tiết các lỗi phổ biến (đầy ổ đĩa, WinError 206, lỗi checksum, thiếu dependency, lỗi Java/mạng).
-- [ ] **Xuất gói chẩn đoán ẩn danh (Diagnostic Support Bundle) & Trình tạo báo lỗi (Issue Report)** (`diagnostics_manager.py`, `diagnostics_sanitizer.py`, `issue_report_builder.py`, `issue_report_dialog.py`): Đóng gói `.zip` chứa thông tin hệ thống, Java, health, logs đã che token/đường dẫn cá nhân.
+- [x] **World Backup, Restore & Import** (`WorldManager::backup_world`, `restore_world`, `import_world` trong `crates/mcw-minecraft/src/worlds.rs` + nút *Import World (.zip)* và *Backup (.zip)* trong tab *Worlds*).
+- [x] **Tự phát hiện Crash Report & Trình diễn giải lỗi Launch thân thiện** (`LaunchErrorPresenter` & `find_latest_crash_report` trong `crates/mcw-runtime/src/diagnostics.rs` + nút *Open Latest Crash Report* trong tab *Logs*).
+- [x] **Xuất gói chẩn đoán ẩn danh (Diagnostic Support Bundle)** (`DiagnosticsExporter::export_bundle` trong `crates/mcw-runtime/src/diagnostics.rs` + nút *Export Diagnostic Bundle (.zip)* trong tab *Logs*).
 - [ ] **Trang Global Launcher Logs** (`logs_page.py`): Xem log hoạt động chung của toàn bộ launcher (hiện bản Rust mới có tab `Logs` theo từng instance).
 
 ---
@@ -187,7 +187,7 @@ Khi viết từng crate ở repo mới, **không cần đoán lại nghiệp v�
 ### 7.6. Multiplayer / LAN
 
 **Chưa làm trong bản Rust:**
-- [ ] **Tích hợp nhà cung cấp tunnel `e4mc`** (`src/core/lan/lan_hosting_manager.py`): Model `InstanceSettings` đã có trường `lan_connection_provider`, nhưng chưa có UI chọn `manual` vs `e4mc` và chưa tự động cài/tắt mod `e4mc` (quản lý bởi `mcw_lan_hosting`) cũng như tự vô hiệu hóa `mcwifipnp` cũ khi bật.
+- [x] **Tích hợp nhà cung cấp tunnel `e4mc`** (`LanHostingManager::prepare` trong `crates/mcw-providers/src/mod_updates.rs` + nút chọn *Manual* vs *e4mc* trong *Instance Settings*, tự động cài/bật/tắt mod `e4mc` và vô hiệu hóa `mcwifipnp` cũ).
 - [ ] **Hộp thoại xem Log LAN Agent trong app** (`lan_agent_log_dialog.py`): Hiện bản Rust mở thẳng file `mcw-lan-agent.log` bằng trình mặc định của HĐH.
 
 **Khác biệt logic / cần sửa cho khớp Python:**

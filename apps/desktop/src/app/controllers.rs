@@ -180,6 +180,7 @@ impl McwApp {
             self.edit_jvm_args_text.clear();
             self.edit_game_args_text.clear();
         }
+        self.mod_update_candidates.clear();
     }
 
     pub(crate) fn ensure_active_tab_loaded(&mut self, ctx: &egui::Context) {
@@ -1189,21 +1190,25 @@ impl McwApp {
             ));
             return;
         };
-        let task_id = self.begin_task(
+        let (task_id, task_ctrl) = self.begin_task_with_control(
             format!("Mod: {}", choice.file_name),
             format!("Downloading into {}...", inst.name),
         );
-        let dest = self
-            .paths
-            .minecraft_dir(&inst.instance_id)
-            .join("mods")
-            .join(&choice.file_name);
+        let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
+        let dest = mods_dir.join(&choice.file_name);
+        let picker_key = self.version_picker_key.clone();
+        let picker_title = self.version_picker_title.clone();
+        let cf_api_key = self.resolved_cf_api_key();
+        let cache_path = self.paths.cache_root.join("providers.sqlite");
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
             let res = async {
-                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
+                let downloader = DownloadClient::new()
+                    .map_err(|e| e.to_string())?
+                    .with_task_control(task_ctrl);
                 let req = mcw_net::DownloadRequest::new(url, dest)
                     .with_sha1(choice.sha1)
                     .with_size(choice.file_size);
@@ -1211,6 +1216,53 @@ impl McwApp {
                     .download_file(&req)
                     .await
                     .map_err(|e| e.to_string())?;
+
+                if let Some(slug) = picker_key.strip_prefix("mr:") {
+                    let _ = ModProvenanceRegistry::record_install(
+                        &inst_dir,
+                        TrackedModEntry {
+                            project_id: slug.to_string(),
+                            provider: "modrinth".to_string(),
+                            title: picker_title,
+                            file_name: choice.file_name.clone(),
+                            version_id: choice.id.clone(),
+                            version_number: choice.version_number.clone(),
+                            locked: false,
+                            managed_by: None,
+                        },
+                    );
+                } else if let Some(mid_str) = picker_key.strip_prefix("cf:") {
+                    let _ = ModProvenanceRegistry::record_install(
+                        &inst_dir,
+                        TrackedModEntry {
+                            project_id: mid_str.to_string(),
+                            provider: "curseforge".to_string(),
+                            title: picker_title,
+                            file_name: choice.file_name.clone(),
+                            version_id: choice.id.clone(),
+                            version_number: choice.version_number.clone(),
+                            locked: false,
+                            managed_by: None,
+                        },
+                    );
+                    if let (Ok(mod_id), Ok(file_id)) =
+                        (mid_str.parse::<u64>(), choice.id.parse::<u64>())
+                    {
+                        let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                        if let Ok(cf) = CurseForgeClient::new(cf_api_key, cache) {
+                            let _ = cf
+                                .install_required_dependencies_for_file(
+                                    mod_id,
+                                    file_id,
+                                    &inst.version_id,
+                                    &inst.mod_loader.name,
+                                    &mods_dir,
+                                    &downloader,
+                                )
+                                .await;
+                        }
+                    }
+                }
                 Ok::<String, String>(choice.file_name)
             }
             .await;
@@ -1220,6 +1272,124 @@ impl McwApp {
                 result: res,
             });
             ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_check_mod_updates(&mut self, ctx: &egui::Context) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        if self.checking_mod_updates {
+            return;
+        }
+        self.checking_mod_updates = true;
+        let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let cache_path = self.paths.cache_root.join("providers.sqlite");
+        let cf_key = self.resolved_cf_api_key();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+            let candidates = if let Ok(mr) = ModrinthClient::new(cache.clone()) {
+                let cf = CurseForgeClient::new(cf_key, cache).ok();
+                ModUpdateManager::check_updates(
+                    &inst_dir,
+                    &mc_dir,
+                    &inst.version_id,
+                    &inst.mod_loader.name,
+                    &mr,
+                    cf.as_ref(),
+                )
+                .await
+            } else {
+                Vec::new()
+            };
+            let _ = tx.send(AppEvent::ModUpdatesChecked {
+                instance_id: inst.instance_id,
+                candidates,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_apply_mod_updates(&mut self, ctx: &egui::Context) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        let candidates = self.mod_update_candidates.clone();
+        if !candidates.iter().any(|c| c.update_available && !c.locked) {
+            return;
+        }
+        let (task_id, task_ctrl) = self.begin_task_with_control(
+            format!("Update Mods ({})", inst.name),
+            "Downloading mod updates...",
+        );
+        let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let downloader = DownloadClient::new()
+                    .map_err(|e| e.to_string())?
+                    .with_task_control(task_ctrl);
+                ModUpdateManager::apply_updates(&inst_dir, &mc_dir, &candidates, &downloader)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+            let _ = tx.send(AppEvent::ModUpdatesApplied {
+                task_id,
+                instance_id: inst.instance_id,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_prepare_lan_hosting(&mut self, provider: String, ctx: &egui::Context) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        let (task_id, task_ctrl) = self.begin_task_with_control(
+            format!("LAN Hosting ({})", inst.name),
+            format!("Configuring {} LAN connection...", provider),
+        );
+        let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let cache_path = self.paths.cache_root.join("providers.sqlite");
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
+                let downloader = DownloadClient::new()
+                    .map_err(|e| e.to_string())?
+                    .with_task_control(task_ctrl);
+                LanHostingManager::prepare(
+                    &inst_dir,
+                    &mc_dir,
+                    &inst.version_id,
+                    &inst.mod_loader.name,
+                    &provider,
+                    &mr,
+                    &downloader,
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            .await;
+            let _ = tx.send(AppEvent::LanHostingPrepared {
+                task_id,
+                instance_id: inst.instance_id,
+                result: res,
+            });
+            ctx_c.request_repaint();
         });
     }
 
@@ -1817,6 +1987,58 @@ impl McwApp {
                         }
                     }
                 }
+                AppEvent::ModUpdatesChecked {
+                    instance_id,
+                    candidates,
+                } => {
+                    self.checking_mod_updates = false;
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                        let avail = candidates.iter().filter(|c| c.update_available).count();
+                        self.mod_update_candidates = candidates;
+                        self.notice_banner = Some((
+                            format!("Checked tracked mods: {avail} update(s) available."),
+                            false,
+                        ));
+                    }
+                }
+                AppEvent::ModUpdatesApplied {
+                    task_id,
+                    instance_id,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    match result {
+                        Ok(count) => {
+                            self.mods_cache.remove(&instance_id);
+                            self.mod_update_candidates.clear();
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                                self.load_mods_async(&instance_id, ctx, true);
+                            }
+                            self.notice_banner =
+                                Some((format!("Updated {count} mod(s) successfully."), false));
+                        }
+                        Err(err) => {
+                            self.notice_banner = Some((format!("Mod update failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::LanHostingPrepared {
+                    task_id,
+                    instance_id,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    match result {
+                        Ok(msg) => {
+                            self.mods_cache.remove(&instance_id);
+                            self.notice_banner = Some((msg, false));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("LAN hosting setup failed: {err}"), true));
+                        }
+                    }
+                }
                 AppEvent::ModsLoaded { instance_id, mods } => {
                     self.loading_mods.remove(&instance_id);
                     if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
@@ -2002,19 +2224,16 @@ impl McwApp {
                                     Some(("Game stopped by user.".to_string(), false));
                             }
                             ExitClassification::Crashed => {
-                                let hint = if rep.unsupported_class_version {
-                                    " A mod requires a newer Java version — check Settings -> Java."
-                                } else {
-                                    " Inspect the Logs tab for details."
-                                };
-                                self.notice_banner = Some((
-                                    format!("Game crashed (exit code {:?}).{hint}", rep.exit_code),
-                                    true,
-                                ));
+                                let diag = LaunchErrorPresenter::present(
+                                    &format!("exit code {:?}", rep.exit_code),
+                                    rep.unsupported_class_version,
+                                );
+                                self.notice_banner = Some((diag.banner_text(), true));
                             }
                         },
                         Err(err) => {
-                            self.notice_banner = Some((format!("Launch failed: {err}"), true));
+                            let diag = LaunchErrorPresenter::present(&err, false);
+                            self.notice_banner = Some((diag.banner_text(), true));
                         }
                     }
                 }

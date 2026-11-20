@@ -194,6 +194,202 @@ impl WorldManager {
         }
         Ok(())
     }
+
+    /// Back up a single world folder into `<target_dir>/world_<sanitized>_<epoch>.zip`
+    /// (1:1 port of Python `WorldManager.backup_world`).
+    pub fn backup_world(
+        mc_dir: &Path,
+        world_folder: &str,
+        target_dir: Option<&Path>,
+    ) -> crate::Result<PathBuf> {
+        if world_folder.contains('/') || world_folder.contains('\\') || world_folder.contains("..")
+        {
+            return Err(MinecraftError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid world folder name",
+            )));
+        }
+        let saves_dir = mc_dir.join("saves");
+        let source = saves_dir.join(world_folder);
+        if !source.is_dir() {
+            return Err(MinecraftError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("World folder '{world_folder}' does not exist."),
+            )));
+        }
+
+        let out_dir = target_dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| mc_dir.join("backups"));
+        fs::create_dir_all(&out_dir)?;
+
+        let epoch_secs = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let sanitized: String = world_folder
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let archive_name = format!("world_{sanitized}_{epoch_secs}.zip");
+        let archive_path = out_dir.join(archive_name);
+
+        let file = fs::File::create(&archive_path)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        for entry in WalkDir::new(&source).into_iter().flatten() {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let Ok(rel) = entry.path().strip_prefix(&saves_dir) else {
+                continue;
+            };
+            if rel.file_name().and_then(|n| n.to_str()) == Some("session.lock") {
+                continue;
+            }
+            let arc_name = rel.to_string_lossy().replace('\\', "/");
+            zip.start_file(arc_name, opts)?;
+            let mut src_f = fs::File::open(entry.path())?;
+            std::io::copy(&mut src_f, &mut zip)?;
+        }
+        zip.finish()?;
+        Ok(archive_path)
+    }
+
+    /// Restore a world backup `.zip` into `<mc_dir>/saves/` (1:1 port of Python `WorldManager.restore_world`).
+    pub fn restore_world(mc_dir: &Path, backup_path: &Path) -> crate::Result<String> {
+        Self::import_world(mc_dir, backup_path)
+    }
+
+    /// Import a world from either a directory or a `.zip` archive into `<mc_dir>/saves/`
+    /// (1:1 port of Python `WorldManager.import_world`).
+    pub fn import_world(mc_dir: &Path, source_path: &Path) -> crate::Result<String> {
+        let saves_dir = mc_dir.join("saves");
+        fs::create_dir_all(&saves_dir)?;
+
+        if source_path.is_dir() {
+            let base_name = source_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Imported World");
+            let mut target_name = base_name.to_string();
+            let mut counter = 1usize;
+            while saves_dir.join(&target_name).exists() {
+                target_name = format!("{base_name} ({counter})");
+                counter += 1;
+            }
+            let target = saves_dir.join(&target_name);
+            for entry in WalkDir::new(source_path).into_iter().flatten() {
+                let Ok(rel) = entry.path().strip_prefix(source_path) else {
+                    continue;
+                };
+                if rel.file_name().and_then(|n| n.to_str()) == Some("session.lock") {
+                    continue;
+                }
+                let dest = target.join(rel);
+                if entry.file_type().is_dir() {
+                    fs::create_dir_all(&dest)?;
+                } else if entry.file_type().is_file() {
+                    if let Some(p) = dest.parent() {
+                        fs::create_dir_all(p)?;
+                    }
+                    fs::copy(entry.path(), &dest)?;
+                }
+            }
+            return Ok(target_name);
+        }
+
+        if source_path.is_file() {
+            let file = fs::File::open(source_path)?;
+            let mut archive = zip::ZipArchive::new(file)?;
+            let mut level_prefix: Option<String> = None;
+            for i in 0..archive.len() {
+                if let Ok(entry) = archive.by_index(i) {
+                    let name = entry.name().replace('\\', "/");
+                    if name.starts_with("__MACOSX") {
+                        continue;
+                    }
+                    if name == "level.dat" || name.ends_with("/level.dat") {
+                        let parent = name.strip_suffix("level.dat").unwrap_or("");
+                        level_prefix = Some(parent.trim_end_matches('/').to_string());
+                        break;
+                    }
+                }
+            }
+
+            let stem = source_path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Imported World");
+            let base_name = match level_prefix.as_deref() {
+                Some(p) if !p.is_empty() && p != "." => Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(stem),
+                _ => stem,
+            };
+
+            let mut target_name = base_name.to_string();
+            let mut counter = 1usize;
+            while saves_dir.join(&target_name).exists() {
+                target_name = format!("{base_name} ({counter})");
+                counter += 1;
+            }
+            let target_dir = saves_dir.join(&target_name);
+            fs::create_dir_all(&target_dir)?;
+
+            let strip_prefix = level_prefix
+                .filter(|p| !p.is_empty() && p != ".")
+                .map(|p| format!("{p}/"));
+
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i)?;
+                if entry.is_dir() {
+                    continue;
+                }
+                let raw_name = entry.name().replace('\\', "/");
+                if raw_name.starts_with("__MACOSX") {
+                    continue;
+                }
+                let rel = if let Some(ref pref) = strip_prefix {
+                    let Some(r) = raw_name.strip_prefix(pref) else {
+                        continue;
+                    };
+                    r
+                } else {
+                    raw_name.as_str()
+                };
+                if rel.is_empty() || rel.contains("..") {
+                    continue;
+                }
+                let dest = target_dir.join(rel);
+                if let Some(p) = dest.parent() {
+                    fs::create_dir_all(p)?;
+                }
+                let mut out_f = fs::File::create(&dest)?;
+                std::io::copy(&mut entry, &mut out_f)?;
+            }
+            return Ok(target_name);
+        }
+
+        Err(MinecraftError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Source '{}' is neither a folder nor a zip archive.",
+                source_path.display()
+            ),
+        )))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -447,5 +643,12 @@ mod tests {
 
         WorldManager::delete_world(dir.path(), "my_world (Copy)").unwrap();
         assert_eq!(WorldManager::list_worlds(dir.path()).len(), 1);
+
+        // Backup & Restore / Import roundtrip
+        let backup_zip = WorldManager::backup_world(dir.path(), "my_world", None).unwrap();
+        assert!(backup_zip.is_file());
+        let restored_name = WorldManager::restore_world(dir.path(), &backup_zip).unwrap();
+        assert_eq!(restored_name, "my_world (1)");
+        assert_eq!(WorldManager::list_worlds(dir.path()).len(), 2);
     }
 }

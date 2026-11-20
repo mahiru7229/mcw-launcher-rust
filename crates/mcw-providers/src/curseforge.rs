@@ -121,6 +121,15 @@ pub struct CurseForgeLinks {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurseForgeDependency {
+    #[serde(rename = "modId")]
+    pub mod_id: u64,
+    /// CurseForge relationType: 1 = EmbeddedLibrary, 2 = OptionalDependency, 3 = RequiredDependency.
+    #[serde(rename = "relationType", default)]
+    pub relation_type: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurseForgeFile {
     pub id: u64,
     #[serde(rename = "modId")]
@@ -140,6 +149,8 @@ pub struct CurseForgeFile {
     pub game_versions: Vec<String>,
     #[serde(default)]
     pub hashes: Vec<CurseForgeHash>,
+    #[serde(default)]
+    pub dependencies: Vec<CurseForgeDependency>,
 }
 
 fn default_cf_release_type() -> u32 {
@@ -239,7 +250,8 @@ impl CurseForgeClient {
         Self::new(key, cache)
     }
 
-    /// Download and install the latest compatible mod `.jar` for `(mod_id, game_version, loader)`.
+    /// Download and install the latest compatible mod `.jar` for `(mod_id, game_version, loader)`,
+    /// automatically resolving required dependencies (`relationType == 3`) recursively.
     pub async fn install_mod(
         &self,
         mod_id: u64,
@@ -249,28 +261,100 @@ impl CurseForgeClient {
         mods_dir: &Path,
         downloader: &DownloadClient,
     ) -> Result<PathBuf> {
-        let files = self
-            .get_mod_files(mod_id, Some(game_version), Some(loader))
-            .await?;
-        let file = files
-            .into_iter()
-            .next()
-            .ok_or_else(|| ProviderError::NoCompatibleVersion {
-                project: slug
-                    .map(String::from)
-                    .unwrap_or_else(|| format!("mod-{mod_id}")),
-                game_version: game_version.to_string(),
-                loader: loader.to_string(),
-            })?;
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back((mod_id, slug.map(String::from)));
+        let mut primary_dest: Option<PathBuf> = None;
 
-        let url = file.require_download_url(slug)?;
         fs::create_dir_all(mods_dir)?;
-        let dest = mods_dir.join(&file.file_name);
-        let req = DownloadRequest::new(url, &dest)
-            .with_sha1(file.sha1())
-            .with_size(file.file_length);
-        downloader.download_file(&req).await?;
-        Ok(dest)
+
+        while let Some((cur_mod_id, cur_slug)) = queue.pop_front() {
+            if !visited.insert(cur_mod_id) {
+                continue;
+            }
+            let files = match self
+                .get_mod_files(cur_mod_id, Some(game_version), Some(loader))
+                .await
+            {
+                Ok(list) => list,
+                Err(err) if primary_dest.is_some() => {
+                    tracing::warn!(mod_id = cur_mod_id, error = %err, "Skipping unresolved transitive CurseForge dependency");
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let Some(file) = files.into_iter().next() else {
+                if primary_dest.is_none() {
+                    return Err(ProviderError::NoCompatibleVersion {
+                        project: cur_slug.unwrap_or_else(|| format!("mod-{cur_mod_id}")),
+                        game_version: game_version.to_string(),
+                        loader: loader.to_string(),
+                    });
+                }
+                continue;
+            };
+
+            for dep in &file.dependencies {
+                if dep.relation_type == 3 && !visited.contains(&dep.mod_id) {
+                    queue.push_back((dep.mod_id, None));
+                }
+            }
+
+            let url = match file.require_download_url(cur_slug.as_deref()) {
+                Ok(u) => u,
+                Err(err) if primary_dest.is_some() => {
+                    tracing::warn!(mod_id = cur_mod_id, error = %err, "Skipping opt-out transitive CurseForge dependency");
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let dest = mods_dir.join(&file.file_name);
+            let req = DownloadRequest::new(url, &dest)
+                .with_sha1(file.sha1())
+                .with_size(file.file_length);
+            downloader.download_file(&req).await?;
+            if primary_dest.is_none() {
+                primary_dest = Some(dest);
+            }
+        }
+
+        primary_dest.ok_or_else(|| ProviderError::NoCompatibleVersion {
+            project: slug
+                .map(String::from)
+                .unwrap_or_else(|| format!("mod-{mod_id}")),
+            game_version: game_version.to_string(),
+            loader: loader.to_string(),
+        })
+    }
+
+    /// Resolve and download required CurseForge dependencies (`relationType == 3`) for a specific `file_id`.
+    pub async fn install_required_dependencies_for_file(
+        &self,
+        mod_id: u64,
+        file_id: u64,
+        game_version: &str,
+        loader: &str,
+        mods_dir: &Path,
+        downloader: &DownloadClient,
+    ) -> Result<Vec<PathBuf>> {
+        let files = self.get_files_batch(&[file_id]).await?;
+        let Some(root_file) = files.into_iter().next() else {
+            return Ok(Vec::new());
+        };
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(mod_id);
+        let mut installed = Vec::new();
+        for dep in &root_file.dependencies {
+            if dep.relation_type == 3 && visited.insert(dep.mod_id) {
+                if let Ok(p) = self
+                    .install_mod(dep.mod_id, None, game_version, loader, mods_dir, downloader)
+                    .await
+                {
+                    installed.push(p);
+                }
+            }
+        }
+        Ok(installed)
     }
 
     /// Install a CurseForge resource pack or shader pack into `target_dir` (prefers matching
@@ -689,6 +773,7 @@ mod tests {
             download_url: None,
             game_versions: vec![],
             hashes: vec![],
+            dependencies: vec![],
         };
         let err = file.require_download_url(Some("cool-mod")).unwrap_err();
         assert!(matches!(err, ProviderError::ManualDownloadRequired { .. }));
