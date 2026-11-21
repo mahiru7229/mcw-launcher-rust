@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=../../assets/icons/mcw_launcher.ico");
+    #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
         let ico = std::path::Path::new("../../assets/icons/mcw_launcher.ico");
