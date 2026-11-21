@@ -32,7 +32,7 @@ All notable changes to **MCW Launcher: Rust Edition** are documented in this fil
 - **Content Browser Vertical Card Layout & Global Filters**: Fixed horizontal stacking in the Content Browser result list by wrapping split columns in explicit top-down layouts, added a global MC Version filter `ComboBox`, and set Modpacks default loader filters to `Fabric` (Modrinth) and `Forge` (CurseForge, ATLauncher, FTB).
 - **Versions Page Single Overall Scroll**: Made `Cached Versions` collapsible (`Show` / `Hide`) and removed the inner `max_height` scroll inside `Available Minecraft Versions` so the entire page scrolls smoothly together.
 - **Origin-Aware Modpack Export Formats**: Restricted Export Modpack formats by detected instance origin (`Modrinth` -> `.mrpack` + `.mcwpack`; `CurseForge` -> `CurseForge Modpack (.zip)` + `.mcwpack`; `ATLauncher`/`FTB` -> `Provider Profile (.zip)` + `.mcwpack`; manual/custom -> `.mcwpack` only).
-- **First-Run / Default Recommended RAM Formula**: Updated default max memory calculation to `max(4096 MB, 50% total RAM)` snapped to 256 MB steps (`<= total - 1024 MB` safety clamp on <= 4 GB PCs, 16384 MB cap).
+- **First-Run / Default Recommended RAM Formula**: Updated default max memory calculation to `max(4096 MB, 50% total RAM)` snapped to 256 MB steps (`<= total - 1024 MB` safety clamp on `<= 4 GB` PCs, `16384 MB` cap).
 - **Display Polish**: Title-cased mod loader and version type labels (`Vanilla`, `Fabric`, `Quilt`, `Forge`, `NeoForge`, `Release`, `Snapshot`, `Old Beta`, `Old Alpha`, `All Loaders`) across the UI while keeping lowercase JSON slugs; replaced all Unicode em/en-dashes in UI strings and window titles with ASCII `-`.
 
 ### Fixed
@@ -40,18 +40,20 @@ All notable changes to **MCW Launcher: Rust Edition** are documented in this fil
 - **OptiFine / Import Browse Label Leak**: Fixed raw `"common.browse"` key display by switching to the verified `instance_defaults.java.browse` localization key.
 
 ---
-## [0.13.0-beta.1] — 2026-11-21
+
+## [0.13.0-beta.1] - 2026-11-21
 
 ### Added
 - **Global `Ctrl+K` Quick Search (`quick_search.rs`)**: Top-bar compact `Search...  Ctrl K` trigger pill (`shell_nav.rs`) and centered in-app command palette overlay searching instances, pages (`Home`, `Servers`, `Versions`, `Logs`), Content Browser categories (`Mods`, `Modpacks`, `Resource packs`, `Shader packs`, `Data packs`), and quick actions with instant `Enter` selection and `Esc` / backdrop dismiss.
 
 ### Changed
-- **Full UI v2.0 Dialog & Component Restyle**: Upgraded remaining sharp `CornerRadius::same(2..4)` tokens across Create Instance, Modpack Install, Version Picker, Accounts, Manual Downloads, First-Run Wizard, Update Dialog, Repair Center, Global Logs, About, LAN Agent Log, Launcher Settings cards, flyout cards, right-click context menu, thumbnails, account avatars, and group/tag badges to cohesive UI v2.0 radii (`6px–14px`), rounded Create Instance pill tabs, translucent bottom Tasks Bar (`p.glass(...)`), and consistent `Esc`-to-close across all secondary OS viewports.
+- **Full UI v2.0 Dialog & Component Restyle**: Upgraded remaining sharp `CornerRadius::same(2..4)` tokens across Create Instance, Modpack Install, Version Picker, Accounts, Manual Downloads, First-Run Wizard, Update Dialog, Repair Center, Global Logs, About, LAN Agent Log, Launcher Settings cards, flyout cards, right-click context menu, thumbnails, account avatars, and group/tag badges to cohesive UI v2.0 radii (`6px-14px`), rounded Create Instance pill tabs, translucent bottom Tasks Bar (`p.glass(...)`), and consistent `Esc`-to-close across all secondary OS viewports.
 - **Simple Animation Polish (`shell.rs`)**: Smoothed active task progress bars using `animate_value_with_time` (`self.motion_secs(0.15)`) and gated indeterminate spinner animation on `MotionMode::Off`.
 - **SOLID & Maintenance Cleanup**: Extracted the in-app Launcher Settings modal into `apps/desktop/src/app/views/settings_modal.rs` (bringing `dialogs.rs` down to ~2.2k lines), removed dead mod-install events/helpers (`CurseForgeModInstallFinished`, `ModrinthInstallFinished`, `apply_theme`), cleaned stale `#[allow(dead_code)]` attributes, wired additional official i18n keys, and synced `README.md`, `DESIGN.md`, and `docs/BACKLOG.md`.
 
 ---
-## [0.12.0-beta.1] — 2026-11-21
+
+## [0.12.0-beta.1] - 2026-11-21
 
 ### Added
 - **Home / Instance Page (`home_page.rs`)**: Horizon-style hero header (icon, title, playtime/mod/world stats, responsive group/tag pills), large `Play` button, `•••` Actions menu (consolidating all instance management actions), quick vector icon actions (Add Content, Open Folder, Edit Settings), and one floating translucent tabbed panel (`Mods`, `Worlds`, `Resource packs`, `Shaders`, `Screenshots`, `Backups`, `Logs`, `Settings`).
@@ -65,10 +67,11 @@ All notable changes to **MCW Launcher: Rust Edition** are documented in this fil
 - Replaced interim v0.11 top-bar destinations with dedicated `Home`, `Mods` (OS window), `Servers`, `Versions`, and `Logs` views.
 
 ---
-## [0.11.0-beta.1] — 2026-11-20
+
+## [0.11.0-beta.1] - 2026-11-20
 
 ### Added
-- **UI v2.0 foundation (Horizon-style, see DESIGN.md)**: full-window background picture (user PNG/JPEG/WebP or a bundled procedural pixel landscape) with *Panel opacity* and *Background dimming* sliders in Launcher Settings → Appearance (no blur).
+- **UI v2.0 foundation (Horizon-style, see DESIGN.md)**: full-window background picture (user PNG/JPEG/WebP or a bundled procedural pixel landscape) with *Panel opacity* and *Background dimming* sliders in Launcher Settings -> Appearance (no blur).
 - **Theme presets**: Violet (new default), Sunrise, Neon, Ocean, plus the classic Emerald (`dark`) and Light; custom accent and `themes/*.json` keep working.
 - **New shell**: floating top pill navigation (Home, Mods, Servers, Versions, Logs), slim instance icon rail with status dots and right-click menu, instance flyout (search, favorites, groups, tags).
 - **Launcher Settings is now an in-app centered modal** with category list + search (Esc / click outside to close).
@@ -76,10 +79,60 @@ All notable changes to **MCW Launcher: Rust Edition** are documented in this fil
 
 ### Changed
 - Global corner radii enlarged; panels are translucent over the background.
-- Interim nav wiring until v0.12 pages: Servers → instance Settings tab, Versions → Settings → Storage, Logs → Global Logs window.
+- Interim nav wiring until v0.12 pages: Servers -> instance Settings tab, Versions -> Settings -> Storage, Logs -> Global Logs window.
 
 ---
-## [0.5.0-beta.1] — 2026-11-19
+
+## [0.10.0-beta.1] - 2026-11-20
+
+### Added
+- **Stage 5 Full Python Parity**: Completed final parity modules across the core workspace (`92df5aa`):
+  - **Shared Content Store (`mcw-storage::content_store`) & Content Library (`mcw-mods::library`)**: Content-addressed SHA-256 hardlink deduplication across instances plus unified library scanning and pin flags.
+  - **Managed OptiFine Lifecycle (`mcw-minecraft::optifine`)**: Transactional Forge-based OptiFine validation, install/rollback, registry tracking, and clean uninstall.
+  - **Forge Preflight Analyzer (`mcw-minecraft::preflight`)**: Pre-launch mod compatibility confirmation policies and sanitized loader diagnostics `.zip` export.
+  - **LAN & Legacy Compatibility (`mcw-minecraft::lan_targets`, `legacy_libloader`)**: Mojang/Tiny mappings parser, JVM bytecode method table resolver, and embedded legacy library loader extraction.
+  - **Pack Registry & Java Diagnostics (`mcw-providers::pack_registry`, `mcw-runtime::java_diagnostics`, `mcw-models::policy`)**: FTB/ATLauncher persistent registries, export origin detection, optional-file inspection (`.mrpack` / CurseForge), detailed Java runtime diagnostics + managed uninstaller, and dedicated LAN Agent Log OS window (`stage5_dialogs.rs`).
+
+---
+
+## [0.9.0-beta.1] - 2026-11-20
+
+### Added
+- **Stage 4 Security, Compatibility & Diagnostics**:
+  - **Token Integrity & Network Controls**: RFC-2104 HMAC-SHA256 verification on encrypted `AccountStore` refresh tokens (`mcw-auth::integrity`), global MB/s bandwidth limiter (`mcw-net::bandwidth`), and optional runtime CurseForge API key override.
+  - **Mod Compatibility & Instance Health**: Loader mismatch, duplicate mod & missing dependency checks (`mcw-mods::compat`), instance health repair scanning + startup stale lock/staging orphan recovery (`mcw-storage::health`).
+  - **GPU Preference & OS Windows**: Windows DirectX high-performance GPU preference registry support (`mcw-runtime::gpu`), native window activation (`mcw-runtime::window_activator`), and dedicated Repair Center, Global Logs & About OS windows (`stage4_dialogs.rs`).
+
+### Changed
+- **Updater Disabled (`mcw_updater::UPDATES_ENABLED = false`)**: Disabled in-app self-updates (`e262586`) and removed the legacy Python/Cloudflare update channel while preserving the Rust-Edition GitHub Releases checker/installer scaffold.
+
+---
+
+## [0.8.0-beta.1] - 2026-11-20
+
+### Added
+- **Stage 1 - Runtime, Cloning & Organization**: JVM Flag Presets (`Default`, `Aikar`, `ZGC`, `Shenandoah`), Windows classpath compactor (`compactor.rs`), instance cloning & runtime/loader switcher, sidebar search + Favorites/Groups/Tags with responsive auto-sized pill badges, and `.mcwpack` portable import/export.
+- **Stage 2 - Providers, LAN & World Backups**: `ModProvenanceRegistry` & `ModUpdateManager` with version locking, recursive CurseForge dependencies, `LanHostingManager`, per-world backup/restore/import, `LaunchErrorPresenter` & `DiagnosticsExporter`, SHA-1 `VerificationCache`, async `SaveFileDialog`/`OpenFileDialog`, mod version channel/version/loader filters, and schema 2.1 diagnostics.
+- **Stage 3 - Appearance, Hardware Scan & Maintenance**: Microsoft skin face avatars (`mcw-auth::skin`, `skin_render.rs`), Discord IPC Rich Presence (`mcw-runtime::discord_rpc`), initial `FirstRunRecommendation` hardware/RAM/Java wizard, `StorageCleanupService` inspector & unreferenced version pruner (`mcw-storage::cleanup`), external `themes/*.json` pack loading + custom accent hex picker, and `mcw-updater::installer` scaffold (`stage3_dialogs.rs`).
+
+### Changed
+- **SOLID Architectural Refactor**: Split monolithic GUI state (`e763106`) into cohesive `controllers.rs`, `platform.rs`, and focused view modules (`views/`) and introduced the `InstanceRepository` storage trait.
+
+---
+
+## [0.6.0-beta.1] - 2026-11-19
+
+### Added
+- **Worlds, Screenshots, Packs & Logs**: Worlds Manager with Quick Play (`--quickPlaySingleplayer`), Screenshots gallery manager, sanitized `mclo.gs` log uploads, and Resource Packs / Shader Packs management with Modrinth & CurseForge browsing.
+- **Bilingual i18n & OptiFine / LAN Agent**: Ported official MCW Python `LanguageManager` reusing embedded `lang/en-US.json` and `lang/vi-VN.json`, added OptiFine installer support and embedded MCW LAN Agent (`mcw_lan_agent`), and rebuilt Launcher Settings sections from MCW Python.
+- **Rich Modpack & Content UX**: Direct FTB / ATLauncher / Modrinth modpack installs, 3-mode Modpack Export (`.mrpack`, CurseForge `.zip`, `.mcwpack`), async preview thumbnails, Version Picker & Modpack Install config dialog (Beta/Alpha channels, RAM, Java, Open Web), live download speed readout, and inline Pause/Cancel controls.
+
+### Changed
+- Preferred `javaw.exe` (suppressing extra console windows on Windows), isolated sub-windows into centered OS viewports, and switched the GitHub Release workflow to manual-only (`be36bca`, `5cfae45`).
+
+---
+
+## [0.5.0-beta.1] - 2026-11-19
 
 ### Added
 - **Modpack Installer**: `.mrpack` (Modrinth) and CurseForge `.zip` archive import, plus CurseForge Modpacks, FTB, and ATLauncher search browsers inside the `Create Instance` window.
@@ -91,24 +144,24 @@ All notable changes to **MCW Launcher: Rust Edition** are documented in this fil
 - **Launcher Settings Window**: Dedicated separate window accessible via top-right vector gear icon with `Appearance` tab (`Dark (Default)` / `Light` theme).
 - **Backup & Safe Rollback Restore** (`mcw-storage::backup`) and **Instance Repair** (`mcw-minecraft::repair`).
 - **Python 1.8.x Migration** (`mcw-storage::migration`, `mcw-cli migrate`) with `--dry-run` support.
-- **GitHub Actions CI & Release Workflows** for automated Windows & Linux builds and size-optimized release binaries.
+- **Compile-Time Encrypted CurseForge API Key (`build.rs`) & CI/Release Workflows**: Automated Windows & Linux GitHub Actions builds with per-build SHA-256 CTR obfuscation for embedded API keys (`cdd049a`) and size-optimized release profile.
 
-### Improved
+### Changed
 - **Instant Instance Switching**: Replaced synchronous `mods/` & `backups/` scanning on click with lightweight cache sync + lazy async Tokio background loading.
 - **Button Typography & Sizing**: Removed cramped `.small()` buttons globally and tuned `button_padding` so all controls auto-size cleanly around their text.
 - **Download Reliability**: Deduplicated concurrent library download requests and switched temp files to unique `.{pid}-{seq}.part` names.
 
 ---
 
-## [0.4.0-alpha.1]
+## [0.4.0-alpha.1] - 2026-11-19
 
 ### Added
-- Initial native desktop GUI (`apps/desktop`, `egui`/`eframe`) implementing `DESIGN.md` (Dark Slate + Light theme, Emerald accent, Master–Detail layout).
+- Initial native desktop GUI (`apps/desktop`, `egui`/`eframe`) implementing `DESIGN.md` (Dark Slate + Light theme, Emerald accent, Master-Detail layout).
 - Microsoft OAuth PKCE & Device Code sign-in with cancellation support and Windows DPAPI encrypted refresh token storage.
 
 ---
 
-## [0.3.0-alpha.1]
+## [0.3.0-alpha.1] - 2026-11-19
 
 ### Added
 - `mcw-mods`: Parallel `rayon` `.jar` metadata scanner (Fabric, Forge, NeoForge, Jar-in-Jar) and mod enable/disable/delete manager.
@@ -117,7 +170,7 @@ All notable changes to **MCW Launcher: Rust Edition** are documented in this fil
 
 ---
 
-## [0.2.0-alpha.1]
+## [0.2.0-alpha.1] - 2026-11-19
 
 ### Added
 - Instance CRUD + `InstanceRunLock`.
@@ -128,7 +181,7 @@ All notable changes to **MCW Launcher: Rust Edition** are documented in this fil
 
 ---
 
-## [0.1.0-alpha.1]
+## [0.1.0-alpha.1] - 2026-11-19
 
 ### Added
 - Initial Cargo workspace (`mcw-models`, `mcw-storage`, `mcw-net`, `mcw-auth`, `mcw-runtime`, `mcw-minecraft`, `apps/cli`).

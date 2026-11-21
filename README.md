@@ -125,7 +125,7 @@ Output binary:
 ## GitHub Actions CI & Releases
 
 - **CI** (`.github/workflows/ci.yml`): Runs automatically on push/PR — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` on both `windows-latest` and `ubuntu-latest`.
-- **Release** (`.github/workflows/release.yml`): **Manual-only** via **Actions -> Release Build -> Run workflow** (`workflow_dispatch`). Builds stripped, LTO-optimized Windows (`x64`) and Linux (`x64`) release archives with SHA-256 checksums.
+- **Release** (`.github/workflows/release.yml`): Does **not** trigger on `git push` or tag pushes. Triggers only when a GitHub Release is published (`release: [published]`) or via manual **Actions -> Release Build -> Run workflow** (`workflow_dispatch`) targeting an **already-created GitHub Release**. Validates the SemVer tag against `Cargo.toml`, builds stripped LTO Windows (`x64`) and Linux (`x64`) archives, and uploads binaries + `SHA256SUMS.txt` onto that Release.
 
 ---
 

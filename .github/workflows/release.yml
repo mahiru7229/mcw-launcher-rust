@@ -1,22 +1,91 @@
 name: Release Build
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version tag to publish (e.g. v0.6.0-beta.1). Leave empty to only build downloadable artifacts."
-        required: false
-        default: ""
+        description: "Existing GitHub Release tag to build and attach assets to (e.g. v0.13.2-beta.1)"
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  release-gate:
+    name: Validate GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+
+    steps:
+      - name: Resolve and verify created GitHub Release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          TAG="$(echo "$TAG" | xargs)"
+          if [[ -z "$TAG" ]]; then
+            echo "::error::Release tag is required."
+            exit 1
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "::error::Invalid SemVer release tag '$TAG'. Expected vX.Y.Z or vX.Y.Z-(alpha|beta|rc).N."
+            exit 1
+          fi
+
+          # Strictly ensure an existing GitHub Release has already been created for this tag.
+          REL_JSON="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease 2>/dev/null || true)"
+          if [[ -z "$REL_JSON" ]]; then
+            echo "::error::No GitHub Release found for tag '$TAG'. Create the GitHub Release first; pushing code or tags alone does not trigger releases."
+            exit 1
+          fi
+
+          IS_PRERELEASE="$(python3 -c "import json, sys; print(str(json.loads(sys.argv[1]).get('isPrerelease', False)).lower())" "$REL_JSON")"
+          if [[ "$TAG" == *-* && "$IS_PRERELEASE" != "true" ]]; then
+            echo "::warning::Tag '$TAG' includes a pre-release suffix, but the GitHub Release is not marked as pre-release."
+          elif [[ "$TAG" != *-* && "$IS_PRERELEASE" == "true" ]]; then
+            echo "::warning::Stable tag '$TAG' is marked as pre-release on GitHub."
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+
+      - name: Verify Cargo.toml version matches release tag
+        env:
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="${RELEASE_TAG#v}"
+          CARGO_VER="$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version'])")"
+          if [[ "$CARGO_VER" != "$EXPECTED" ]]; then
+            echo "::error::Cargo.toml workspace version ($CARGO_VER) does not match release tag $RELEASE_TAG."
+            exit 1
+          fi
+          echo "Verified Cargo.toml version: $CARGO_VER"
+
   build:
     name: Build Release (${{ matrix.target_name }})
+    needs: release-gate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -30,8 +99,10 @@ jobs:
             ext: ""
 
     steps:
-      - name: Checkout repository
+      - name: Checkout release tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-gate.outputs.tag }}
 
       - name: Install Linux GUI dependencies
         if: runner.os == 'Linux'
@@ -62,6 +133,7 @@ jobs:
           Copy-Item "target/release/mcw-desktop.exe" "$stage/MCW-Launcher.exe"
           Copy-Item "target/release/mcw-cli.exe" "$stage/mcw-cli.exe"
           Copy-Item ".env.example" "$stage/.env.example"
+          Copy-Item "CHANGELOG.md" "$stage/CHANGELOG.md"
           Copy-Item "README.md" "$stage/README.md"
           Copy-Item "LICENSE" "$stage/LICENSE"
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/mcw-launcher-windows-x64.zip" -Force
@@ -78,7 +150,7 @@ jobs:
           cp target/release/mcw-desktop "$STAGE/mcw-launcher"
           cp target/release/mcw-cli "$STAGE/mcw-cli"
           chmod +x "$STAGE/mcw-launcher" "$STAGE/mcw-cli"
-          cp .env.example README.md LICENSE "$STAGE/"
+          cp .env.example CHANGELOG.md README.md LICENSE "$STAGE/"
           tar -C dist -czf dist/mcw-launcher-linux-x64.tar.gz mcw-launcher-linux-x64
           (cd dist && sha256sum mcw-launcher-linux-x64.tar.gz > mcw-launcher-linux-x64.tar.gz.sha256)
           ls -lh target/release/mcw-desktop dist/mcw-launcher-linux-x64.tar.gz
@@ -91,11 +163,11 @@ jobs:
             dist/mcw-launcher-*.zip
             dist/mcw-launcher-*.tar.gz
             dist/*.sha256
+          if-no-files-found: error
 
-  publish:
-    name: Publish GitHub Release
-    needs: build
-    if: inputs.tag != ''
+  publish-assets:
+    name: Upload Assets to GitHub Release
+    needs: [release-gate, build]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -104,21 +176,26 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Combine SHA256SUMS
+      - name: Verify archives and combine SHA256SUMS
+        shell: bash
         run: |
+          set -euo pipefail
           cd release-assets
+          test -f mcw-launcher-windows-x64.zip
+          test -f mcw-launcher-linux-x64.tar.gz
+          sha256sum --check ./*.sha256
           cat *.sha256 > SHA256SUMS.txt
           rm -f *.sha256
           ls -lh
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          draft: false
-          prerelease: ${{ contains(inputs.tag, '-') }}
-          generate_release_notes: true
-          files: |
-            release-assets/mcw-launcher-windows-x64.zip
-            release-assets/mcw-launcher-linux-x64.tar.gz
-            release-assets/SHA256SUMS.txt
+      - name: Upload assets to existing GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: >-
+          gh release upload "${{ needs.release-gate.outputs.tag }}"
+          release-assets/mcw-launcher-windows-x64.zip
+          release-assets/mcw-launcher-linux-x64.tar.gz
+          release-assets/SHA256SUMS.txt
+          --repo "${{ github.repository }}"
+          --clobber
