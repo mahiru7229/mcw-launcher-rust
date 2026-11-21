@@ -2,6 +2,17 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.0.0] - 2026-11-22
+
+### Added
+- **Official Cloudflare Edge CDN Auto-Updater (`UPDATES_ENABLED = true`)**: Enabled launcher self-updates for **MCW Launcher: Rust Edition** (`crates/mcw-updater`) targeting the Rust release feed first via `https://mcw-download.pages.dev/releases/rust/manifest.json` (`CLOUDFLARE_RUST_MANIFEST_URL`), with automatic failover to GitHub Releases (`mahiru7229/mcw-launcher-rust`).
+- **SHA-256 Digest Verification & Mirror Failover**: Extended `ReleaseInfo` and `UpdateInstaller::download_and_stage` to extract platform archive SHA-256 digests (`sha256` / GitHub `digest`), verify streamed downloads byte-for-byte before staging (`sha2::Sha256`), exclude checksum/signature files (`.txt`, `.sha256`, `.sig`) from binary selection, and automatically fail over across `mirror_urls` if a CDN edge or upstream request fails.
+
+### Changed
+- **First Official General Availability Release (`1.0.0`)**: Promoted workspace version from `1.0.0-rc.1` to `1.0.0` with standalone transactional `mcw-updater`, Method 2 fallback script rollback, inline `Mod & Modpacks`, Back/Forward `<` / `>` shell navigation, animated startup splash, staged UI Scale `Apply`, universal `Enable MCW LAN Agent` creation opt-in, and safe Python Launcher migration.
+
+---
+
 ## [1.0.0-rc.1] - 2026-11-22
 
 ### Added

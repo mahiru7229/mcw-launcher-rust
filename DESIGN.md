@@ -144,4 +144,11 @@ Changes to foundational identity (palette model, typography, icon system, naviga
 4. **UI Scale Staged Apply & Warning**: *Appearance -> UI Scale* uses staged `pending_ui_scale_pct` with an explicit **Apply Scale** button so the slider never shifts mid-drag, plus a high-scale (`> 125%`) layout warning.
 5. **`Enable MCW LAN Agent` Across Every Instance Creation Flow**: Exposed `"Enable MCW LAN Agent"` consistently across Custom creation, Import Local Archive, Online Modpack Install Dialog, and Global Install Destination -> Create New Instance (`apply_lan_agent_option`).
 6. **First-Run Setup Step 0 Python Migration Entry**: Added a `"Migrating from MCW Launcher Python?"` card directly in First-Run Setup Welcome launching `mcw_vp_python_import`.
-7. **Standalone `mcw-updater` GUI + Transactional Fallback**: Built `apps/updater` (`mcw-updater.exe` / `mcw-updater`) with protected user directories, transactional backup + automatic rollback, `"Launch Previous Version"` recovery action, and automatic fallback to Method 2 detached scripts (also with `$backupDir` rollback). Auto-updating remains gated (`mcw_updater::UPDATES_ENABLED = false`) until official `v1.0.0`.
+7. **Standalone `mcw-updater` GUI + Transactional Fallback**: Built `apps/updater` (`mcw-updater.exe` / `mcw-updater`) with protected user directories, transactional backup + automatic rollback, `"Launch Previous Version"` recovery action, and automatic fallback to Method 2 detached scripts (also with `$backupDir` rollback). Auto-updating remained gated (`UPDATES_ENABLED = false`) during RC.
+
+---
+
+## 13. Official General Availability Release (`v1.0.0` - Completed)
+
+1. **Auto-Updater Enabled (`mcw_updater::UPDATES_ENABLED = true`)**: Switched on Stable & Beta release checking from startup preferences and *Launcher Settings -> Updates*, wired primarily to `https://mcw-download.pages.dev/releases/rust/manifest.json` (`mcw-download` Cloudflare Edge CDN) with automatic failover to GitHub Releases API (`mahiru7229/mcw-launcher-rust`).
+2. **CDN + Mirror Failover & SHA-256 Verification**: `UpdateInstaller::download_and_stage` streams downloads through `sha2::Sha256`, verifies digests before atomic rename, skips checksum text files (`SHA256SUMS.txt`), and falls back across deduplicated `mirror_urls` cleanly.

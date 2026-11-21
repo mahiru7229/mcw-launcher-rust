@@ -1,10 +1,41 @@
 use crate::{ReleaseInfo, Result, UpdateError};
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Ordered list of download URLs for an update package: primary Edge CDN URL first,
+/// followed by deduplicated fallback mirrors (e.g., direct GitHub Releases URL).
+pub fn candidate_download_urls(release: &ReleaseInfo) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(primary) = release
+        .download_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        urls.push(primary.to_string());
+    }
+    for m in &release.mirror_urls {
+        let trimmed = m.trim();
+        if !trimmed.is_empty() && !urls.iter().any(|u| u == trimmed) {
+            urls.push(trimmed.to_string());
+        }
+    }
+    urls
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
+}
 
 #[derive(Debug, Clone)]
 pub struct StagedUpdate {
@@ -18,30 +49,28 @@ pub struct StagedUpdate {
 pub struct UpdateInstaller;
 
 impl UpdateInstaller {
-    /// Download and stage a release archive/binary under `staging_root/<version>/<asset_name>`.
+    /// Download and stage a release archive/binary under `staging_root/<version>/<asset_name>`,
+    /// trying the primary URL (Cloudflare Edge CDN) first with automatic failover to mirrors
+    /// and SHA-256 verification when a digest is present.
     pub async fn download_and_stage(
         release: &ReleaseInfo,
         staging_root: &Path,
         progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
     ) -> Result<StagedUpdate> {
-        let download_url = release
-            .download_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                UpdateError::InstallFailed(
-                    "Release does not provide a downloadable package asset for this platform."
-                        .to_string(),
-                )
-            })?;
+        let urls = candidate_download_urls(release);
+        let primary_url = urls.first().ok_or_else(|| {
+            UpdateError::InstallFailed(
+                "Release does not provide a downloadable package asset for this platform."
+                    .to_string(),
+            )
+        })?;
 
         let asset_name = release
             .asset_name
             .clone()
             .filter(|s| !s.trim().is_empty())
             .or_else(|| {
-                download_url
+                primary_url
                     .split(['/', '?'])
                     .rfind(|seg| !seg.is_empty() && seg.contains('.'))
                     .map(String::from)
@@ -58,33 +87,73 @@ impl UpdateInstaller {
             .timeout(Duration::from_secs(300))
             .build()?;
 
-        let mut resp = http.get(download_url).send().await?.error_for_status()?;
-        let total = resp.content_length().or(release.asset_size).unwrap_or(0);
+        let expected_sha = release
+            .sha256
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| s.len() == 64);
 
-        let mut file = fs::File::create(&tmp_path)?;
-        let mut downloaded: u64 = 0;
-        while let Some(bytes) = resp.chunk().await? {
-            file.write_all(&bytes)?;
-            downloaded += bytes.len() as u64;
-            if let Some(ref cb) = progress {
-                cb(downloaded, total.max(downloaded));
+        let mut last_error: Option<UpdateError> = None;
+
+        for url in &urls {
+            let _ = fs::remove_file(&tmp_path);
+            let attempt: Result<u64> = async {
+                let mut resp = http.get(url).send().await?.error_for_status()?;
+                let total = resp.content_length().or(release.asset_size).unwrap_or(0);
+
+                let mut file = fs::File::create(&tmp_path)?;
+                let mut hasher = Sha256::new();
+                let mut downloaded: u64 = 0;
+                while let Some(bytes) = resp.chunk().await? {
+                    file.write_all(&bytes)?;
+                    hasher.update(&bytes);
+                    downloaded += bytes.len() as u64;
+                    if let Some(ref cb) = progress {
+                        cb(downloaded, total.max(downloaded));
+                    }
+                }
+                file.flush()?;
+                drop(file);
+
+                if let Some(ref expected) = expected_sha {
+                    let actual = sha256_hex(&hasher.finalize());
+                    if &actual != expected {
+                        let _ = fs::remove_file(&tmp_path);
+                        return Err(UpdateError::InstallFailed(format!(
+                            "SHA-256 verification failed for {asset_name} (expected {expected}, got {actual})"
+                        )));
+                    }
+                }
+                Ok(downloaded)
+            }
+            .await;
+
+            match attempt {
+                Ok(downloaded) => {
+                    if staged_path.exists() {
+                        let _ = fs::remove_file(&staged_path);
+                    }
+                    fs::rename(&tmp_path, &staged_path)?;
+
+                    return Ok(StagedUpdate {
+                        version: release.version.clone(),
+                        tag_name: release.tag_name.clone(),
+                        asset_name,
+                        staged_path,
+                        size_bytes: downloaded,
+                    });
+                }
+                Err(err) => {
+                    let _ = fs::remove_file(&tmp_path);
+                    tracing::warn!("Update download attempt from {url} failed: {err}");
+                    last_error = Some(err);
+                }
             }
         }
-        file.flush()?;
-        drop(file);
 
-        if staged_path.exists() {
-            let _ = fs::remove_file(&staged_path);
-        }
-        fs::rename(&tmp_path, &staged_path)?;
-
-        Ok(StagedUpdate {
-            version: release.version.clone(),
-            tag_name: release.tag_name.clone(),
-            asset_name,
-            staged_path,
-            size_bytes: downloaded,
-        })
+        Err(last_error.unwrap_or_else(|| {
+            UpdateError::InstallFailed("All update download sources failed.".to_string())
+        }))
     }
 
     /// Locate the external standalone updater binary next to the installed launcher executable.
@@ -451,6 +520,8 @@ mod tests {
             notes: String::new(),
             html_url: String::new(),
             download_url: None,
+            mirror_urls: Vec::new(),
+            sha256: None,
             asset_name: None,
             asset_size: None,
         };
@@ -459,5 +530,38 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, UpdateError::InstallFailed(_)));
+    }
+
+    #[test]
+    fn candidate_download_urls_orders_cdn_first_then_deduped_mirrors() {
+        let release = ReleaseInfo {
+            tag_name: "v1.0.0".to_string(),
+            version: "1.0.0".to_string(),
+            prerelease: false,
+            source: "cloudflare-cdn".to_string(),
+            notes: String::new(),
+            html_url: String::new(),
+            download_url: Some(
+                "https://mcw-download.pages.dev/releases/rust/v1.0.0/mcw-launcher-windows-x64.zip"
+                    .to_string(),
+            ),
+            mirror_urls: vec![
+                "https://mcw-download.pages.dev/releases/rust/v1.0.0/mcw-launcher-windows-x64.zip"
+                    .to_string(),
+                "https://github.com/mahiru7229/mcw-launcher-rust/releases/download/v1.0.0/mcw-launcher-windows-x64.zip"
+                    .to_string(),
+            ],
+            sha256: Some(sha256_hex(&[0xaa, 0xbb])),
+            asset_name: Some("mcw-launcher-windows-x64.zip".to_string()),
+            asset_size: None,
+        };
+        assert_eq!(
+            candidate_download_urls(&release),
+            vec![
+                "https://mcw-download.pages.dev/releases/rust/v1.0.0/mcw-launcher-windows-x64.zip",
+                "https://github.com/mahiru7229/mcw-launcher-rust/releases/download/v1.0.0/mcw-launcher-windows-x64.zip",
+            ]
+        );
+        assert_eq!(release.sha256.as_deref(), Some("aabb"));
     }
 }

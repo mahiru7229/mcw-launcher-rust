@@ -1,6 +1,6 @@
 # MCW Launcher: Rust Edition
 
-[![Status](https://img.shields.io/badge/status-v1.0.0--rc.1-7C3AED?style=flat-square)](#)
+[![Status](https://img.shields.io/badge/status-v1.0.0-7C3AED?style=flat-square)](#)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -11,11 +11,11 @@
 
 ## Performance & Footprint (vs. MCW Launcher Python)
 
-| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v1.0.0-rc.1`) |
+| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v1.0.0`) |
 | --- | --- | --- |
 | **Idle / Active RAM** | ~150 MB | **~60-70 MB** (~55-60% lower memory footprint) |
 | **Runtime Performance** | Baseline | **~2x faster** UI responsiveness, mod scanning, and concurrent downloads |
-| **Package Size** | Larger (bundled Python + Qt runtime) | **Lighter (`10.14 MiB / 10.63 MB` main binary + `3.58 MiB / 3.75 MB` standalone `mcw-updater`)** - zero bundled Python/Qt runtime |
+| **Package Size** | Larger (bundled Python + Qt runtime) | **Lighter (`10.16 MiB / 10.65 MB` main binary + `3.58 MiB / 3.75 MB` standalone `mcw-updater`)** - zero bundled Python/Qt runtime |
 
 ---
 
@@ -42,7 +42,7 @@
   - `.class` bytecode inspection (`0xCAFEBABE`), JVM flag presets, and Win32 Job Object process supervision with live log streaming, crash classification, `mclo.gs` upload, sanitized issue report Markdown/URL builder, and diagnostic `.zip` export.
 - **Storage, Maintenance & Updater Status**
   - **Shared Content Store** SHA-256 hardlink deduplication, **Backup & Safe Rollback Restore**, **Instance Repair & Mod Compatibility Analyzer**, **CLI Migration** (`mcw-cli migrate`), and **GUI Safe Python Launcher Importer** (`mcw_vp_python_import` supporting both Python 2.x/v0.5+ flat layouts and legacy 1.8.x `.minecraft` layouts via non-destructive read-only copy).
-  - **Updater Status**: Standalone transactional updater executable (`apps/updater` -> `mcw-updater.exe` / `mcw-updater` with Method 2 detached script fallback and automatic rollback) is ready; `mcw_updater::UPDATES_ENABLED` remains `false` for `v1.0.0-rc.1` and will be enabled in the official `v1.0.0` release.
+  - **Updater Status**: Enabled (`mcw_updater::UPDATES_ENABLED = true`). Checks Cloudflare Edge CDN (`https://mcw-download.pages.dev/releases/rust/manifest.json`) first with automatic failover to GitHub Releases (`mahiru7229/mcw-launcher-rust`) and SHA-256 verification before launching the standalone transactional `mcw-updater` GUI (plus detached script rollback fallback).
 
 ---
 
@@ -63,7 +63,7 @@ mcw-launcher-rust/
     ├── mcw-minecraft/    # Mojang manifest, libraries, classpath, NBT servers, Fabric/Quilt/Forge/NeoForge/OptiFine
     ├── mcw-mods/         # Parallel rayon .jar metadata scanner (Fabric/Forge/NeoForge/JiJ) & content managers
     ├── mcw-providers/    # Modrinth, CurseForge, FTB, ATLauncher, Modpack installer, SQLite WAL cache
-    └── mcw-updater/      # Updater crate (UPDATES_ENABLED = false; Rust-Edition GitHub Releases scaffold)
+    └── mcw-updater/      # Updater crate (UPDATES_ENABLED = true; Cloudflare Edge CDN + GitHub failover + SHA-256)
 ```
 
 ---
