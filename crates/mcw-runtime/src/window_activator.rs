@@ -25,11 +25,11 @@ impl GameWindowActivator {
     /// Best-effort non-blocking delayed focus helper: polls briefly for the game window
     /// of `pid` (filtering out 0x0 or dummy `<100x100` OpenGL helper windows) and activates it.
     pub fn focus_process_window_delayed(pid: u32) {
-        if pid == 0 {
-            return;
-        }
         #[cfg(target_os = "windows")]
         {
+            if pid == 0 {
+                return;
+            }
             let _ = std::thread::Builder::new()
                 .name("mcw-win-activator".to_string())
                 .spawn(move || {
@@ -40,6 +40,10 @@ impl GameWindowActivator {
                         }
                     }
                 });
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = pid;
         }
     }
 
