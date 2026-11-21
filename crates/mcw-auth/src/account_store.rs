@@ -1,6 +1,8 @@
 use crate::{AccountIntegrity, AuthError, Result};
 use mcw_models::account::AccountSource;
-use mcw_storage::{atomic_write_bytes, atomic_write_json, atomic_write_text, LauncherPaths};
+#[cfg(windows)]
+use mcw_storage::atomic_write_bytes;
+use mcw_storage::{atomic_write_json, atomic_write_text, LauncherPaths};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;

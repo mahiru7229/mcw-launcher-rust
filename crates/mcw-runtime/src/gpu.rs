@@ -244,11 +244,11 @@ impl GpuPreferenceManager {
 
     /// Best-effort Windows DirectX High-Performance GPU preference registration for `java_exe`.
     pub fn apply_windows_java_preference(java_exe: &Path, prefer_dedicated: bool) {
-        if !prefer_dedicated {
-            return;
-        }
         #[cfg(target_os = "windows")]
         {
+            if !prefer_dedicated {
+                return;
+            }
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             let key = format!(r"HKCU\{WINDOWS_GPU_PREF_REG_PATH}");
@@ -270,7 +270,7 @@ impl GpuPreferenceManager {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = java_exe;
+            let _ = (java_exe, prefer_dedicated);
         }
     }
 

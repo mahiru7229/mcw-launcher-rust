@@ -37,6 +37,7 @@ pub(crate) fn enable_windows_dpi_awareness() {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn window_size_for_resolution(phys_w: i32, phys_h: i32, dpi_scale: f32) -> [f32; 2] {
     let scale = if dpi_scale.is_finite() && dpi_scale > 0.5 {
         dpi_scale
