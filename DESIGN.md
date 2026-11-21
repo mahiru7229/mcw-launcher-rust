@@ -122,3 +122,14 @@ Changes to foundational identity (palette model, typography, icon system, naviga
 5. **Interactive Forge/NeoForge Preflight Confirmation**: `mcw_vp_preflight_confirm` pauses launch cleanly when preflight encounters confirmation-policy issues, offering `"Launch anyway this time"`, `"Always allow for this instance"` (persisted on `InstanceSettings`), or `"Cancel"`.
 6. **Sanitized Issue Report Builder & Dialog**: `IssueReportBuilder` (`mcw-runtime`) + `mcw_vp_issue_report` generate privacy-scrubbed Markdown bug reports with diagnostics `.zip` export and one-click pre-filled GitHub Issue creation.
 7. **Connectivity Monitor, Download Journal, Theme Issues & Unsaved Settings Guard**: Top-bar `"Offline"` status badge + re-check (`ConnectivityMonitor`), `DownloadJournal` core persistence, `"Theme Issues (N)"` validator dialog (`mcw_vp_theme_issues`), and `"Unsaved Changes"` confirmation (`mcw_vp_unsaved_changes`) when leaving edited Instance Settings.
+
+---
+
+## 11. Typography, Account UX, i18n Completeness & Python Migration (`v0.15.0-beta.1` - Completed)
+
+1. **Manual Downloads Responsive OS Window**: Pin footer in `TopBottomPanel::bottom`, render `Open Page` right-aligned first with wrapping filenames/IDs, add `Browse...` folder picker, and auto-expand vertical `ScrollArea`.
+2. **DPI-Aware Initial Window Size**: Call Windows Per-Monitor v2 DPI awareness before `default_window_size_for_screen()`, convert `1600x900` (`>=1920x1080`) and `1280x720` (`>=1366x768`) targets accurately to logical points, upgrade stale `window_size_schema_version < 2`, and defer user-resize detection by 2 seconds after launch.
+3. **Auto-Open Accounts on Missing/Expired Auth**: Keep launch/play buttons clickable and immediately open/focus `Accounts` whenever no account is active or launch fails with a token/authentication expiration error.
+4. **Custom Font, UI Scale & Font Size**: Scan OS `.ttf`/`.otf` fonts via SFNT `name` table in `theme.rs` with Segoe UI/Noto fallback, expose Font `ComboBox`, `UI Scale` (`75%-175%`), and `Font Size` (`10-22 px`) controls in *Appearance* with live preview and reset.
+5. **English i18n Completeness + Translation % Notice**: Maintain complete English keys in `lang/en-US.json` (never machine-translating `lang/vi-VN.json`) and display exact completion percentage + untranslated English fallback notice in First-Run Setup Step 1 and *Launcher Settings -> General*.
+6. **Safe Python Launcher Migration (`mcw_vp_python_import`)**: Read-only source inspection & copy-only migration (`inspect_python_launcher`, `migrate_from_python_launcher`) supporting Python 2.x flat instances and legacy 1.8.x `.minecraft/` layouts, normalizing `.mcw/` provenance & modpack registries, sanitizing custom Java paths, and warning clearly that encrypted DPAPI tokens in `accounts/accounts.db` require fresh sign-in.

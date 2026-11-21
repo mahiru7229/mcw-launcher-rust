@@ -197,6 +197,36 @@ impl LanguageManager {
         }
         text
     }
+
+    /// Computes translation completeness `(translated_keys, total_default_keys, percent)`
+    /// for `locale` relative to `en-US`. Untranslated keys automatically fall back to English.
+    pub fn translation_completion(&self, locale: &str) -> (usize, usize, u8) {
+        let total = self.default_translations.len();
+        if total == 0 {
+            return (0, 0, 100);
+        }
+        let normalized = Self::normalize_locale(locale);
+        if normalized.eq_ignore_ascii_case(DEFAULT_LOCALE) {
+            return (total, total, 100);
+        }
+        let translated = self
+            .languages
+            .get(&normalized)
+            .map(|pack| {
+                self.default_translations
+                    .keys()
+                    .filter(|k| {
+                        pack.translations
+                            .get(*k)
+                            .map(|v| !v.trim().is_empty())
+                            .unwrap_or(false)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        let percent = ((translated * 100) / total).min(100) as u8;
+        (translated, total, percent)
+    }
 }
 
 /// Persisted global launcher preferences (`config/launcher_settings.json`),
@@ -277,6 +307,22 @@ pub struct LauncherPrefs {
     pub panel_opacity: f32,
     #[serde(default = "default_background_dim")]
     pub background_dim: f32,
+    #[serde(default)]
+    pub window_size_schema_version: u32,
+    #[serde(default)]
+    pub custom_font_family: String,
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
+}
+
+fn default_ui_scale() -> f32 {
+    1.0
+}
+
+fn default_font_size() -> f32 {
+    13.0
 }
 
 fn default_panel_opacity() -> f32 {
@@ -387,6 +433,10 @@ impl Default for LauncherPrefs {
             background_image_path: String::new(),
             panel_opacity: default_panel_opacity(),
             background_dim: default_background_dim(),
+            window_size_schema_version: 2,
+            custom_font_family: String::new(),
+            ui_scale: default_ui_scale(),
+            font_size: default_font_size(),
         }
     }
 }
@@ -433,5 +483,13 @@ mod tests {
             mgr.tr("modpack_package.export.title"),
             "modpack_package.export.title"
         );
+
+        let (en_tr, en_tot, en_pct) = mgr.translation_completion("en-US");
+        assert_eq!(en_tr, en_tot);
+        assert_eq!(en_pct, 100);
+        let (vi_tr, vi_tot, vi_pct) = mgr.translation_completion("vi-VN");
+        assert_eq!(vi_tot, en_tot);
+        assert!(vi_tr < vi_tot);
+        assert!(vi_pct < 100);
     }
 }

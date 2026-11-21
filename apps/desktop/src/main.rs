@@ -20,12 +20,16 @@ fn main() -> eframe::Result {
         .with_target(false)
         .init();
 
+    app::platform::enable_windows_dpi_awareness();
+
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let paths = LauncherPaths::portable(root);
     let _ = paths.initialize();
     let prefs = i18n::LauncherPrefs::load(&paths);
     let screen_default = app::platform::default_window_size_for_screen();
-    let init_size = if prefs.remember_window_size
+    const CURRENT_WINDOW_SIZE_SCHEMA: u32 = 2;
+    let init_size = if prefs.window_size_schema_version >= CURRENT_WINDOW_SIZE_SCHEMA
+        && prefs.remember_window_size
         && prefs.window_size_customized
         && prefs.window_width >= 840.0
         && prefs.window_height >= 560.0

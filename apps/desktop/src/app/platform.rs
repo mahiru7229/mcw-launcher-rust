@@ -2,24 +2,74 @@ use crate::theme::ThemePalette;
 use eframe::egui::{self, CornerRadius, Stroke, Vec2};
 use std::path::PathBuf;
 
+pub(crate) fn enable_windows_dpi_awareness() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetModuleHandleA(lp_module_name: *const u8) -> *mut core::ffi::c_void;
+            fn GetProcAddress(
+                h_module: *mut core::ffi::c_void,
+                lp_proc_name: *const u8,
+            ) -> *const core::ffi::c_void;
+        }
+        #[link(name = "user32")]
+        extern "system" {
+            fn SetProcessDPIAware() -> i32;
+        }
+
+        let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast::<u8>());
+        if !user32.is_null() {
+            let proc_addr = GetProcAddress(
+                user32,
+                c"SetProcessDpiAwarenessContext".as_ptr().cast::<u8>(),
+            );
+            if !proc_addr.is_null() {
+                type SetCtxFn = unsafe extern "system" fn(*mut core::ffi::c_void) -> i32;
+                let set_ctx: SetCtxFn = core::mem::transmute(proc_addr);
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = (DPI_AWARENESS_CONTEXT)-4
+                if set_ctx((-4isize) as *mut core::ffi::c_void) != 0 {
+                    return;
+                }
+            }
+        }
+        let _ = SetProcessDPIAware();
+    }
+}
+
 pub(crate) fn window_size_for_resolution(phys_w: i32, phys_h: i32, dpi_scale: f32) -> [f32; 2] {
     let scale = if dpi_scale.is_finite() && dpi_scale > 0.5 {
         dpi_scale
     } else {
         1.0
     };
+    let logical_screen_w = if phys_w > 0 {
+        phys_w as f32 / scale
+    } else {
+        1920.0
+    };
+    let logical_screen_h = if phys_h > 0 {
+        phys_h as f32 / scale
+    } else {
+        1080.0
+    };
+
     let [target_w, target_h] = if phys_w >= 1920 && phys_h >= 1080 {
-        [1600.0_f32, 900.0_f32]
+        if logical_screen_w >= 1920.0 && logical_screen_h >= 1080.0 {
+            [1600.0_f32, 900.0_f32]
+        } else {
+            [1600.0_f32 / scale, 900.0_f32 / scale]
+        }
     } else if phys_w >= 1366 && phys_h >= 768 {
-        [1280.0_f32, 720.0_f32]
+        [1280.0_f32 / scale, 720.0_f32 / scale]
     } else {
         let w = if phys_w > 0 {
-            (phys_w as f32 * 0.88).clamp(840.0, 1280.0)
+            ((phys_w as f32 * 0.88) / scale).clamp(840.0, 1280.0)
         } else {
             1280.0
         };
         let h = if phys_h > 0 {
-            (phys_h as f32 * 0.88).clamp(560.0, 720.0)
+            ((phys_h as f32 * 0.88) / scale).clamp(560.0, 720.0)
         } else {
             720.0
         };
@@ -27,20 +77,28 @@ pub(crate) fn window_size_for_resolution(phys_w: i32, phys_h: i32, dpi_scale: f3
     };
 
     if phys_w > 0 && phys_h > 0 {
-        let max_logical_w = ((phys_w as f32 / scale) - 16.0).max(840.0);
-        let max_logical_h = ((phys_h as f32 / scale) - 40.0).max(560.0);
+        let max_logical_w = (logical_screen_w - 16.0).max(840.0);
+        let max_logical_h = (logical_screen_h - 40.0).max(560.0);
         [
-            target_w.min(max_logical_w).max(840.0),
-            target_h.min(max_logical_h).max(560.0),
+            target_w.round().min(max_logical_w).max(840.0),
+            target_h.round().min(max_logical_h).max(560.0),
         ]
     } else {
-        [target_w, target_h]
+        [target_w.round(), target_h.round()]
     }
 }
 
 pub(crate) fn default_window_size_for_screen() -> [f32; 2] {
     #[cfg(target_os = "windows")]
     {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetModuleHandleA(lp_module_name: *const u8) -> *mut core::ffi::c_void;
+            fn GetProcAddress(
+                h_module: *mut core::ffi::c_void,
+                lp_proc_name: *const u8,
+            ) -> *const core::ffi::c_void;
+        }
         #[link(name = "user32")]
         extern "system" {
             fn GetDC(hwnd: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
@@ -68,10 +126,21 @@ pub(crate) fn default_window_size_for_screen() -> [f32; 2] {
                 }
                 ReleaseDC(core::ptr::null_mut(), hdc);
             }
+            let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast::<u8>());
+            if !user32.is_null() {
+                let proc_addr = GetProcAddress(user32, c"GetDpiForSystem".as_ptr().cast::<u8>());
+                if !proc_addr.is_null() {
+                    type GetDpiFn = unsafe extern "system" fn() -> u32;
+                    let get_dpi: GetDpiFn = core::mem::transmute(proc_addr);
+                    let sys_dpi = get_dpi();
+                    if sys_dpi >= 96 {
+                        dpi_scale = sys_dpi as f32 / 96.0;
+                    }
+                }
+            }
             if phys_w <= 0 || phys_h <= 0 {
                 phys_w = GetSystemMetrics(0);
                 phys_h = GetSystemMetrics(1);
-                dpi_scale = 1.0;
             }
             if phys_w > 0 && phys_h > 0 {
                 return window_size_for_resolution(phys_w, phys_h, dpi_scale);
@@ -297,6 +366,52 @@ pub(crate) fn pick_file_dialog_async(
     });
 }
 
+pub(crate) fn pick_folder_dialog(title: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let safe_title = title.replace('\'', "''");
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $owner = New-Object System.Windows.Forms.Form; \
+             $owner.TopMost = $true; \
+             $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
+             $d.Description = '{safe_title}'; \
+             $d.ShowNewFolderButton = $false; \
+             $res = $d.ShowDialog($owner); \
+             $owner.Dispose(); \
+             if ($res -eq 'OK') {{ Write-Output $d.SelectedPath }}"
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-STA", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(s))
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = title;
+        None
+    }
+}
+
+pub(crate) fn pick_folder_dialog_async(
+    title: String,
+    on_done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        let picked = pick_folder_dialog(&title);
+        on_done(picked);
+    });
+}
+
 pub(crate) fn save_file_dialog(
     title: &str,
     filter: &str,
@@ -502,10 +617,15 @@ mod tests {
     #[test]
     fn selects_expected_default_window_sizes_for_1080p_and_768p() {
         assert_eq!(window_size_for_resolution(1920, 1080, 1.0), [1600.0, 900.0]);
+        assert_eq!(
+            window_size_for_resolution(1920, 1080, 1.25),
+            [1280.0, 720.0]
+        );
         assert_eq!(window_size_for_resolution(2560, 1440, 1.0), [1600.0, 900.0]);
+        assert_eq!(window_size_for_resolution(3840, 2160, 2.0), [1600.0, 900.0]);
         assert_eq!(window_size_for_resolution(1366, 768, 1.0), [1280.0, 720.0]);
-        let scaled = window_size_for_resolution(1920, 1080, 1.25);
-        assert!(scaled[0] <= (1920.0 / 1.25) - 16.0);
-        assert!(scaled[1] <= (1080.0 / 1.25) - 40.0);
+        let scaled = window_size_for_resolution(1366, 768, 1.25);
+        assert!(scaled[0] <= (1366.0 / 1.25) - 16.0);
+        assert!(scaled[1] <= (768.0 / 1.25) - 40.0);
     }
 }

@@ -2,6 +2,20 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [0.15.0-beta.1] - 2026-11-21
+
+### Added
+- **Custom System Font, UI Scale & Font Size Controls**: Added SFNT font discovery (`scan_system_fonts()`), `UI Font` `ComboBox` selector (`Default (System UI)` + installed `.ttf`/`.otf` fonts), live `UI Scale` (`75%`–`175%`), `Font Size` (`10`–`22 px`) controls, and English/Vietnamese preview in *Launcher Settings -> Appearance*, persisted in `LauncherPrefs`.
+- **Safe Import / Migration from MCW Launcher Python (`mcw_vp_python_import`)**: Added read-only `inspect_python_launcher` and copy-only `migrate_from_python_launcher` in `mcw-storage`, supporting both modern Python 2.x/v0.5+ flat instances (UUID `id` remapping, nested `settings.json`, `icon_origin` objects, `.mcw/*-pack.json` and `mod-provenance.json` schema normalization, Java runtime path sanitization) and legacy 1.8.x `.minecraft/` layouts, plus optional global settings, Java runtimes (`runtimes/java-*`), custom themes, conflict strategy (`Skip` / `RenameImported`), and clear DPAPI `accounts.db` re-login warning. Accessible from *Launcher Settings -> Storage* and *Create Instance -> Modpacks*.
+- **Full English i18n Key Coverage & Language Completion Indicator**: Populated all missing desktop UI keys in `lang/en-US.json` (while preserving `lang/vi-VN.json` for manual translation) and added dynamic translation completeness calculation (`LanguageManager::translation_completion`) displaying completion `%` and incomplete-translation guidance inside First-Run Setup Step 1 and *Launcher Settings -> General*.
+
+### Fixed
+- **Manual Downloads Responsive Layout (`mcw_vp_manual_downloads`)**: Fixed overflowing filenames and off-screen `Open Page` buttons by reserving the action button first (`Layout::right_to_left`), wrapping text/instructions cleanly, pinning the footer bar, adding a native `Browse...` folder picker, and letting the `ScrollArea` occupy remaining viewport height cleanly.
+- **Initial Window Sizing (`1600x900` on `1920x1080`, `1280x720` on `1366x768`)**: Enabled Windows Per-Monitor v2 DPI awareness before screen measurement in `main.rs`, divided physical targets by monitor DPI scaling to logical points accurately, gated legacy auto-saved dimensions with `window_size_schema_version = 2`, and added a 2-second startup grace window before setting `window_size_customized`.
+- **Auto-Open Accounts on Missing Account or Expired Token**: Kept Launch / Quick Play / Join Server buttons actionable when signed out and added `is_account_or_token_error` detection on launch/refresh failures to immediately open and focus the Accounts OS window.
+
+---
+
 ## [0.14.0-beta.1] - 2026-11-21
 
 ### Added

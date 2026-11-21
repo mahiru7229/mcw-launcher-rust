@@ -100,6 +100,7 @@ impl McwApp {
                         ui.separator();
                         ui.add_space(8.0);
 
+                        let auth_notice_hint = self.t("accounts.auth_required_notice").to_string();
                         let mut remove_idx: Option<usize> = None;
                         let mut join_ip: Option<String> = None;
 
@@ -157,8 +158,7 @@ impl McwApp {
                                                             false,
                                                         ));
                                                     }
-                                                    let can_join =
-                                                        quick_play_ok && has_account && !busy;
+                                                    let can_join = quick_play_ok && !busy;
                                                     let join_btn = Button::new(
                                                         RichText::new("Join")
                                                             .color(p.accent_text)
@@ -171,12 +171,10 @@ impl McwApp {
                                                         resp.on_disabled_hover_text(
                                                             "Direct server Quick Play requires Minecraft 1.20 or newer.",
                                                         );
-                                                    } else if !has_account {
-                                                        resp.on_disabled_hover_text(
-                                                            "Sign in or add an account first.",
-                                                        );
                                                     } else if resp.clicked() {
                                                         join_ip = Some(srv.ip.clone());
+                                                    } else if !has_account {
+                                                        resp.on_hover_text(&auth_notice_hint);
                                                     }
                                                 },
                                             );

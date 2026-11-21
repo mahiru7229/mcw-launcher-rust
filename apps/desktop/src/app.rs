@@ -13,7 +13,8 @@ use crate::state::{
 };
 use crate::theme::{
     apply_custom_accent, apply_theme_palette, configure_fonts, format_hex_color, parse_hex_color,
-    MotionMode, ThemeCatalog, ThemeMode, ThemePalette,
+    resolve_custom_font_path, scan_system_fonts, MotionMode, SystemFontEntry, ThemeCatalog,
+    ThemeMode, ThemePalette,
 };
 use eframe::egui::{
     self, Align, Button, Color32, CornerRadius, Frame, Layout, RichText, ScrollArea, Stroke,
@@ -58,9 +59,11 @@ use mcw_runtime::{
     LogLine, LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
-    BackupInfo, BackupManager, CachedVersionInfo, ContentStore, ContentStoreStats, HealthSeverity,
+    inspect_python_launcher, migrate_from_python_launcher, BackupInfo, BackupManager,
+    CachedVersionInfo, ConflictStrategy, ContentStore, ContentStoreStats, HealthSeverity,
     InstanceHealthManager, InstanceHealthReport, InstanceHealthState, InstanceRunLock,
-    InstanceStore, LauncherPaths, StartupRecoveryService, StorageCleanupService, StorageSummary,
+    InstanceStore, LauncherPaths, PythonMigrationInspection, PythonMigrationOptions,
+    PythonMigrationResult, StartupRecoveryService, StorageCleanupService, StorageSummary,
     UnusedVersionCandidate,
 };
 use mcw_updater::{ReleaseInfo, UpdateChannel, UpdateCheckResult, UpdateChecker, UpdateInstaller};
@@ -420,7 +423,6 @@ pub struct McwApp {
     account_integrity_ok: bool,
     cf_api_key_input: String,
     cf_api_key_revealed: bool,
-    initial_window_size: [f32; 2],
     last_window_size: [f32; 2],
 
     // Stage 5 / v0.13.2: Java Diagnostics OS Window & Latest Adoptium Release
@@ -490,6 +492,24 @@ pub struct McwApp {
     pending_tab_switch: Option<DetailTab>,
     pending_instance_switch: Option<String>,
     show_unsaved_changes_window: bool,
+
+    // v0.15: Window sizing stability, custom font selector & Python launcher importer
+    window_ready_at: Instant,
+    settled_window_size: Option<[f32; 2]>,
+    system_fonts: Vec<SystemFontEntry>,
+    show_python_import_window: bool,
+    python_import_path_input: String,
+    python_import_folder_picking: bool,
+    python_import_inspecting: bool,
+    python_import_inspection: Option<PythonMigrationInspection>,
+    python_import_error: Option<String>,
+    python_import_selected: HashSet<String>,
+    python_import_conflict: ConflictStrategy,
+    python_import_global_settings: bool,
+    python_import_runtimes: bool,
+    python_import_themes: bool,
+    python_import_running: bool,
+    python_import_result: Option<PythonMigrationResult>,
 }
 
 impl McwApp {
@@ -498,13 +518,24 @@ impl McwApp {
         paths: LauncherPaths,
         init_size: [f32; 2],
     ) -> Self {
-        configure_fonts(&cc.egui_ctx);
-        let prefs = LauncherPrefs::load(&paths);
+        let mut prefs = LauncherPrefs::load(&paths);
+        if prefs.window_size_schema_version < 2 {
+            prefs.window_size_schema_version = 2;
+            prefs.window_size_customized = false;
+            prefs.window_width = init_size[0];
+            prefs.window_height = init_size[1];
+            prefs.save(&paths);
+        }
+        let system_fonts = scan_system_fonts();
+        let custom_font_path = resolve_custom_font_path(&prefs.custom_font_family, &system_fonts);
+        configure_fonts(&cc.egui_ctx, custom_font_path.as_deref());
+        cc.egui_ctx
+            .set_zoom_factor(prefs.ui_scale.clamp(0.75, 1.75));
+
         mcw_net::set_global_bandwidth_limit_mbps(prefs.download_limit_mbps);
         let cf_api_key_input =
             load_custom_curseforge_api_key(&paths.config_root).unwrap_or_default();
         let account_integrity_ok = AccountStore::new(&paths).verify_integrity();
-        let initial_window_size = init_size;
         let last_window_size = init_size;
         let theme_catalog = ThemeCatalog::load(&paths.theme_root);
         let motion_mode = MotionMode::parse(&prefs.motion_mode);
@@ -516,8 +547,14 @@ impl McwApp {
             let _ = apply_custom_accent(&mut active_pal, &custom_accent_input);
         }
         let lang = LanguageManager::load(&paths, &prefs.normalized_locale());
-        let palette = apply_theme_palette(&cc.egui_ctx, theme_mode, active_pal, motion_mode)
-            .glass(prefs.panel_opacity);
+        let palette = apply_theme_palette(
+            &cc.egui_ctx,
+            theme_mode,
+            active_pal,
+            motion_mode,
+            prefs.font_size,
+        )
+        .glass(prefs.panel_opacity);
         let init_show_snapshots = prefs.show_snapshots;
         let first_run_language = prefs.normalized_locale();
         let first_run_auto_updates = prefs.auto_check_updates;
@@ -753,7 +790,6 @@ impl McwApp {
             account_integrity_ok,
             cf_api_key_input,
             cf_api_key_revealed: false,
-            initial_window_size,
             last_window_size,
             java_diagnostics: Vec::new(),
             java_scanning: false,
@@ -814,6 +850,22 @@ impl McwApp {
             pending_tab_switch: None,
             pending_instance_switch: None,
             show_unsaved_changes_window: false,
+            window_ready_at: Instant::now(),
+            settled_window_size: None,
+            system_fonts,
+            show_python_import_window: false,
+            python_import_path_input: String::new(),
+            python_import_folder_picking: false,
+            python_import_inspecting: false,
+            python_import_inspection: None,
+            python_import_error: None,
+            python_import_selected: HashSet::new(),
+            python_import_conflict: ConflictStrategy::Skip,
+            python_import_global_settings: true,
+            python_import_runtimes: true,
+            python_import_themes: true,
+            python_import_running: false,
+            python_import_result: None,
         };
 
         app.content_store_stats = Some(ContentStore::stats(&app.paths));
@@ -875,10 +927,13 @@ impl eframe::App for McwApp {
             let size = rect.size();
             if size.x >= 840.0 && size.y >= 560.0 {
                 self.last_window_size = [size.x, size.y];
-                if (size.x - self.initial_window_size[0]).abs() > 8.0
-                    || (size.y - self.initial_window_size[1]).abs() > 8.0
-                {
-                    self.prefs.window_size_customized = true;
+                // Wait 2s after startup so initial DPI/non-client frame settlement
+                // never falsely marks `window_size_customized = true`.
+                if self.window_ready_at.elapsed() >= Duration::from_secs(2) {
+                    let settled = *self.settled_window_size.get_or_insert([size.x, size.y]);
+                    if (size.x - settled[0]).abs() > 12.0 || (size.y - settled[1]).abs() > 12.0 {
+                        self.prefs.window_size_customized = true;
+                    }
                 }
             }
         }

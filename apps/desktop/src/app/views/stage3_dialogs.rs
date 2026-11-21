@@ -339,6 +339,149 @@ impl McwApp {
             });
             ui.add_space(8.0);
         }
+
+        // Card 4: Custom System Font, UI Scale & Font Size
+        let typo_title = self.t("appearance.typography.title").to_string();
+        let typo_detail = self.t("appearance.typography.detail").to_string();
+        let font_lbl = self.t("appearance.font.label").to_string();
+        let scale_lbl = self.t("appearance.scale.label").to_string();
+        let font_size_lbl = self.t("appearance.font_size.label").to_string();
+        if crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                &typo_title,
+                &typo_detail,
+                &font_lbl,
+                &scale_lbl,
+                &font_size_lbl,
+                "font family custom typography ui scale zoom font size text size dpi",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                crate::app::views::settings_modal::render_settings_search_badge(ui, p, &cat_title);
+            }
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(&typo_title).strong());
+                    ui.label(RichText::new(&typo_detail).size(11.0).color(p.text_muted));
+                    ui.add_space(8.0);
+
+                    let default_font_lbl = self.t("appearance.font.default").to_string();
+                    let refresh_lbl = self.t("appearance.font.refresh").to_string();
+                    let reset_lbl = self.t("appearance.reset").to_string();
+                    let cur_font_disp = if self.prefs.custom_font_family.trim().is_empty() {
+                        default_font_lbl.clone()
+                    } else {
+                        self.prefs.custom_font_family.clone()
+                    };
+                    let mut font_changed = false;
+                    let mut picked_font = self.prefs.custom_font_family.clone();
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(&font_lbl);
+                        let combo_w = auto_combo_width(ui, &cur_font_disp, 200.0, 340.0);
+                        egui::ComboBox::from_id_salt("launcher_settings_font_combo")
+                            .selected_text(&cur_font_disp)
+                            .width(combo_w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(
+                                        picked_font.trim().is_empty(),
+                                        &default_font_lbl,
+                                    )
+                                    .clicked()
+                                {
+                                    picked_font.clear();
+                                    font_changed = true;
+                                }
+                                for font in &self.system_fonts {
+                                    let selected = picked_font.eq_ignore_ascii_case(&font.name);
+                                    if ui.selectable_label(selected, &font.name).clicked()
+                                        && !selected
+                                    {
+                                        picked_font = font.name.clone();
+                                        font_changed = true;
+                                    }
+                                }
+                            });
+                        if ui.button(&refresh_lbl).clicked() {
+                            self.system_fonts = crate::theme::scan_system_fonts();
+                            font_changed = true;
+                        }
+                    });
+                    if font_changed {
+                        self.prefs.custom_font_family = picked_font;
+                        self.apply_typography_and_scale(ctx);
+                        *prefs_dirty = true;
+                    }
+
+                    ui.add_space(6.0);
+                    let mut scale_pct = (self.prefs.ui_scale * 100.0).round();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(&scale_lbl);
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut scale_pct, 75.0..=175.0)
+                                    .step_by(5.0)
+                                    .suffix("%"),
+                            )
+                            .changed()
+                        {
+                            self.prefs.ui_scale = (scale_pct / 100.0).clamp(0.75, 1.75);
+                            self.apply_typography_and_scale(ctx);
+                            *prefs_dirty = true;
+                        }
+                        if (self.prefs.ui_scale - 1.0).abs() > 0.01
+                            && ui.button(format!("{reset_lbl} (100%)")).clicked()
+                        {
+                            self.prefs.ui_scale = 1.0;
+                            self.apply_typography_and_scale(ctx);
+                            *prefs_dirty = true;
+                        }
+                    });
+
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(&font_size_lbl);
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.prefs.font_size, 10.0..=22.0)
+                                    .step_by(0.5)
+                                    .suffix(" px"),
+                            )
+                            .changed()
+                        {
+                            self.prefs.font_size = self.prefs.font_size.clamp(10.0, 22.0);
+                            self.apply_current_theme(ctx);
+                            *prefs_dirty = true;
+                        }
+                        if (self.prefs.font_size - 13.0).abs() > 0.1
+                            && ui.button(format!("{reset_lbl} (13 px)")).clicked()
+                        {
+                            self.prefs.font_size = 13.0;
+                            self.apply_current_theme(ctx);
+                            *prefs_dirty = true;
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    let preview_txt = self.t("appearance.font.preview").to_string();
+                    ui.label(
+                        RichText::new(preview_txt)
+                            .size(self.prefs.font_size)
+                            .color(p.text_muted),
+                    );
+                });
+            ui.add_space(8.0);
+        }
         matched
     }
 
@@ -598,6 +741,43 @@ impl McwApp {
                     self.start_content_store_dedup(ctx);
                 }
             });
+            ui.add_space(8.0);
+        }
+
+        // Card 4: Safe Import from MCW Launcher Python
+        let py_imp_title = self.t("python_import.card_title").to_string();
+        let py_imp_desc = self.t("python_import.card_detail").to_string();
+        let py_imp_btn = self.t("python_import.open_button").to_string();
+        if crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                &py_imp_title,
+                &py_imp_desc,
+                &py_imp_btn,
+                "import migrate python mcw launcher old instances settings java themes",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                crate::app::views::settings_modal::render_settings_search_badge(ui, p, &cat_title);
+            }
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(&py_imp_title).strong());
+                    ui.label(RichText::new(&py_imp_desc).size(11.5).color(p.text_muted));
+                    ui.add_space(8.0);
+                    let btn = Button::new(RichText::new(&py_imp_btn).color(p.accent_text).strong())
+                        .fill(p.accent);
+                    if ui.add(btn).clicked() {
+                        self.open_python_import_window(ctx);
+                    }
+                });
             ui.add_space(8.0);
         }
         matched
@@ -1079,12 +1259,21 @@ impl McwApp {
                                             ui.set_width(ui.available_width());
                                             ui.horizontal_wrapped(|ui| {
                                                 ui.label(self.t("first_run.language.label"));
+                                                let fmt_lang_opt = |loc: &str, name: &str| {
+                                                    let (_, _, pct) =
+                                                        self.lang.translation_completion(loc);
+                                                    if pct < 100 {
+                                                        format!("{name} ({loc}) - {pct}%")
+                                                    } else {
+                                                        format!("{name} ({loc})")
+                                                    }
+                                                };
                                                 let cur_lbl = available_langs
                                                     .iter()
                                                     .find(|(loc, _)| {
                                                         loc == &self.first_run_language
                                                     })
-                                                    .map(|(loc, name)| format!("{name} ({loc})"))
+                                                    .map(|(loc, name)| fmt_lang_opt(loc, name))
                                                     .unwrap_or_else(|| {
                                                         self.first_run_language.clone()
                                                     });
@@ -1094,8 +1283,8 @@ impl McwApp {
                                                     .width(auto_combo_width(
                                                         ui,
                                                         &cur_lbl,
-                                                        190.0,
-                                                        280.0,
+                                                        210.0,
+                                                        310.0,
                                                     ))
                                                     .truncate()
                                                     .show_ui(ui, |ui| {
@@ -1103,7 +1292,7 @@ impl McwApp {
                                                             ui.selectable_value(
                                                                 &mut self.first_run_language,
                                                                 loc.clone(),
-                                                                format!("{name} ({loc})"),
+                                                                fmt_lang_opt(loc, name),
                                                             );
                                                         }
                                                     });
@@ -1112,6 +1301,44 @@ impl McwApp {
                                                         Some(self.first_run_language.clone());
                                                 }
                                             });
+                                            let (tr_cnt, tot_cnt, pct) = self
+                                                .lang
+                                                .translation_completion(&self.first_run_language);
+                                            if pct < 100 {
+                                                ui.add_space(6.0);
+                                                let notice_key = if self
+                                                    .first_run_language
+                                                    .eq_ignore_ascii_case("vi-VN")
+                                                {
+                                                    "first_run.language.incomplete_notice"
+                                                } else {
+                                                    "first_run.language.incomplete_generic"
+                                                };
+                                                let msg = self.lang.tr_fmt(
+                                                    notice_key,
+                                                    &[
+                                                        ("percent", &pct.to_string()),
+                                                        ("translated", &tr_cnt.to_string()),
+                                                        ("total", &tot_cnt.to_string()),
+                                                    ],
+                                                );
+                                                Frame::new()
+                                                    .fill(p.elevated)
+                                                    .stroke(Stroke::new(1.0_f32, p.warning))
+                                                    .corner_radius(CornerRadius::same(8))
+                                                    .inner_margin(egui::Margin::symmetric(10, 6))
+                                                    .show(ui, |ui| {
+                                                        ui.set_width(ui.available_width());
+                                                        ui.add(
+                                                            egui::Label::new(
+                                                                RichText::new(msg)
+                                                                    .size(11.5)
+                                                                    .color(p.warning),
+                                                            )
+                                                            .wrap(),
+                                                        );
+                                                    });
+                                            }
                                             ui.add_space(8.0);
                                             let conc_lbl =
                                                 self.t("network.concurrency.label").to_string();

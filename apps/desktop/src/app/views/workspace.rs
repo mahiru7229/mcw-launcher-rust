@@ -558,7 +558,6 @@ impl McwApp {
             .get(&inst.instance_id)
             .copied()
             .unwrap_or(0);
-        let has_account = self.active_account().is_some();
 
         let mut import_world_clicked = false;
         ui.horizontal(|ui| {
@@ -691,7 +690,7 @@ impl McwApp {
                                         backup_target = Some(w.folder_name.clone());
                                     }
                                     if quick_play_ok {
-                                        let can_play = !busy && has_account && missing_manual == 0;
+                                        let can_play = !busy && missing_manual == 0;
                                         let play_btn = Button::new(
                                             RichText::new("Quick Play")
                                                 .color(p.accent_text)

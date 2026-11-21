@@ -256,7 +256,6 @@ impl McwApp {
             self.launch_states.get(&inst.instance_id),
             Some(LaunchState::Running { .. })
         );
-        let has_account = self.active_account().is_some();
 
         let launch_lbl = if is_running {
             self.t("Stop Game").to_string()
@@ -301,7 +300,7 @@ impl McwApp {
 
                         if ui
                             .add_enabled(
-                                is_running || (!busy && has_account),
+                                is_running || !busy,
                                 Button::new(RichText::new(launch_lbl).strong()),
                             )
                             .clicked()

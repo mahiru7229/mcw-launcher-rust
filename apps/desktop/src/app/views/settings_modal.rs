@@ -376,6 +376,7 @@ impl McwApp {
             self.prefs = LauncherPrefs::default();
             self.custom_accent_input = self.prefs.custom_accent_hex.clone();
             self.apply_current_theme(ctx);
+            self.apply_typography_and_scale(ctx);
             self.lang.set_language(&self.prefs.normalized_locale());
             self.create_show_snapshots = self.prefs.show_snapshots;
             self.discord_rpc.configure(
@@ -526,20 +527,28 @@ impl McwApp {
                         .map(|(loc, name)| (loc.to_string(), name.to_string()))
                         .collect();
                     let current_loc = self.lang.current_locale().to_string();
+                    let fmt_lang_opt = |loc: &str, name: &str| {
+                        let (_, _, pct) = self.lang.translation_completion(loc);
+                        if pct < 100 {
+                            format!("{name} ({loc}) - {pct}%")
+                        } else {
+                            format!("{name} ({loc})")
+                        }
+                    };
                     let current_lang_label = available
                         .iter()
                         .find(|(loc, _)| loc == &current_loc)
-                        .map(|(loc, name)| format!("{name} ({loc})"))
+                        .map(|(loc, name)| fmt_lang_opt(loc, name))
                         .unwrap_or_else(|| current_loc.clone());
                     let mut picked_locale: Option<String> = None;
                     ui.horizontal_wrapped(|ui| {
                         egui::ComboBox::from_id_salt("launcher_settings_lang_combo")
                             .selected_text(current_lang_label)
-                            .width(240.0)
+                            .width(260.0)
                             .show_ui(ui, |ui| {
                                 for (loc, name) in &available {
                                     let selected = loc == &current_loc;
-                                    let label = format!("{name} ({loc})");
+                                    let label = fmt_lang_opt(loc, name);
                                     if ui.selectable_label(selected, label).clicked() && !selected {
                                         picked_locale = Some(loc.clone());
                                     }
@@ -552,6 +561,27 @@ impl McwApp {
                     if let Some(loc) = picked_locale {
                         self.lang.set_language(&loc);
                         *prefs_dirty = true;
+                    }
+                    let active_loc = self.lang.current_locale().to_string();
+                    let (tr_cnt, tot_cnt, pct) = self.lang.translation_completion(&active_loc);
+                    if pct < 100 {
+                        ui.add_space(6.0);
+                        let notice_key = if active_loc.eq_ignore_ascii_case("vi-VN") {
+                            "first_run.language.incomplete_notice"
+                        } else {
+                            "first_run.language.incomplete_generic"
+                        };
+                        let msg = self.lang.tr_fmt(
+                            notice_key,
+                            &[
+                                ("percent", &pct.to_string()),
+                                ("translated", &tr_cnt.to_string()),
+                                ("total", &tot_cnt.to_string()),
+                            ],
+                        );
+                        ui.add(
+                            egui::Label::new(RichText::new(msg).size(11.0).color(p.warning)).wrap(),
+                        );
                     }
                 });
             ui.add_space(8.0);

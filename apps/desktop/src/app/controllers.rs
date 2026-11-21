@@ -656,10 +656,7 @@ impl McwApp {
             return;
         };
         let Some(account) = self.active_account().cloned() else {
-            self.notice_banner = Some((
-                "Add or sign in to an account before launching.".to_string(),
-                true,
-            ));
+            self.notice_banner = Some((self.t("accounts.auth_required_notice").to_string(), true));
             self.open_accounts_window(ctx);
             return;
         };
@@ -736,16 +733,14 @@ impl McwApp {
                         let acc_store = AccountStore::new(&paths);
                         let rt = acc_store
                             .load_refresh_token(&account.uuid)
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|e| format!("Account token unavailable or expired: {e}"))?;
                         let ms = MicrosoftAuthClient::new().map_err(|e| e.to_string())?;
-                        let refreshed = ms
-                            .refresh_microsoft_token(&rt)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        let login = ms
-                            .complete_minecraft_chain(refreshed)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let refreshed = ms.refresh_microsoft_token(&rt).await.map_err(|e| {
+                            format!("Microsoft token expired or refresh failed: {e}")
+                        })?;
+                        let login = ms.complete_minecraft_chain(refreshed).await.map_err(|e| {
+                            format!("Minecraft authentication failed (account/token): {e}")
+                        })?;
                         if let Some(ref new_rt) = login.refresh_token {
                             let _ = acc_store.store_refresh_token(&account.uuid, new_rt);
                         }
@@ -2648,7 +2643,13 @@ impl McwApp {
                         },
                         Err(err) => {
                             let diag = LaunchErrorPresenter::present(&err, false);
-                            self.notice_banner = Some((diag.banner_text(), true));
+                            if is_account_or_token_error(&err) {
+                                let msg = self.t("accounts.token_expired_notice").to_string();
+                                self.notice_banner = Some((format!("{msg} ({err})"), true));
+                                self.open_accounts_window(ctx);
+                            } else {
+                                self.notice_banner = Some((diag.banner_text(), true));
+                            }
                         }
                     }
                 }
@@ -2674,6 +2675,7 @@ impl McwApp {
                         Err(err) => {
                             self.notice_banner =
                                 Some((format!("Microsoft sign-in failed: {err}"), true));
+                            self.open_accounts_window(ctx);
                         }
                     }
                 }
@@ -3264,6 +3266,85 @@ impl McwApp {
                     self.preflight_confirm_server = quick_play_server;
                     self.preflight_confirm_issues = issues;
                 }
+                AppEvent::PythonFolderPicked(picked) => {
+                    self.python_import_folder_picking = false;
+                    if let Some(path) = picked {
+                        self.python_import_path_input = path.display().to_string();
+                        self.start_python_inspection(ctx);
+                    }
+                }
+                AppEvent::PythonInspectionFinished {
+                    source_root,
+                    result,
+                } => {
+                    let current = self.python_import_path_input.trim().to_string();
+                    if current == source_root || self.python_import_inspecting {
+                        self.python_import_inspecting = false;
+                        self.python_import_result = None;
+                        match result {
+                            Ok(insp) => {
+                                self.python_import_error = None;
+                                self.python_import_selected = insp
+                                    .instances
+                                    .iter()
+                                    .map(|i| i.folder_name.clone())
+                                    .collect();
+                                self.python_import_global_settings = insp.has_launcher_settings;
+                                self.python_import_runtimes = !insp.managed_runtimes.is_empty();
+                                self.python_import_themes = !insp.custom_themes.is_empty();
+                                self.python_import_inspection = Some(insp);
+                            }
+                            Err(err) => {
+                                self.python_import_error = Some(err);
+                                self.python_import_inspection = None;
+                            }
+                        }
+                    }
+                }
+                AppEvent::PythonMigrationFinished { task_id, result } => {
+                    self.finish_task(task_id);
+                    self.python_import_running = false;
+                    match result {
+                        Ok(res) => {
+                            let imported_count = res.imported_instances.len();
+                            let skipped_count = res.skipped_instances.len();
+                            let rt_count = res.imported_runtimes.len();
+                            let th_count = res.imported_themes.len();
+                            let err_count = res.errors.len();
+                            if let Some(ref gs) = res.imported_global_settings {
+                                self.apply_imported_global_settings(gs, ctx);
+                            }
+                            if th_count > 0 {
+                                self.theme_catalog = ThemeCatalog::load(&self.paths.theme_root);
+                                self.apply_current_theme(ctx);
+                            }
+                            if rt_count > 0 {
+                                self.reload_java();
+                                self.start_java_diagnostics_scan(ctx);
+                            }
+                            self.reload_instances();
+                            self.sync_selected_from_cache();
+                            self.start_python_inspection(ctx);
+                            self.python_import_result = Some(res);
+                            let msg = self.lang.tr_fmt(
+                                "python_import.completed_banner",
+                                &[
+                                    ("imported", &imported_count.to_string()),
+                                    ("skipped", &skipped_count.to_string()),
+                                    ("runtimes", &rt_count.to_string()),
+                                    ("themes", &th_count.to_string()),
+                                    ("errors", &err_count.to_string()),
+                                ],
+                            );
+                            self.notice_banner = Some((msg, err_count > 0));
+                        }
+                        Err(err) => {
+                            self.python_import_error = Some(err.clone());
+                            self.notice_banner =
+                                Some((format!("Python import failed: {err}"), true));
+                        }
+                    }
+                }
             }
         }
     }
@@ -3847,8 +3928,21 @@ impl McwApp {
             let _ = apply_custom_accent(&mut pal, &self.prefs.custom_accent_hex);
         }
         self.motion_mode = MotionMode::parse(&self.prefs.motion_mode);
-        self.palette = apply_theme_palette(ctx, self.theme_mode, pal, self.motion_mode)
-            .glass(self.prefs.panel_opacity);
+        self.palette = apply_theme_palette(
+            ctx,
+            self.theme_mode,
+            pal,
+            self.motion_mode,
+            self.prefs.font_size,
+        )
+        .glass(self.prefs.panel_opacity);
+    }
+
+    pub(crate) fn apply_typography_and_scale(&self, ctx: &egui::Context) {
+        let custom_path =
+            resolve_custom_font_path(&self.prefs.custom_font_family, &self.system_fonts);
+        configure_fonts(ctx, custom_path.as_deref());
+        ctx.set_zoom_factor(self.prefs.ui_scale.clamp(0.75, 1.75));
     }
 
     pub(crate) fn reload_theme_catalog(&mut self, ctx: &egui::Context) {
@@ -5030,5 +5124,241 @@ impl McwApp {
             self.sync_selected_from_cache();
             self.ensure_active_tab_loaded(ctx);
         }
+    }
+
+    pub(crate) fn open_python_import_window(&mut self, ctx: &egui::Context) {
+        if self.show_python_import_window {
+            let title = self.t("python_import.title").to_string();
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_python_import"),
+                Some(&title),
+            );
+        }
+        self.show_python_import_window = true;
+    }
+
+    pub(crate) fn start_python_inspection(&mut self, ctx: &egui::Context) {
+        let raw_root = self.python_import_path_input.trim().to_string();
+        if raw_root.is_empty() {
+            self.python_import_error = Some(self.t("python_import.error_empty_path").to_string());
+            return;
+        }
+        self.python_import_inspecting = true;
+        self.python_import_error = None;
+        let dest_paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn_blocking(move || {
+            let res = inspect_python_launcher(std::path::Path::new(&raw_root), &dest_paths)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::PythonInspectionFinished {
+                source_root: raw_root,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_python_migration(&mut self, ctx: &egui::Context) {
+        if self.python_import_running {
+            return;
+        }
+        let raw_root = self.python_import_path_input.trim().to_string();
+        if raw_root.is_empty() {
+            self.python_import_error = Some(self.t("python_import.error_empty_path").to_string());
+            return;
+        }
+        self.python_import_running = true;
+        self.python_import_error = None;
+        self.python_import_result = None;
+        let task_id = self.begin_task(
+            "Import from MCW Launcher Python".to_string(),
+            "Copying selected instances & assets (source stays read-only)...",
+        );
+        let opts = PythonMigrationOptions {
+            selected_folders: self.python_import_selected.iter().cloned().collect(),
+            conflict_strategy: self.python_import_conflict,
+            import_global_settings: self.python_import_global_settings,
+            import_runtimes: self.python_import_runtimes,
+            import_themes: self.python_import_themes,
+        };
+        let dest_paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn_blocking(move || {
+            let tx_p = tx.clone();
+            let ctx_p = ctx_c.clone();
+            let cb = move |cur: usize, tot: usize, msg: String| {
+                let _ = tx_p.send(AppEvent::TaskProgress {
+                    task_id,
+                    message: msg,
+                    current: cur as u64,
+                    total: tot.max(1) as u64,
+                });
+                ctx_p.request_repaint();
+            };
+            let res = migrate_from_python_launcher(
+                std::path::Path::new(&raw_root),
+                &dest_paths,
+                &opts,
+                Some(&cb),
+            )
+            .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::PythonMigrationFinished {
+                task_id,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    fn apply_imported_global_settings(
+        &mut self,
+        gs: &mcw_storage::ImportedGlobalSettings,
+        ctx: &egui::Context,
+    ) {
+        if let Some(ref lang) = gs.language {
+            self.prefs.language = lang.clone();
+            self.lang.set_language(&self.prefs.normalized_locale());
+        }
+        if let Some(v) = gs.show_snapshots {
+            self.prefs.show_snapshots = v;
+            self.create_show_snapshots = v;
+        }
+        if let Some(v) = gs.remember_window_size {
+            self.prefs.remember_window_size = v;
+        }
+        if let Some(v) = gs.show_content_descriptions {
+            self.prefs.show_content_descriptions = v;
+        }
+        if let Some(v) = gs.debug_mode {
+            self.prefs.debug_mode = v;
+        }
+        if let Some(v) = gs.prefer_dedicated_gpu {
+            self.prefs.prefer_dedicated_gpu = v;
+        }
+        if let Some(v) = gs.discord_rpc_enabled {
+            self.prefs.discord_rpc_enabled = v;
+        }
+        if let Some(ref cid) = gs.discord_client_id {
+            self.prefs.discord_client_id = cid.clone();
+        }
+        if let Some(v) = gs.minimize_on_launch {
+            self.prefs.minimize_on_launch = v;
+        }
+        if let Some(ref motion) = gs.motion_mode {
+            self.prefs.motion_mode = motion.clone();
+        }
+        if let Some(ref hex) = gs.custom_accent_hex {
+            self.prefs.custom_accent_hex = hex.clone();
+            self.custom_accent_input = hex.clone();
+        }
+        if let Some(ref th) = gs.theme {
+            if self
+                .theme_catalog
+                .themes
+                .iter()
+                .any(|t| t.id.eq_ignore_ascii_case(th))
+            {
+                self.prefs.theme = th.clone();
+            }
+        }
+        if let Some(v) = gs.modrinth_include_beta {
+            self.prefs.modrinth_include_beta = v;
+        }
+        if let Some(v) = gs.modrinth_include_alpha {
+            self.prefs.modrinth_include_alpha = v;
+        }
+        if let Some(ref p) = gs.modrinth_failure_policy {
+            self.prefs.modrinth_failure_policy = p.clone();
+        }
+        if let Some(ref p) = gs.curseforge_failure_policy {
+            self.prefs.curseforge_failure_policy = p.clone();
+        }
+        if let Some(v) = gs.download_limit_mbps {
+            self.prefs.download_limit_mbps = mcw_net::set_global_bandwidth_limit_mbps(v);
+        }
+        if let Some(v) = gs.download_concurrency {
+            self.prefs.download_concurrency = v;
+        }
+        if let Some(v) = gs.unused_version_retention_days {
+            self.prefs.unused_version_retention_days = v;
+        }
+        if let Some(v) = gs.default_min_memory {
+            self.prefs.default_min_memory = v;
+        }
+        if let Some(v) = gs.default_max_memory {
+            self.prefs.default_max_memory = v;
+        }
+        if let Some(v) = gs.default_width {
+            self.prefs.default_width = v;
+        }
+        if let Some(v) = gs.default_height {
+            self.prefs.default_height = v;
+        }
+        if let Some(v) = gs.default_fullscreen {
+            self.prefs.default_fullscreen = v;
+        }
+        if let Some(v) = gs.auto_check_updates {
+            self.prefs.auto_check_updates = v;
+        }
+        if let Some(ref ch) = gs.update_channel {
+            self.prefs.update_channel = ch.clone();
+        }
+        self.apply_current_theme(ctx);
+        self.discord_rpc.configure(
+            self.prefs.discord_rpc_enabled,
+            self.prefs.discord_client_id.clone(),
+        );
+        self.save_prefs();
+    }
+}
+
+pub(crate) fn is_account_or_token_error(err: &str) -> bool {
+    let low = err.to_ascii_lowercase();
+    [
+        "token",
+        "expired",
+        "invalid_grant",
+        "unauthorized",
+        "xsts",
+        "xbox",
+        "minecraft authentication",
+        "refresh failed",
+        "no refresh token",
+        "missing refresh",
+        "sign in again",
+        "log in again",
+        "401",
+        "dpapi",
+        "account authentication",
+        "no active account",
+    ]
+    .iter()
+    .any(|kw| low.contains(kw))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_account_or_token_error;
+
+    #[test]
+    fn detects_account_and_token_expiration_errors() {
+        assert!(is_account_or_token_error(
+            "Microsoft token expired or refresh failed: invalid_grant"
+        ));
+        assert!(is_account_or_token_error(
+            "No refresh token stored for account 'Player' (please log in again)"
+        ));
+        assert!(is_account_or_token_error("XSTS authentication failed: 401"));
+        assert!(!is_account_or_token_error(
+            "UnsupportedClassVersionError: Java 21 required"
+        ));
+        assert!(!is_account_or_token_error(
+            "Checksum mismatch for asset.jar"
+        ));
     }
 }

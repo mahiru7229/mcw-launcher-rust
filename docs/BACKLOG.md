@@ -1,6 +1,6 @@
-# MCW Launcher: Rust Edition - Backlog (updated 2026-11-21, v0.14.0-beta.1)
+# MCW Launcher: Rust Edition - Backlog (updated 2026-11-21, v0.15.0-beta.1)
 
-Parity checklist (Guide Section 7.1-7.8), UI v2.0 rebuild (`v0.11.0-beta.1` - `v0.13.2-beta.1`), and full Python-parity / release-readiness items (`v0.14.0-beta.1`) are complete. Remaining post-publish / maintenance items:
+Parity checklist (Guide Section 7.1-7.8), UI v2.0 rebuild (`v0.11.0-beta.1` - `v0.13.2-beta.1`), full Python parity (`v0.14.0-beta.1`), and migration/typography/i18n polish (`v0.15.0-beta.1`) are complete. Remaining pre-RC / post-publish items:
 
 ## 1. Release readiness
 - [x] Sync `README.md` to current release (`v0.14.0-beta.1`), UI v2.0 features, and `UPDATES_ENABLED = false` status.

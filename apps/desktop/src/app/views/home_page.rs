@@ -392,31 +392,26 @@ impl McwApp {
                     .fill(p.accent)
                     .min_size(Vec2::new(146.0, 38.0))
                     .corner_radius(CornerRadius::same(12));
-                    let resp = ui.add_enabled(has_account, launch_btn);
+                    let resp = ui.add(launch_btn);
                     {
                         // Draw small crisp play triangle inside the left side of the Play button
                         let r = resp.rect;
                         let cx = r.left() + 20.0;
                         let cy = r.center().y;
-                        let col = if has_account {
-                            p.accent_text
-                        } else {
-                            p.text_muted
-                        };
                         ui.painter().add(egui::Shape::convex_polygon(
                             vec![
                                 egui::pos2(cx - 4.0, cy - 5.5),
                                 egui::pos2(cx + 5.5, cy),
                                 egui::pos2(cx - 4.0, cy + 5.5),
                             ],
-                            col,
+                            p.accent_text,
                             Stroke::NONE,
                         ));
                     }
-                    if !has_account {
-                        resp.on_disabled_hover_text("Add or sign in to an account first");
-                    } else if resp.clicked() {
+                    if resp.clicked() {
                         self.start_launch(ctx);
+                    } else if !has_account {
+                        resp.on_hover_text(self.t("accounts.auth_required_notice"));
                     }
                 }
             }

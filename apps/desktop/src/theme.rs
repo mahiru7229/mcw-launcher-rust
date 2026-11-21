@@ -1,8 +1,11 @@
 use eframe::egui::{
-    Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke, Style, Visuals,
+    Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, Style,
+    TextStyle, Visuals,
 };
 use serde::Deserialize;
-use std::fs;
+use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -494,12 +497,13 @@ pub fn apply_custom_accent(palette: &mut ThemePalette, hex: &str) -> bool {
     true
 }
 
-/// Apply MCW theme palette and motion configuration to `egui::Context`.
+/// Apply MCW theme palette, motion configuration, and scaled text styles to `egui::Context`.
 pub fn apply_theme_palette(
     ctx: &Context,
     mode: ThemeMode,
     p: ThemePalette,
     motion: MotionMode,
+    font_size: f32,
 ) -> ThemePalette {
     let mut visuals = match mode {
         ThemeMode::Dark => Visuals::dark(),
@@ -541,6 +545,29 @@ pub fn apply_theme_palette(
         visuals,
         ..Style::default()
     };
+    let base = if font_size.is_finite() {
+        font_size.clamp(10.0, 22.0)
+    } else {
+        13.0
+    };
+    style.text_styles.insert(
+        TextStyle::Small,
+        FontId::proportional((base * 0.78).round()),
+    );
+    style
+        .text_styles
+        .insert(TextStyle::Body, FontId::proportional(base));
+    style
+        .text_styles
+        .insert(TextStyle::Button, FontId::proportional(base));
+    style.text_styles.insert(
+        TextStyle::Monospace,
+        FontId::monospace((base * 0.92).round()),
+    );
+    style.text_styles.insert(
+        TextStyle::Heading,
+        FontId::proportional((base * 1.42).round()),
+    );
     style.spacing.item_spacing = eframe::egui::vec2(8.0, 6.0);
     style.spacing.button_padding = eframe::egui::vec2(12.0, 6.0);
     style.spacing.interact_size = eframe::egui::vec2(40.0, 26.0);
@@ -555,9 +582,242 @@ pub fn apply_theme_palette(
     p
 }
 
-/// Load system UI font (Segoe UI on Windows, Noto Sans on Linux) so Vietnamese diacritics
-/// render sharply, plus a system monospace font for Live Logs and file paths.
-pub fn configure_fonts(ctx: &Context) {
+#[derive(Debug, Clone)]
+pub struct SystemFontEntry {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+fn read_u16_be(bytes: &[u8], off: usize) -> Option<u16> {
+    let slice = bytes.get(off..off + 2)?;
+    Some(u16::from_be_bytes([slice[0], slice[1]]))
+}
+
+fn read_u32_be(bytes: &[u8], off: usize) -> Option<u32> {
+    let slice = bytes.get(off..off + 4)?;
+    Some(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn decode_sfnt_name_bytes(bytes: &[u8], platform_id: u16) -> Option<String> {
+    let text = match platform_id {
+        3 | 0 => {
+            let units: Vec<u16> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            String::from_utf16_lossy(&units)
+        }
+        1 => bytes
+            .iter()
+            .filter(|&&b| (0x20..=0x7E).contains(&b))
+            .map(|&b| b as char)
+            .collect(),
+        _ => return None,
+    };
+    let trimmed = text.trim().trim_matches('\0').trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// Reads the Full Font Name (ID 4) or Family Name (ID 1) from an SFNT `.ttf` / `.otf` `name` table.
+fn read_sfnt_display_name(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header).ok()?;
+    let sfnt_ver = read_u32_be(&header, 0)?;
+    if sfnt_ver != 0x0001_0000 && sfnt_ver != 0x4F54_544F {
+        return None;
+    }
+    let num_tables = read_u16_be(&header, 4)? as usize;
+    if num_tables == 0 || num_tables > 128 {
+        return None;
+    }
+    let mut dir_buf = vec![0u8; num_tables * 16];
+    file.read_exact(&mut dir_buf).ok()?;
+
+    let mut name_offset = 0u64;
+    let mut name_len = 0usize;
+    for i in 0..num_tables {
+        let base = i * 16;
+        if &dir_buf[base..base + 4] == b"name" {
+            name_offset = read_u32_be(&dir_buf, base + 8)? as u64;
+            name_len = (read_u32_be(&dir_buf, base + 12)? as usize).min(64 * 1024);
+            break;
+        }
+    }
+    if name_offset == 0 || name_len < 6 {
+        return None;
+    }
+
+    file.seek(SeekFrom::Start(name_offset)).ok()?;
+    let mut table = vec![0u8; name_len];
+    file.read_exact(&mut table).ok()?;
+
+    let count = read_u16_be(&table, 2)? as usize;
+    let string_offset = read_u16_be(&table, 4)? as usize;
+    if string_offset >= table.len() {
+        return None;
+    }
+
+    let mut best_score = -1i32;
+    let mut best_name: Option<String> = None;
+    for i in 0..count {
+        let rec = 6 + i * 12;
+        if rec + 12 > table.len() {
+            break;
+        }
+        let platform_id = read_u16_be(&table, rec)?;
+        let language_id = read_u16_be(&table, rec + 4)?;
+        let name_id = read_u16_be(&table, rec + 6)?;
+        let str_len = read_u16_be(&table, rec + 8)? as usize;
+        let str_off = read_u16_be(&table, rec + 10)? as usize;
+
+        if !matches!(name_id, 4 | 1 | 16) || str_len == 0 {
+            continue;
+        }
+        let start = string_offset.saturating_add(str_off);
+        let end = start.saturating_add(str_len);
+        if end > table.len() {
+            continue;
+        }
+        let Some(decoded) = decode_sfnt_name_bytes(&table[start..end], platform_id) else {
+            continue;
+        };
+
+        let mut score = match name_id {
+            4 => 30,
+            16 => 20,
+            1 => 10,
+            _ => 0,
+        };
+        if platform_id == 3 {
+            score += 20;
+            if language_id == 0x0409 {
+                score += 10;
+            }
+        } else if platform_id == 0 {
+            score += 15;
+        } else if platform_id == 1 {
+            score += 5;
+        }
+
+        if score > best_score {
+            best_score = score;
+            best_name = Some(decoded);
+        }
+    }
+    best_name
+}
+
+fn collect_fonts_in_dir(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
+    if depth > 3 || !dir.is_dir() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_fonts_in_dir(&p, depth + 1, out);
+        } else if p.is_file() {
+            let is_sfnt = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
+                .unwrap_or(false);
+            if is_sfnt {
+                out.push(p);
+            }
+        }
+    }
+}
+
+/// Scans standard OS font folders for `.ttf`/`.otf` fonts sorted alphabetically by display name.
+pub fn scan_system_fonts() -> Vec<SystemFontEntry> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    #[cfg(windows)]
+    {
+        if let Some(win_dir) = std::env::var_os("WINDIR") {
+            dirs.push(PathBuf::from(win_dir).join("Fonts"));
+        } else {
+            dirs.push(PathBuf::from(r"C:\Windows\Fonts"));
+        }
+        if let Some(local_app) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local_app)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Fonts"),
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        dirs.push(PathBuf::from("/usr/share/fonts"));
+        dirs.push(PathBuf::from("/usr/local/share/fonts"));
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(PathBuf::from(home).join(".local/share/fonts"));
+        }
+    }
+
+    let mut files = Vec::new();
+    for dir in dirs {
+        collect_fonts_in_dir(&dir, 0, &mut files);
+    }
+    files.sort();
+
+    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut seen_paths: HashSet<PathBuf> = HashSet::new();
+    let mut entries: Vec<SystemFontEntry> = Vec::new();
+
+    for path in files {
+        if !seen_paths.insert(path.clone()) {
+            continue;
+        }
+        let fallback = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Font")
+            .to_string();
+        let name = read_sfnt_display_name(&path).unwrap_or(fallback);
+        let key = name.to_ascii_lowercase();
+        if seen_names.insert(key) {
+            entries.push(SystemFontEntry { name, path });
+        }
+    }
+
+    entries.sort_by_key(|a| a.name.to_ascii_lowercase());
+    entries
+}
+
+/// Resolves a stored custom font preference (either an exact display name or file path) to a readable font file.
+pub fn resolve_custom_font_path(spec: &str, system_fonts: &[SystemFontEntry]) -> Option<PathBuf> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(hit) = system_fonts
+        .iter()
+        .find(|f| f.name.eq_ignore_ascii_case(trimmed))
+    {
+        return Some(hit.path.clone());
+    }
+    let direct = PathBuf::from(trimmed);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    None
+}
+
+/// Load system UI font (optional custom font first, then Segoe UI / Noto Sans fallback)
+/// plus symbol fallback and monospace font for Live Logs and file paths.
+pub fn configure_fonts(ctx: &Context, custom_font_path: Option<&Path>) {
     let mut fonts = FontDefinitions::default();
 
     #[cfg(windows)]
@@ -585,17 +845,31 @@ pub fn configure_fonts(ctx: &Context) {
         }
     }
 
+    if let Some(custom_path) = custom_font_path {
+        if let Ok(bytes) = std::fs::read(custom_path) {
+            if !bytes.is_empty() {
+                fonts.font_data.insert(
+                    "mcw_custom_ui".to_owned(),
+                    Arc::new(FontData::from_owned(bytes)),
+                );
+                fonts
+                    .families
+                    .entry(FontFamily::Proportional)
+                    .or_default()
+                    .insert(0, "mcw_custom_ui".to_owned());
+            }
+        }
+    }
+
     #[cfg(windows)]
     if let Ok(sym_bytes) = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf") {
         fonts.font_data.insert(
             "mcw_symbols".to_owned(),
             Arc::new(FontData::from_owned(sym_bytes)),
         );
-        fonts
-            .families
-            .entry(FontFamily::Proportional)
-            .or_default()
-            .insert(1, "mcw_symbols".to_owned());
+        let prop = fonts.families.entry(FontFamily::Proportional).or_default();
+        let sym_idx = prop.len().min(2);
+        prop.insert(sym_idx, "mcw_symbols".to_owned());
         fonts
             .families
             .entry(FontFamily::Monospace)

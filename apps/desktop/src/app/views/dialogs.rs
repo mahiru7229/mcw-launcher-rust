@@ -328,26 +328,50 @@ impl McwApp {
                                                     .color(p.warning),
                                                 );
                                                 ScrollArea::vertical()
-                                                    .max_height(110.0)
+                                                    .max_height(130.0)
+                                                    .auto_shrink([false, false])
                                                     .show(ui, |ui| {
                                                         for item in &self.modpack_manual_downloads {
-                                                            ui.horizontal(|ui| {
-                                                                ui.label(
-                                                                    RichText::new(&item.file_name)
-                                                                        .monospace()
-                                                                        .size(11.0),
-                                                                );
-                                                                if ui.button("Open URL").clicked() {
-                                                                    open_external(&item.website_url);
-                                                                }
-                                                            });
+                                                            ui.with_layout(
+                                                                Layout::right_to_left(Align::Center),
+                                                                |ui| {
+                                                                    if ui.button("Open URL").clicked()
+                                                                    {
+                                                                        open_external(
+                                                                            &item.website_url,
+                                                                        );
+                                                                    }
+                                                                    ui.with_layout(
+                                                                        Layout::top_down(
+                                                                            Align::LEFT,
+                                                                        ),
+                                                                        |ui| {
+                                                                            ui.set_width(
+                                                                                ui.available_width(),
+                                                                            );
+                                                                            ui.add(
+                                                                                egui::Label::new(
+                                                                                    RichText::new(
+                                                                                        &item.file_name,
+                                                                                    )
+                                                                                    .monospace()
+                                                                                    .size(11.0),
+                                                                                )
+                                                                                .wrap(),
+                                                                            );
+                                                                        },
+                                                                    );
+                                                                },
+                                                            );
+                                                            ui.add_space(2.0);
                                                         }
                                                     });
                                             });
                                     }
 
                                     ui.add_space(10.0);
-                                    ui.horizontal(|ui| {
+                                    let mut open_py_import = false;
+                                    ui.horizontal_wrapped(|ui| {
                                         let import_btn = Button::new(
                                             RichText::new(if self.installing_archive_count > 0 {
                                                 "Import Another Modpack"
@@ -361,10 +385,20 @@ impl McwApp {
                                         if ui.add(import_btn).clicked() {
                                             self.start_modpack_install(ctx);
                                         }
+                                        if ui
+                                            .button(self.t("python_import.open_button"))
+                                            .clicked()
+                                        {
+                                            open_py_import = true;
+                                        }
                                         if ui.button(self.t("common.close")).clicked() {
                                             self.show_create_modal = false;
                                         }
                                     });
+                                    if open_py_import {
+                                        self.show_create_modal = false;
+                                        self.open_python_import_window(ctx);
+                                    }
                                 });
                         }
                     });
@@ -1693,178 +1727,221 @@ impl McwApp {
 
             let mut win_open = true;
             let vp_id = egui::ViewportId::from_hash_of(("mcw_vp_manual_downloads", &inst_id));
-            let builder = centered_viewport_builder(
-                ctx,
-                format!(
-                    "Manual Downloads - {} ({} remaining)",
-                    inst_name,
-                    items.len()
-                ),
-                [600.0, 500.0],
-                [440.0, 340.0],
+            let win_title = self.lang.tr_fmt(
+                "manual_downloads.window_title",
+                &[("name", &inst_name), ("count", &items.len().to_string())],
             );
+            let builder = centered_viewport_builder(ctx, win_title, [680.0, 540.0], [480.0, 380.0]);
+            let inst_hdr = self
+                .lang
+                .tr_fmt("manual_downloads.instance_label", &[("name", &inst_name)]);
+            let disabled_warn = self.t("manual_downloads.author_disabled").to_string();
+            let instructions_lbl = self.t("manual_downloads.instructions").to_string();
+            let folder_lbl = self.t("manual_downloads.folder_label").to_string();
+            let browse_lbl = self.t("instance_defaults.java.browse").to_string();
+            let scan_lbl = self.t("manual_downloads.scan_now").to_string();
+            let auto_scan_lbl = self.t("manual_downloads.auto_scan").to_string();
+            let watching_lbl = self.t("manual_downloads.watching").to_string();
+            let open_next_5_lbl = self.t("manual_downloads.open_next_5").to_string();
+            let open_mods_lbl = self.t("manual_downloads.open_mods_folder").to_string();
+            let all_imported_lbl = self.t("manual_downloads.all_imported").to_string();
+            let open_page_lbl = self.t("manual_downloads.open_page").to_string();
+            let close_lbl = self.t("common.close").to_string();
+            let launch_anyway_lbl = self.t("manual_downloads.launch_anyway").to_string();
+            let launch_anyway_hint = self.t("manual_downloads.launch_anyway_hint").to_string();
+
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-                if vp_ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
+                if vp_ctx
+                    .input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
+                {
                     win_open = false;
                 }
-                egui::CentralPanel::default()
-                    .frame(Frame::new().fill(p.canvas).inner_margin(egui::Margin::same(12)))
+                egui::TopBottomPanel::bottom(egui::Id::new(("manual_downloads_footer", &inst_id)))
+                    .frame(
+                        Frame::new()
+                            .fill(p.canvas)
+                            .inner_margin(egui::Margin::symmetric(14, 10)),
+                    )
                     .show(vp_ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("Instance: {inst_name}"))
-                            .strong()
-                            .size(13.5)
-                            .color(p.accent),
-                    );
-                    ui.label(
-                        RichText::new(format!("({inst_id})"))
-                            .monospace()
-                            .size(11.0)
-                            .color(p.text_muted),
-                    );
-                });
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(
-                        "These mods have third-party distribution disabled by their authors on CurseForge.",
-                    )
-                    .strong()
-                    .color(p.warning),
-                );
-                ui.label(
-                    RichText::new(
-                        "1. Click 'Open Page' (or 'Open Next 5') to download the .jar files in your browser.\n2. Auto-scan imports completed downloads every 2s, or click 'Scan Now' manually.",
-                    )
-                    .size(11.5)
-                    .color(p.text_muted),
-                );
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Downloads Folder:");
-                    ui.add(
-                        TextEdit::singleline(&mut self.manual_downloads_dir_input)
-                            .desired_width(300.0),
-                    );
-                    let scan_btn = Button::new(
-                        RichText::new("Scan Now")
-                            .color(p.accent_text)
-                            .strong(),
-                    )
-                    .fill(p.accent);
-                    if ui.add(scan_btn).clicked() {
-                        to_scan.push(inst_id.clone());
-                    }
-                });
-
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.checkbox(
-                        &mut self.manual_auto_scan,
-                        "Auto-scan Downloads & mods/ every 2s",
-                    );
-                    if self.manual_auto_scan && !items.is_empty() {
-                        ui.label(RichText::new("● Watching").size(11.0).color(p.accent));
-                    }
-                });
-                if let Some(ref status) = status_text {
-                    ui.label(RichText::new(status).size(11.5).color(p.text_muted));
-                }
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!items.is_empty(), Button::new("Open Next 5 Links"))
-                        .clicked()
-                    {
-                        for item in items.iter().take(5) {
-                            open_external(&item.website_url);
-                        }
-                    }
-                    if ui.button("Open Instance mods/ Folder").clicked() {
-                        let mods_dir = self.paths.minecraft_dir(&inst_id).join("mods");
-                        let _ = std::fs::create_dir_all(&mods_dir);
-                        open_external(&mods_dir.display().to_string());
-                    }
-                });
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
-
-                if items.is_empty() {
-                    ui.label(
-                        RichText::new("All manual mods have been imported!")
-                            .strong()
-                            .color(p.accent),
-                    );
-                } else {
-                    ScrollArea::vertical()
-                        .id_salt(("manual_downloads_modal_scroll", &inst_id))
-                        .max_height(280.0)
-                        .show(ui, |ui| {
-                            for item in &items {
-                                Frame::new()
-                                    .fill(p.elevated)
-                                    .stroke(Stroke::new(1.0_f32, p.border))
-                                    .corner_radius(CornerRadius::same(10))
-                                    .inner_margin(egui::Margin::symmetric(10, 7))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.horizontal(|ui| {
-                                            ui.vertical(|ui| {
-                                                ui.label(
-                                                    RichText::new(&item.file_name)
-                                                        .monospace()
-                                                        .strong(),
-                                                );
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "Mod #{} · File #{}",
-                                                        item.mod_id, item.file_id
-                                                    ))
-                                                    .size(11.0)
-                                                    .color(p.text_muted),
-                                                );
-                                            });
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    if ui.button("Open Page").clicked() {
-                                                        open_external(&item.website_url);
-                                                    }
-                                                },
-                                            );
-                                        });
-                                    });
-                                ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(&close_lbl).clicked() {
+                                to_close.push(inst_id.clone());
+                            }
+                            if !items.is_empty() {
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui
+                                        .button(RichText::new(&launch_anyway_lbl).color(p.warning))
+                                        .on_hover_text(&launch_anyway_hint)
+                                        .clicked()
+                                    {
+                                        launch_anyway_id = Some(inst_id.clone());
+                                    }
+                                });
                             }
                         });
-                }
+                    });
 
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.button(self.t("common.close")).clicked() {
-                        to_close.push(inst_id.clone());
-                    }
-                    if !items.is_empty() && self.active_account().is_some() {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::new()
+                            .fill(p.canvas)
+                            .inner_margin(egui::Margin::same(14)),
+                    )
+                    .show(vp_ctx, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(&inst_hdr).strong().size(13.5).color(p.accent));
+                            ui.label(
+                                RichText::new(format!("({inst_id})"))
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(p.text_muted),
+                            );
+                        });
+                        ui.add_space(4.0);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&disabled_warn).strong().color(p.warning),
+                            )
+                            .wrap(),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&instructions_lbl)
+                                    .size(11.5)
+                                    .color(p.text_muted),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(&folder_lbl);
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                let scan_btn = Button::new(
+                                    RichText::new(&scan_lbl).color(p.accent_text).strong(),
+                                )
+                                .fill(p.accent);
+                                if ui.add(scan_btn).clicked() {
+                                    to_scan.push(inst_id.clone());
+                                }
+                                if ui.button(&browse_lbl).clicked() {
+                                    if let Some(dir) = pick_folder_dialog(&folder_lbl) {
+                                        self.manual_downloads_dir_input = dir.display().to_string();
+                                        to_scan.push(inst_id.clone());
+                                    }
+                                }
+                                let edit_w = ui.available_width().max(120.0);
+                                ui.add(
+                                    TextEdit::singleline(&mut self.manual_downloads_dir_input)
+                                        .desired_width(edit_w),
+                                );
+                            });
+                        });
+
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.checkbox(&mut self.manual_auto_scan, &auto_scan_lbl);
+                            if self.manual_auto_scan && !items.is_empty() {
+                                ui.label(
+                                    RichText::new(format!("- {watching_lbl}"))
+                                        .size(11.0)
+                                        .color(p.accent),
+                                );
+                            }
+                        });
+                        if let Some(ref status) = status_text {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(status).size(11.5).color(p.text_muted),
+                                )
+                                .wrap(),
+                            );
+                        }
+
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
                             if ui
-                                .button(
-                                    RichText::new("Launch Anyway (Incomplete)").color(p.warning),
-                                )
-                                .on_hover_text(
-                                    "Not recommended: this modpack is missing required manual mods and may crash or lack content.",
-                                )
+                                .add_enabled(!items.is_empty(), Button::new(&open_next_5_lbl))
                                 .clicked()
                             {
-                                launch_anyway_id = Some(inst_id.clone());
+                                for item in items.iter().take(5) {
+                                    open_external(&item.website_url);
+                                }
+                            }
+                            if ui.button(&open_mods_lbl).clicked() {
+                                let mods_dir = self.paths.minecraft_dir(&inst_id).join("mods");
+                                let _ = std::fs::create_dir_all(&mods_dir);
+                                open_external(&mods_dir.display().to_string());
                             }
                         });
-                    }
-                });
-                });
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+
+                        if items.is_empty() {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&all_imported_lbl).strong().color(p.accent),
+                                )
+                                .wrap(),
+                            );
+                        } else {
+                            ScrollArea::vertical()
+                                .id_salt(("manual_downloads_modal_scroll", &inst_id))
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    let row_w = (ui.available_width() - 4.0).max(200.0);
+                                    for item in &items {
+                                        Frame::new()
+                                            .fill(p.elevated)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(10))
+                                            .inner_margin(egui::Margin::symmetric(10, 8))
+                                            .show(ui, |ui| {
+                                                ui.set_width(row_w);
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        if ui.button(&open_page_lbl).clicked() {
+                                                            open_external(&item.website_url);
+                                                        }
+                                                        ui.with_layout(
+                                                            Layout::top_down(Align::LEFT),
+                                                            |ui| {
+                                                                ui.set_width(ui.available_width());
+                                                                ui.add(
+                                                                    egui::Label::new(
+                                                                        RichText::new(
+                                                                            &item.file_name,
+                                                                        )
+                                                                        .monospace()
+                                                                        .strong(),
+                                                                    )
+                                                                    .wrap(),
+                                                                );
+                                                                ui.add(
+                                                                    egui::Label::new(
+                                                                        RichText::new(format!(
+                                                                            "Mod #{} - File #{}",
+                                                                            item.mod_id,
+                                                                            item.file_id
+                                                                        ))
+                                                                        .size(11.0)
+                                                                        .color(p.text_muted),
+                                                                    )
+                                                                    .wrap(),
+                                                                );
+                                                            },
+                                                        );
+                                                    },
+                                                );
+                                            });
+                                        ui.add_space(4.0);
+                                    }
+                                });
+                        }
+                    });
             });
 
             if !win_open {

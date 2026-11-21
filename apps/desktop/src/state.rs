@@ -13,8 +13,9 @@ use mcw_runtime::{
     ProcessControl, ProcessExitReport,
 };
 use mcw_storage::{
-    BackupInfo, CachedVersionInfo, ContentStoreStats, RestoreOutcome, StorageCleanupReport,
-    StorageSummary, UnusedVersionCandidate,
+    BackupInfo, CachedVersionInfo, ContentStoreStats, PythonMigrationInspection,
+    PythonMigrationResult, RestoreOutcome, StorageCleanupReport, StorageSummary,
+    UnusedVersionCandidate,
 };
 use mcw_updater::{StagedUpdate, UpdateCheckResult};
 use std::sync::mpsc::Sender;
@@ -322,6 +323,15 @@ pub enum AppEvent {
         quick_play_world: Option<String>,
         quick_play_server: Option<String>,
         issues: Vec<String>,
+    },
+    PythonFolderPicked(Option<std::path::PathBuf>),
+    PythonInspectionFinished {
+        source_root: String,
+        result: Result<PythonMigrationInspection, String>,
+    },
+    PythonMigrationFinished {
+        task_id: u64,
+        result: Result<PythonMigrationResult, String>,
     },
 }
 
