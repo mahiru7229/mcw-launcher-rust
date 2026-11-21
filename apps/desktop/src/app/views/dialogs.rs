@@ -387,6 +387,7 @@ impl McwApp {
         self.render_lan_agent_log_window(ctx);
         self.render_install_target_dialog(ctx);
         self.render_java_manager_window(ctx);
+        self.render_stage6_modals(ctx);
 
         // 1a. Modpack Install Configuration Isolated OS Window (Version + Beta/Alpha + RAM + Java + Open Web)
         self.render_modpack_install_dialog(ctx);

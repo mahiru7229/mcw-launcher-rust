@@ -34,10 +34,11 @@ use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
 use mcw_models::progress::ProgressEvent;
 use mcw_models::ManagedContentPolicy;
 use mcw_mods::{
-    is_loader_compatible, ContentKind, ContentPackInfo, ContentPackManager,
-    ModCompatibilityAnalyzer, ModCompatibilityReport, ModInfo, ModIssueSeverity, ModManager,
+    is_loader_compatible, ContentKind, ContentPackInfo, ContentPackManager, InstalledContentItem,
+    InstalledContentLibrary, ModCompatibilityAnalyzer, ModCompatibilityReport, ModInfo,
+    ModIssueSeverity, ModManager,
 };
-use mcw_net::{DownloadClient, TaskControl};
+use mcw_net::{ConnectivityMonitor, ConnectivityStatus, DownloadClient, TaskControl};
 use mcw_providers::{
     detect_export_origin, detect_installed_pack, load_curseforge_api_key,
     load_custom_curseforge_api_key, save_custom_curseforge_api_key, ApiCache, AtLauncherClient,
@@ -45,15 +46,16 @@ use mcw_providers::{
     FtbPackSummary, InstanceExportOrigin, ManualDownloadItem, ModProvenanceRegistry,
     ModUpdateCandidate, ModUpdateManager, ModpackExportMode, ModpackExportOptions,
     ModpackInstallOptions, ModpackInstaller, ModpackOptionalFile, ModpackProgressCallback,
-    ModrinthClient, ModrinthSearchHit, ModrinthSearchParams, TrackedModEntry,
+    ModpackUpdateCheck, ModpackUpdateService, ModrinthClient, ModrinthPackRegistry,
+    ModrinthSearchHit, ModrinthSearchParams, TrackedModEntry,
 };
 use mcw_runtime::{
     detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
     recommended_modpack_ram_mb, DiagnosticsExporter, DiscordRpcService, ExitClassification,
-    FirstRunRecommendation, FirstRunRecommendationService, GameWindowActivator, JavaDiagnostic,
-    JavaDiagnosticsManager, JavaDiscovery, JavaInstallation, JavaProvisioner,
-    JavaRecoveryDiagnostics, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine,
-    LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
+    FirstRunRecommendation, FirstRunRecommendationService, GameWindowActivator, IssueReportBuilder,
+    IssueReportInput, JavaDiagnostic, JavaDiagnosticsManager, JavaDiscovery, JavaInstallation,
+    JavaProvisioner, JavaRecoveryDiagnostics, JvmPresetId, LanAgentManager, LaunchErrorPresenter,
+    LogLine, LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
     BackupInfo, BackupManager, CachedVersionInfo, ContentStore, ContentStoreStats, HealthSeverity,
@@ -456,6 +458,38 @@ pub struct McwApp {
     quick_search_query: String,
     quick_search_open_since: Option<Instant>,
     quick_search_focus_pending: bool,
+
+    // v0.14 full Python parity: Connectivity, Content Library, Modpack Update, Preflight Confirm,
+    // Issue Report, Theme Issues & Unsaved Instance Settings Guard
+    connectivity_status: ConnectivityStatus,
+    connectivity_checking: bool,
+    show_content_library_window: bool,
+    content_library_loading: bool,
+    content_library_items: Vec<(String, String, InstalledContentItem)>,
+    content_library_search: String,
+    content_library_kind_filter: String,
+    content_library_inst_filter: String,
+    content_library_pinned_only: bool,
+    show_modpack_update_window: bool,
+    modpack_update_instance_id: String,
+    modpack_update_loading: bool,
+    modpack_update_check: Option<ModpackUpdateCheck>,
+    modpack_update_selected_version: String,
+    modpack_update_include_beta: bool,
+    modpack_update_include_alpha: bool,
+    modpack_update_error: Option<String>,
+    preflight_confirm_instance_id: Option<String>,
+    preflight_confirm_world: Option<String>,
+    preflight_confirm_server: Option<String>,
+    preflight_confirm_issues: Vec<String>,
+    show_issue_report_window: bool,
+    issue_report_summary: String,
+    issue_report_markdown: String,
+    show_theme_issues_window: bool,
+    instance_settings_dirty: bool,
+    pending_tab_switch: Option<DetailTab>,
+    pending_instance_switch: Option<String>,
+    show_unsaved_changes_window: bool,
 }
 
 impl McwApp {
@@ -751,6 +785,35 @@ impl McwApp {
             quick_search_query: String::new(),
             quick_search_open_since: None,
             quick_search_focus_pending: false,
+            connectivity_status: ConnectivityStatus::Unknown,
+            connectivity_checking: false,
+            show_content_library_window: false,
+            content_library_loading: false,
+            content_library_items: Vec::new(),
+            content_library_search: String::new(),
+            content_library_kind_filter: "all".to_string(),
+            content_library_inst_filter: "all".to_string(),
+            content_library_pinned_only: false,
+            show_modpack_update_window: false,
+            modpack_update_instance_id: String::new(),
+            modpack_update_loading: false,
+            modpack_update_check: None,
+            modpack_update_selected_version: String::new(),
+            modpack_update_include_beta: false,
+            modpack_update_include_alpha: false,
+            modpack_update_error: None,
+            preflight_confirm_instance_id: None,
+            preflight_confirm_world: None,
+            preflight_confirm_server: None,
+            preflight_confirm_issues: Vec::new(),
+            show_issue_report_window: false,
+            issue_report_summary: String::new(),
+            issue_report_markdown: String::new(),
+            show_theme_issues_window: false,
+            instance_settings_dirty: false,
+            pending_tab_switch: None,
+            pending_instance_switch: None,
+            show_unsaved_changes_window: false,
         };
 
         app.content_store_stats = Some(ContentStore::stats(&app.paths));
@@ -778,6 +841,7 @@ impl McwApp {
         app.reload_java();
         app.start_java_diagnostics_scan(&cc.egui_ctx);
         app.fetch_versions(&cc.egui_ctx);
+        app.start_connectivity_check(&cc.egui_ctx);
         app.ensure_account_avatars_loaded(&cc.egui_ctx);
 
         if !app.prefs.first_run_completed && app.instances.is_empty() {

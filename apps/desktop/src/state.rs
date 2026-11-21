@@ -2,11 +2,11 @@ use eframe::egui::Context;
 use mcw_auth::{DeviceCodeResponse, StoredAccount};
 use mcw_minecraft::{OptiFineState, RepairReport, SavedServer, ScreenshotInfo, WorldInfo};
 use mcw_models::progress::{ProgressEvent, ProgressSink};
-use mcw_mods::{ContentKind, ContentPackInfo, ModInfo};
-use mcw_net::TaskControl;
+use mcw_mods::{ContentKind, ContentPackInfo, InstalledContentItem, ModInfo};
+use mcw_net::{ConnectivityStatus, TaskControl};
 use mcw_providers::{
     AtLauncherPack, CurseForgeMod, FtbPackSummary, ModUpdateCandidate, ModpackInstallReport,
-    ModpackOptionalFile, ModrinthSearchHit,
+    ModpackOptionalFile, ModpackUpdateCheck, ModpackUpdateReport, ModrinthSearchHit,
 };
 use mcw_runtime::{
     FirstRunRecommendation, JavaDiagnostic, JavaInstallation, LogLine, LogSink, McLogsUploadResult,
@@ -305,6 +305,23 @@ pub enum AppEvent {
         curseforge: Result<Vec<CurseForgeMod>, String>,
         ftb: Result<Vec<FtbPackSummary>, String>,
         atl: Result<Vec<AtLauncherPack>, String>,
+    },
+    ConnectivityChecked(ConnectivityStatus),
+    ContentLibraryLoaded(Vec<(String, String, InstalledContentItem)>),
+    ModpackUpdateChecked {
+        instance_id: String,
+        result: Result<ModpackUpdateCheck, String>,
+    },
+    ModpackUpdateApplied {
+        task_id: u64,
+        instance_id: String,
+        result: Result<ModpackUpdateReport, String>,
+    },
+    PreflightConfirmationRequired {
+        instance_id: String,
+        quick_play_world: Option<String>,
+        quick_play_server: Option<String>,
+        issues: Vec<String>,
     },
 }
 

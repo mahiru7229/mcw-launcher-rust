@@ -181,6 +181,7 @@ impl McwApp {
         let mut toggle_flyout = false;
         let mut open_accounts = false;
         let mut open_about = false;
+        let mut check_connectivity = false;
 
         egui::TopBottomPanel::top("mcw_top_bar")
             .exact_height(TOP_BAR_H)
@@ -235,6 +236,28 @@ impl McwApp {
                             .size(11.0)
                             .color(p.text_muted),
                     );
+                    if self.connectivity_status == ConnectivityStatus::Offline {
+                        ui.add_space(6.0);
+                        let offline_btn = Button::new(
+                            RichText::new(if self.connectivity_checking {
+                                "Checking..."
+                            } else {
+                                "Offline"
+                            })
+                            .size(10.5)
+                            .strong()
+                            .color(Color32::BLACK),
+                        )
+                        .fill(p.warning)
+                        .corner_radius(CornerRadius::same(10));
+                        if ui
+                            .add_enabled(!self.connectivity_checking, offline_btn)
+                            .on_hover_text("No internet reachability detected. Click to re-check.")
+                            .clicked()
+                        {
+                            check_connectivity = true;
+                        }
+                    }
                     if mcw_updater::UPDATES_ENABLED {
                         if let Some(ref upd) = self.last_update_check {
                             if upd.update_available {
@@ -368,6 +391,9 @@ impl McwApp {
         if open_about {
             self.open_about_window(ctx);
         }
+        if check_connectivity {
+            self.start_connectivity_check(ctx);
+        }
         if let Some(target) = clicked {
             match target {
                 NavTarget::Home => {
@@ -486,13 +512,11 @@ impl McwApp {
             self.ensure_active_tab_loaded(ctx);
             self.sidebar_context_menu = Some((id, pos));
         } else if let Some(id) = select {
-            self.selected_instance_id = Some(id);
             if self.active_page == AppPage::Versions {
                 self.active_page = AppPage::Home;
             }
             self.sidebar_context_menu = None;
-            self.sync_selected_from_cache();
-            self.ensure_active_tab_loaded(ctx);
+            self.request_instance_switch(id, ctx);
         }
         self.render_sidebar_context_menu(ctx);
     }

@@ -1,6 +1,10 @@
 pub mod bandwidth;
+pub mod connectivity;
+pub mod journal;
 
 pub use bandwidth::{global_bandwidth_limit_mbps, set_global_bandwidth_limit_mbps};
+pub use connectivity::{ConnectivityMonitor, ConnectivityStatus};
+pub use journal::{DownloadJournal, DownloadJournalEntry};
 
 use futures::stream::{self, StreamExt};
 use reqwest::header::{RANGE, USER_AGENT};

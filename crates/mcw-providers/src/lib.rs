@@ -4,6 +4,7 @@ pub mod curseforge;
 pub mod ftb;
 pub mod mod_updates;
 pub mod modpack;
+pub mod modpack_update;
 pub mod modrinth;
 pub mod pack_registry;
 
@@ -24,6 +25,9 @@ pub use modpack::{
     ModpackExportOptions, ModpackInstallOptions, ModpackInstallReport, ModpackInstaller,
     ModpackOptionalFile, ModpackProgressCallback,
 };
+pub use modpack_update::{
+    ModpackUpdateCandidate, ModpackUpdateCheck, ModpackUpdateReport, ModpackUpdateService,
+};
 pub use modrinth::{
     InstalledModFile, ModrinthClient, ModrinthDependency, ModrinthFile, ModrinthSearchHit,
     ModrinthSearchParams, ModrinthSearchResult, ModrinthVersion,
@@ -31,7 +35,7 @@ pub use modrinth::{
 pub use pack_registry::{
     detect_export_origin, detect_installed_pack, AtLauncherManagedFile, AtLauncherPackRecord,
     AtLauncherPackRegistry, FtbManagedFile, FtbPackRecord, FtbPackRegistry, InstalledPackOrigin,
-    InstanceExportOrigin,
+    InstanceExportOrigin, ModrinthPackRecord, ModrinthPackRegistry,
 };
 
 use thiserror::Error;

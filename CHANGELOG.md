@@ -2,6 +2,22 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [0.14.0-beta.1] - 2026-11-21
+
+### Added
+- **Native App Icon, Windows Executable Metadata & Security Policy**: Added `assets/icons/mcw_launcher.ico` and `mcw_launcher.png`, Windows resource embedding (`apps/desktop/build.rs` + `winresource`), runtime window/taskbar icon loading in `main.rs`, and `SECURITY.md`.
+- **In-Place Modrinth Modpack Updater (`ModpackUpdateService`)**: Recorded Modrinth project/version/managed files via `ModrinthPackRegistry` (`.mcw/modrinth-pack.json`) and added a dedicated `Modpack Update` OS window (`mcw_vp_modpack_update`, accessible from Home `...` Actions menu) that upgrades `.mrpack` instances in-place while protecting `saves/`, `config/`, `options.txt`, `servers.dat`, `screenshots/`, `resourcepacks/`, and `shaderpacks/`.
+- **Installed Content Library OS Window (`mcw_vp_content_library`)**: Added UI inspector over `mcw-mods::InstalledContentLibrary` supporting multi-instance search, kind/instance/pinned filters, persistent `Pin`/`Unpin`, and `Open Folder`.
+- **Interactive Compatibility Confirmation Dialog (`mcw_vp_preflight_confirm`)**: Added `"Launch anyway this time"`, `"Always allow for this instance"` (`InstanceSettings.forge_preflight_always_allow`), and `"Cancel"` confirmation before Forge/NeoForge launches when compatibility issues trigger confirmation.
+- **Sanitized Issue Report OS Window (`IssueReportBuilder` & `mcw_vp_issue_report`)**: Added Markdown bug report builder (scrubbing tokens/paths/usernames via `sanitize_log_text`), Diagnostics `.zip` export, and one-click GitHub Issue URL generation accessible from `Logs`, `About`, and `Ctrl+K` Quick Search.
+- **Connectivity Monitor, Download Journal, Theme Validation & Unsaved Settings Guard**: Added `mcw_net::{ConnectivityMonitor, DownloadJournal}`, top-bar clickable `"Offline"` indicator when unreachable, external JSON `ThemeCatalog` validation issues window (`mcw_vp_theme_issues`), and `"Unsaved Changes"` confirmation (`mcw_vp_unsaved_changes`) when switching away from modified Instance Settings.
+
+### Changed
+- **Release Archive Packaging**: Updated `.github/workflows/release.yml` so Windows (`x64`) and Linux (`x64`) release archives also bundle the `themes/` directory alongside binaries and docs.
+- **Backlog & Design Sync**: Updated `docs/BACKLOG.md` and appended Section 10 to `DESIGN.md`.
+
+---
+
 ## [0.13.2-beta.1] - 2026-11-21
 
 ### Added

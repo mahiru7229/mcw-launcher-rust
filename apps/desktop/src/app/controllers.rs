@@ -193,6 +193,7 @@ impl McwApp {
             self.edit_game_args_text.clear();
         }
         self.mod_update_candidates.clear();
+        self.instance_settings_dirty = false;
         self.refresh_mod_compat_report();
     }
 
@@ -624,6 +625,30 @@ impl McwApp {
         quick_play_server: Option<String>,
         ctx: &egui::Context,
     ) {
+        self.start_launch_for_instance(quick_play_world, quick_play_server, false, ctx);
+    }
+
+    pub(crate) fn launch_with_preflight_bypass(
+        &mut self,
+        instance_id: String,
+        quick_play_world: Option<String>,
+        quick_play_server: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        if self.selected_instance_id.as_deref() != Some(instance_id.as_str()) {
+            self.selected_instance_id = Some(instance_id);
+            self.sync_selected_from_cache();
+        }
+        self.start_launch_for_instance(quick_play_world, quick_play_server, true, ctx);
+    }
+
+    pub(crate) fn start_launch_for_instance(
+        &mut self,
+        quick_play_world: Option<String>,
+        quick_play_server: Option<String>,
+        bypass_preflight: bool,
+        ctx: &egui::Context,
+    ) {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
         };
@@ -693,6 +718,7 @@ impl McwApp {
         let paths = self.paths.clone();
         let prefer_dedicated_gpu = self.prefs.prefer_dedicated_gpu;
         let forge_policy_str = self.prefs.forge_preflight_failure_policy.clone();
+        let always_allow_preflight = bypass_preflight || settings.forge_preflight_always_allow;
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
@@ -746,7 +772,38 @@ impl McwApp {
                 let forge_policy = mcw_models::FailurePolicy::parse_global(&forge_policy_str);
                 let preflight =
                     ForgePreflightManager::scan(&paths, &inst, &prepared.metadata, false);
-                let preflight_notes = ForgePreflightManager::enforce(&preflight, forge_policy)
+                let wants_ask = forge_policy_str.trim().eq_ignore_ascii_case("ask")
+                    || (forge_policy == mcw_models::FailurePolicy::Warn
+                        && preflight.error_count() > 0);
+                if !always_allow_preflight && wants_ask && !preflight.issues.is_empty() {
+                    let issue_lines: Vec<String> = preflight
+                        .issues
+                        .iter()
+                        .map(|i| {
+                            format!(
+                                "[{}] {}: {}",
+                                i.severity.to_ascii_uppercase(),
+                                i.code,
+                                i.message
+                            )
+                        })
+                        .collect();
+                    drop(lock);
+                    let _ = tx.send(AppEvent::PreflightConfirmationRequired {
+                        instance_id: inst.instance_id.clone(),
+                        quick_play_world: quick_play_world.clone(),
+                        quick_play_server: quick_play_server.clone(),
+                        issues: issue_lines,
+                    });
+                    ctx.request_repaint();
+                    return Ok(None);
+                }
+                let effective_policy = if always_allow_preflight {
+                    mcw_models::FailurePolicy::Allow
+                } else {
+                    forge_policy
+                };
+                let preflight_notes = ForgePreflightManager::enforce(&preflight, effective_policy)
                     .map_err(|e| e.to_string())?;
                 for note in preflight_notes {
                     let _ = tx.send(AppEvent::LogReceived {
@@ -854,13 +911,18 @@ impl McwApp {
                 }
 
                 drop(lock);
-                Ok::<_, String>(report)
+                Ok::<_, String>(Some(report))
             }
             .await;
 
+            let launch_report = match result {
+                Ok(Some(rep)) => Ok(rep),
+                Ok(None) => return,
+                Err(err) => Err(err),
+            };
             let _ = tx.send(AppEvent::LaunchFinished {
                 instance_id: inst.instance_id,
-                report: result,
+                report: launch_report,
             });
             ctx.request_repaint();
         });
@@ -2181,7 +2243,7 @@ impl McwApp {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                ModpackInstaller::install_from_archive_with_progress(
+                let report = ModpackInstaller::install_from_archive_with_progress(
                     &paths,
                     &archive_path,
                     Some(&title),
@@ -2190,7 +2252,15 @@ impl McwApp {
                     Some(cb),
                 )
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+                let _ = ModrinthPackRegistry::set_origin_metadata(
+                    &paths.instance_dir(&report.instance_id),
+                    &ver.project_id,
+                    &slug,
+                    &ver.id,
+                    &ver.version_number,
+                );
+                Ok(report)
             }
             .await;
 
@@ -3117,6 +3187,83 @@ impl McwApp {
                         },
                     }
                 }
+                AppEvent::ConnectivityChecked(status) => {
+                    self.connectivity_checking = false;
+                    self.connectivity_status = status;
+                }
+                AppEvent::ContentLibraryLoaded(items) => {
+                    self.content_library_loading = false;
+                    self.content_library_items = items;
+                }
+                AppEvent::ModpackUpdateChecked {
+                    instance_id,
+                    result,
+                } => {
+                    if self.modpack_update_instance_id == instance_id {
+                        self.modpack_update_loading = false;
+                        match result {
+                            Ok(check) => {
+                                self.modpack_update_error = None;
+                                if let Some(first) = check.versions.first() {
+                                    self.modpack_update_selected_version = first.version_id.clone();
+                                } else {
+                                    self.modpack_update_selected_version.clear();
+                                }
+                                self.modpack_update_check = Some(check);
+                            }
+                            Err(err) => {
+                                self.modpack_update_error = Some(err);
+                                self.modpack_update_check = None;
+                            }
+                        }
+                    }
+                }
+                AppEvent::ModpackUpdateApplied {
+                    task_id,
+                    instance_id,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    match result {
+                        Ok(rep) => {
+                            self.mods_cache.remove(&instance_id);
+                            self.content_packs_cache.clear();
+                            self.reload_instances();
+                            self.sync_selected_from_cache();
+                            self.ensure_active_tab_loaded(ctx);
+                            self.notice_banner = Some((
+                                format!(
+                                    "Updated '{}' to {} (MC {} - {}). Preserved saves & options.",
+                                    rep.instance_id,
+                                    rep.new_version_number,
+                                    rep.game_version,
+                                    display_loader_name(&rep.loader.name)
+                                ),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Modpack update failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::PreflightConfirmationRequired {
+                    instance_id,
+                    quick_play_world,
+                    quick_play_server,
+                    issues,
+                } => {
+                    if let Some(tid) = self.launch_task_ids.remove(&instance_id) {
+                        self.finish_task(tid);
+                    }
+                    self.launch_states
+                        .insert(instance_id.clone(), LaunchState::Idle);
+                    self.preflight_confirm_instance_id = Some(instance_id);
+                    self.preflight_confirm_world = quick_play_world;
+                    self.preflight_confirm_server = quick_play_server;
+                    self.preflight_confirm_issues = issues;
+                }
             }
         }
     }
@@ -3530,11 +3677,14 @@ impl McwApp {
 
                 let report = match provider {
                     ModpackInstallProvider::Modrinth { slug } => {
+                        let mr_ver_id = ver.id.clone();
+                        let mr_ver_num = ver.label.clone();
+                        let mr_slug = slug.clone();
                         let url = ver
                             .download_url
                             .ok_or_else(|| "Selected Modrinth version has no download URL".to_string())?;
                         let fname = if ver.file_name.is_empty() {
-                            format!("{slug}.mrpack")
+                            format!("{mr_slug}.mrpack")
                         } else {
                             ver.file_name
                         };
@@ -3546,7 +3696,7 @@ impl McwApp {
                             .download_file(&req)
                             .await
                             .map_err(|e| e.to_string())?;
-                        ModpackInstaller::install_from_archive_with_options(
+                        let rep = ModpackInstaller::install_from_archive_with_options(
                             &paths,
                             &archive_path,
                             Some(&instance_name),
@@ -3556,7 +3706,15 @@ impl McwApp {
                             Some(cb.clone()),
                         )
                         .await
-                        .map_err(|e| e.to_string())?
+                        .map_err(|e| e.to_string())?;
+                        let _ = ModrinthPackRegistry::set_origin_metadata(
+                            &paths.instance_dir(&rep.instance_id),
+                            "",
+                            &mr_slug,
+                            &mr_ver_id,
+                            &mr_ver_num,
+                        );
+                        rep
                     }
                     ModpackInstallProvider::CurseForge { mod_id, slug } => {
                         let cf = CurseForgeClient::new(cf_key, cache).map_err(|e| e.to_string())?;
@@ -4549,6 +4707,328 @@ impl McwApp {
                     true,
                 ));
             }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // v0.14 Parity Controllers: Connectivity, Content Library, Modpack Update,
+    // Issue Report, Preflight Confirm & Unsaved Instance Settings Guard
+    // -------------------------------------------------------------------------
+
+    pub(crate) fn start_connectivity_check(&mut self, ctx: &egui::Context) {
+        if self.connectivity_checking {
+            return;
+        }
+        self.connectivity_checking = true;
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let status = match DownloadClient::new() {
+                Ok(client) => ConnectivityMonitor::probe(&client).await,
+                Err(_) => ConnectivityStatus::Offline,
+            };
+            let _ = tx.send(AppEvent::ConnectivityChecked(status));
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn open_content_library_window(&mut self, ctx: &egui::Context) {
+        if self.show_content_library_window {
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_content_library"),
+                Some("Installed Content Library - MCW Launcher"),
+            );
+        }
+        self.show_content_library_window = true;
+        self.start_content_library_scan(ctx);
+    }
+
+    pub(crate) fn start_content_library_scan(&mut self, ctx: &egui::Context) {
+        if self.content_library_loading {
+            return;
+        }
+        self.content_library_loading = true;
+        let paths = self.paths.clone();
+        let instances = self.instances.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let collected = tokio::task::spawn_blocking(move || {
+                let mut rows = Vec::new();
+                for inst in &instances {
+                    let inst_dir = paths.instance_dir(&inst.instance_id);
+                    for item in InstalledContentLibrary::scan(&inst_dir, &inst.name) {
+                        rows.push((inst.instance_id.clone(), inst.name.clone(), item));
+                    }
+                }
+                rows
+            })
+            .await
+            .unwrap_or_default();
+            let _ = tx.send(AppEvent::ContentLibraryLoaded(collected));
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn open_modpack_update_window(&mut self, instance_id: String, ctx: &egui::Context) {
+        if self.show_modpack_update_window && self.modpack_update_instance_id == instance_id {
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_modpack_update"),
+                None,
+            );
+            return;
+        }
+        self.show_modpack_update_window = true;
+        self.modpack_update_instance_id = instance_id.clone();
+        self.modpack_update_check = None;
+        self.modpack_update_selected_version.clear();
+        self.modpack_update_error = None;
+        self.start_modpack_update_check(instance_id, ctx);
+    }
+
+    pub(crate) fn start_modpack_update_check(&mut self, instance_id: String, ctx: &egui::Context) {
+        self.modpack_update_loading = true;
+        self.modpack_update_error = None;
+        let paths = self.paths.clone();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let include_beta = self.modpack_update_include_beta;
+        let include_alpha = self.modpack_update_include_alpha;
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
+                let inst_dir = paths.instance_dir(&instance_id);
+                ModpackUpdateService::check_modrinth_updates(
+                    &instance_id,
+                    &inst_dir,
+                    &mr,
+                    include_beta,
+                    include_alpha,
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            .await;
+
+            let _ = tx.send(AppEvent::ModpackUpdateChecked {
+                instance_id,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_modpack_update_apply(
+        &mut self,
+        instance_id: String,
+        candidate: mcw_providers::ModpackUpdateCandidate,
+        ctx: &egui::Context,
+    ) {
+        let task_id = self.begin_task(
+            format!("Update Modpack: {instance_id}"),
+            format!("Updating to {}...", candidate.version_number),
+        );
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let tx_p = tx.clone();
+            let ctx_p = ctx_c.clone();
+            let cb: ModpackProgressCallback = Arc::new(move |cur, tot, msg| {
+                let _ = tx_p.send(AppEvent::TaskProgress {
+                    task_id,
+                    current: cur,
+                    total: tot,
+                    message: msg,
+                });
+                ctx_p.request_repaint();
+            });
+            let res = async {
+                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
+                ModpackUpdateService::apply_modrinth_update(
+                    &paths,
+                    &instance_id,
+                    &candidate,
+                    &downloader,
+                    Some(cb),
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            .await;
+
+            let _ = tx.send(AppEvent::ModpackUpdateApplied {
+                task_id,
+                instance_id,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn current_issue_report_input(&self) -> IssueReportInput {
+        let inst = self.selected_instance();
+        let log_excerpt = if let Some(sel) = inst {
+            self.instance_logs
+                .get(&sel.instance_id)
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .rev()
+                        .take(50)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .map(|l| l.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    self.global_logs
+                        .iter()
+                        .rev()
+                        .take(40)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+        } else {
+            self.global_logs
+                .iter()
+                .rev()
+                .take(40)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        IssueReportInput {
+            launcher_version: format!("v{}", mcw_models::APP_VERSION),
+            os_info: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+            summary: self.issue_report_summary.clone(),
+            instance_name: inst.map(|i| i.name.clone()),
+            minecraft_version: inst.map(|i| i.version_id.clone()),
+            mod_loader: inst.map(|i| i.mod_loader.name.clone()),
+            log_excerpt,
+        }
+    }
+
+    pub(crate) fn rebuild_issue_report_markdown(&mut self) {
+        let input = self.current_issue_report_input();
+        self.issue_report_markdown = IssueReportBuilder::build_markdown(&input);
+    }
+
+    pub(crate) fn open_issue_report_window(&mut self, ctx: &egui::Context) {
+        if self.show_issue_report_window {
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_issue_report"),
+                Some("Report an Issue - MCW Launcher"),
+            );
+        }
+        self.show_issue_report_window = true;
+        self.rebuild_issue_report_markdown();
+    }
+
+    pub(crate) fn request_tab_switch(&mut self, tab: DetailTab, ctx: &egui::Context) {
+        if self.active_tab == DetailTab::Settings
+            && tab != DetailTab::Settings
+            && self.instance_settings_dirty
+        {
+            self.pending_tab_switch = Some(tab);
+            self.pending_instance_switch = None;
+            self.show_unsaved_changes_window = true;
+            return;
+        }
+        self.active_tab = tab;
+        self.ensure_active_tab_loaded(ctx);
+    }
+
+    pub(crate) fn request_instance_switch(&mut self, instance_id: String, ctx: &egui::Context) {
+        if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+            return;
+        }
+        if self.active_tab == DetailTab::Settings && self.instance_settings_dirty {
+            self.pending_instance_switch = Some(instance_id);
+            self.pending_tab_switch = None;
+            self.show_unsaved_changes_window = true;
+            return;
+        }
+        self.selected_instance_id = Some(instance_id);
+        self.sync_selected_from_cache();
+        self.ensure_active_tab_loaded(ctx);
+    }
+
+    pub(crate) fn save_selected_instance_settings(&mut self) -> bool {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return false;
+        };
+        let jvm_args: Vec<String> = self
+            .edit_jvm_args_text
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let game_args: Vec<String> = self
+            .edit_game_args_text
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let Some(ref mut s) = self.selected_settings else {
+            return false;
+        };
+        s.jvm_arguments = jvm_args;
+        s.game_arguments = game_args;
+        let store = InstanceStore::new(&self.paths);
+        match store.save_settings(&inst.instance_id, s) {
+            Ok(()) => {
+                self.settings_cache
+                    .insert(inst.instance_id.clone(), s.clone());
+                self.instance_settings_dirty = false;
+                self.notice_banner = Some(("Settings saved.".to_string(), false));
+                true
+            }
+            Err(e) => {
+                self.notice_banner = Some((format!("Failed to save settings: {e}"), true));
+                false
+            }
+        }
+    }
+
+    pub(crate) fn discard_selected_instance_settings(&mut self) {
+        self.instance_settings_dirty = false;
+        self.sync_selected_from_cache();
+    }
+
+    pub(crate) fn apply_pending_unsaved_navigation(&mut self, ctx: &egui::Context) {
+        if let Some(tab) = self.pending_tab_switch.take() {
+            self.active_tab = tab;
+            self.ensure_active_tab_loaded(ctx);
+        }
+        if let Some(inst_id) = self.pending_instance_switch.take() {
+            self.selected_instance_id = Some(inst_id);
+            self.sync_selected_from_cache();
+            self.ensure_active_tab_loaded(ctx);
         }
     }
 }

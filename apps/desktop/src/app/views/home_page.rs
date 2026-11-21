@@ -268,11 +268,15 @@ impl McwApp {
         // 2. Hero Action Bar: Play + `...` Actions menu + Quick Icon Buttons
         let mut trigger_repair = false;
         let mut open_repair_center = false;
+        let mut open_modpack_update = false;
+        let mut open_content_library = false;
         let mut open_export = false;
         let mut export_loader_diag = false;
         let mut change_icon_clicked = false;
         let mut reset_icon_clicked = false;
         let mut open_content_cat: Option<BrowserCategory> = None;
+        let has_modrinth_pack =
+            ModrinthPackRegistry::load(&self.paths.instance_dir(&inst.instance_id)).is_some();
 
         let export_label = self.t("modpack_package.export.title").to_string();
         let clone_lbl = self.t("workspace.action.clone").to_string();
@@ -455,6 +459,19 @@ impl McwApp {
                                 open_repair_center = true;
                                 ui.close_menu();
                             }
+                            if has_modrinth_pack
+                                && ui
+                                    .add_enabled(!busy, Button::new("Check Modpack Update..."))
+                                    .on_disabled_hover_text("Stop the instance before updating")
+                                    .clicked()
+                            {
+                                open_modpack_update = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("Installed Content Library...").clicked() {
+                                open_content_library = true;
+                                ui.close_menu();
+                            }
                             if is_diag_loader && ui.button(&export_diag_lbl).clicked() {
                                 export_loader_diag = true;
                                 ui.close_menu();
@@ -633,8 +650,12 @@ impl McwApp {
             )
             .clicked()
             {
-                self.active_tab = DetailTab::Settings;
-                self.sync_selected_from_cache();
+                if settings_active {
+                    self.request_tab_switch(DetailTab::Mods, ctx);
+                } else {
+                    self.active_tab = DetailTab::Settings;
+                    self.sync_selected_from_cache();
+                }
             }
         });
 
@@ -643,6 +664,12 @@ impl McwApp {
         }
         if open_repair_center {
             self.open_repair_center(&inst.instance_id, ctx);
+        }
+        if open_modpack_update {
+            self.open_modpack_update_window(inst.instance_id.clone(), ctx);
+        }
+        if open_content_library {
+            self.open_content_library_window(ctx);
         }
         if open_export {
             self.open_export_modpack_window(ctx);
@@ -825,8 +852,7 @@ impl McwApp {
                     }
                 });
                 if let Some(tab) = switched_tab {
-                    self.active_tab = tab;
-                    self.ensure_active_tab_loaded(ctx);
+                    self.request_tab_switch(tab, ctx);
                 }
 
                 ui.add_space(6.0);

@@ -10,5 +10,6 @@ pub mod shell_nav;
 pub mod stage3_dialogs;
 pub mod stage4_dialogs;
 pub mod stage5_dialogs;
+pub mod stage6_dialogs;
 pub mod versions_page;
 pub mod workspace;

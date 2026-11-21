@@ -116,6 +116,8 @@ pub struct InstanceSettings {
     pub modrinth_failure_policy: String,
     #[serde(default = "default_inherit")]
     pub curseforge_failure_policy: String,
+    #[serde(default)]
+    pub forge_preflight_always_allow: bool,
 }
 
 fn default_inherit() -> String {
@@ -162,6 +164,7 @@ impl Default for InstanceSettings {
             fullscreen: false,
             modrinth_failure_policy: default_inherit(),
             curseforge_failure_policy: default_inherit(),
+            forge_preflight_always_allow: false,
         }
     }
 }

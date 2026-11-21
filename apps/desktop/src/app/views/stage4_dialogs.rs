@@ -465,11 +465,19 @@ impl McwApp {
                         if ui.button("Open Data Folder").clicked() {
                             open_external(&self.paths.project_root.display().to_string());
                         }
+                        let mut report_clicked = false;
+                        if ui.button("Report Issue...").clicked() {
+                            report_clicked = true;
+                        }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button(self.t("common.close")).clicked() {
                                 open = false;
                             }
                         });
+                        if report_clicked {
+                            open = false;
+                            self.open_issue_report_window(ctx);
+                        }
                     });
                 });
         });

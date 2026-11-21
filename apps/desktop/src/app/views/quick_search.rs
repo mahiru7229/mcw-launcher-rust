@@ -30,6 +30,8 @@ enum QuickAction {
     OpenAccounts,
     RepairSelected(String),
     OpenGlobalLogs,
+    OpenContentLibrary,
+    OpenIssueReport,
     OpenAbout,
 }
 
@@ -165,6 +167,16 @@ impl McwApp {
                 QuickAction::OpenGlobalLogs,
                 format!("{} (OS Window)", self.t("navigation.logs")),
                 "Pop out global launcher logs window",
+            ),
+            (
+                QuickAction::OpenContentLibrary,
+                "Installed Content Library".to_string(),
+                "Search & pin installed mods, resource packs, shaders across instances",
+            ),
+            (
+                QuickAction::OpenIssueReport,
+                "Report an Issue".to_string(),
+                "Generate sanitized Markdown bug report or export diagnostics",
             ),
             (
                 QuickAction::OpenAbout,
@@ -441,10 +453,8 @@ impl McwApp {
             self.quick_search_open_since = None;
             match action {
                 QuickAction::SelectInstance(id) => {
-                    self.selected_instance_id = Some(id);
                     self.active_page = AppPage::Home;
-                    self.sync_selected_from_cache();
-                    self.ensure_active_tab_loaded(ctx);
+                    self.request_instance_switch(id, ctx);
                 }
                 QuickAction::GoPage(page) => {
                     self.active_page = page;
@@ -480,6 +490,12 @@ impl McwApp {
                 }
                 QuickAction::OpenGlobalLogs => {
                     self.open_global_logs_window(ctx);
+                }
+                QuickAction::OpenContentLibrary => {
+                    self.open_content_library_window(ctx);
+                }
+                QuickAction::OpenIssueReport => {
+                    self.open_issue_report_window(ctx);
                 }
                 QuickAction::OpenAbout => {
                     self.open_about_window(ctx);

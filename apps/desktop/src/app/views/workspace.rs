@@ -1081,16 +1081,52 @@ impl McwApp {
             None => inst.last_launch_state.clone(),
         };
 
-        let Some(ref mut settings) = self.selected_settings else {
-            return;
-        };
-
         let mut save_clicked = false;
+        let mut dirty_save_now = false;
+        let mut dirty_discard_now = false;
         let mut apply_runtime = false;
         let mut install_java_major: Option<u32> = None;
         let mut optifine_install_mods = false;
         let mut optifine_launch_installer = false;
         let mut optifine_uninstall = false;
+
+        if self.instance_settings_dirty {
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.warning))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new("Unsaved changes in Instance Settings.")
+                                .strong()
+                                .color(p.warning),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("Discard").clicked() {
+                                dirty_discard_now = true;
+                            }
+                            let sb =
+                                Button::new(RichText::new("Save").color(p.accent_text).strong())
+                                    .fill(p.accent);
+                            if ui.add(sb).clicked() {
+                                dirty_save_now = true;
+                            }
+                        });
+                    });
+                });
+            ui.add_space(6.0);
+        }
+
+        let settings_before = self.selected_settings.clone();
+        let jvm_before = self.edit_jvm_args_text.clone();
+        let game_before = self.edit_game_args_text.clone();
+
+        let Some(ref mut settings) = self.selected_settings else {
+            return;
+        };
 
         ScrollArea::vertical()
             .id_salt("instance_settings_scroll")
@@ -1494,34 +1530,17 @@ impl McwApp {
             }
         }
 
-        if save_clicked {
-            let jvm_args: Vec<String> = self
-                .edit_jvm_args_text
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            let game_args: Vec<String> = self
-                .edit_game_args_text
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if let Some(ref mut s) = self.selected_settings {
-                s.jvm_arguments = jvm_args;
-                s.game_arguments = game_args;
-                let store = InstanceStore::new(&self.paths);
-                match store.save_settings(&inst.instance_id, s) {
-                    Ok(()) => {
-                        self.settings_cache
-                            .insert(inst.instance_id.clone(), s.clone());
-                        self.notice_banner = Some(("Settings saved.".to_string(), false));
-                    }
-                    Err(e) => {
-                        self.notice_banner = Some((format!("Failed to save settings: {e}"), true));
-                    }
-                }
-            }
+        if self.selected_settings.as_ref() != settings_before.as_ref()
+            || self.edit_jvm_args_text != jvm_before
+            || self.edit_game_args_text != game_before
+        {
+            self.instance_settings_dirty = true;
+        }
+
+        if dirty_discard_now {
+            self.discard_selected_instance_settings();
+        } else if save_clicked || dirty_save_now {
+            self.save_selected_instance_settings();
         }
         if let Some(major) = install_java_major {
             self.start_java_install(major, ctx);

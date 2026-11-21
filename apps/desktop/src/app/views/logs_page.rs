@@ -245,6 +245,10 @@ impl McwApp {
                             }
                         }
                     }
+
+                    if ui.button("Report Issue...").clicked() {
+                        self.open_issue_report_window(ctx);
+                    }
                 });
 
                 ui.add_space(6.0);

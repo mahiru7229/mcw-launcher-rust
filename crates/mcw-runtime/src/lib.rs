@@ -17,7 +17,8 @@ pub mod window_activator;
 pub use bytecode::{detect_jar_required_java, detect_mods_required_java};
 pub use compactor::JavaCommandCompactor;
 pub use diagnostics::{
-    find_latest_crash_report, DiagnosticsExporter, LaunchErrorPresenter, LaunchErrorView,
+    find_latest_crash_report, DiagnosticsExporter, IssueReportBuilder, IssueReportInput,
+    LaunchErrorPresenter, LaunchErrorView,
 };
 pub use discord_rpc::{DiscordActivity, DiscordRpcService, DEFAULT_DISCORD_CLIENT_ID};
 pub use first_run::{

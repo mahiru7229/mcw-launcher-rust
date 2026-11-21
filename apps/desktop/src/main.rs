@@ -38,12 +38,17 @@ fn main() -> eframe::Result {
         screen_default
     };
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("MCW Launcher: Rust Edition")
+        .with_inner_size(init_size)
+        .with_min_inner_size([840.0, 560.0]);
+    if let Some(icon) = load_window_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
+
     let options = eframe::NativeOptions {
         centered: true,
-        viewport: egui::ViewportBuilder::default()
-            .with_title("MCW Launcher: Rust Edition")
-            .with_inner_size(init_size)
-            .with_min_inner_size([840.0, 560.0]),
+        viewport,
         ..Default::default()
     };
 
@@ -52,4 +57,15 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(McwApp::new(cc, paths, init_size)))),
     )
+}
+
+fn load_window_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../../../assets/icons/mcw_launcher.png");
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
 }

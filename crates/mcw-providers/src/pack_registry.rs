@@ -184,6 +184,85 @@ impl AtLauncherPackRegistry {
     }
 }
 
+fn default_modrinth() -> String {
+    "modrinth".to_string()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModrinthPackRecord {
+    #[serde(default = "default_modrinth")]
+    pub source: String,
+    #[serde(rename = "projectId", default)]
+    pub project_id: String,
+    #[serde(rename = "projectSlug", default)]
+    pub project_slug: String,
+    #[serde(rename = "versionId", default)]
+    pub version_id: String,
+    #[serde(rename = "versionNumber", default)]
+    pub version_number: String,
+    #[serde(rename = "packName", default)]
+    pub pack_name: String,
+    #[serde(rename = "managedFiles", default)]
+    pub managed_files: Vec<String>,
+    #[serde(rename = "updatedAt", default)]
+    pub updated_at: String,
+}
+
+pub struct ModrinthPackRegistry;
+
+impl ModrinthPackRegistry {
+    pub fn registry_path(instance_dir: &Path) -> PathBuf {
+        instance_dir.join(".mcw").join("modrinth-pack.json")
+    }
+
+    pub fn load(instance_dir: &Path) -> Option<ModrinthPackRecord> {
+        let path = Self::registry_path(instance_dir);
+        let raw = fs::read_to_string(path).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    pub fn save(instance_dir: &Path, record: &ModrinthPackRecord) -> crate::Result<()> {
+        let mut normalized = record.clone();
+        normalized.source = "modrinth".to_string();
+        normalized.updated_at = unix_timestamp_string();
+        let mut clean_files = Vec::new();
+        for f in &normalized.managed_files {
+            let rel = safe_relative_posix(f, f);
+            if !rel.is_empty() && !clean_files.iter().any(|x| x == &rel) {
+                clean_files.push(rel);
+            }
+        }
+        clean_files.sort_by_key(|a| a.to_ascii_lowercase());
+        normalized.managed_files = clean_files;
+        atomic_write_json(&Self::registry_path(instance_dir), &normalized)
+            .map_err(|e| crate::ProviderError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(())
+    }
+
+    pub fn set_origin_metadata(
+        instance_dir: &Path,
+        project_id: &str,
+        project_slug: &str,
+        version_id: &str,
+        version_number: &str,
+    ) -> crate::Result<()> {
+        let mut rec = Self::load(instance_dir).unwrap_or_default();
+        if !project_id.trim().is_empty() {
+            rec.project_id = project_id.trim().to_string();
+        }
+        if !project_slug.trim().is_empty() {
+            rec.project_slug = project_slug.trim().to_string();
+        }
+        if !version_id.trim().is_empty() {
+            rec.version_id = version_id.trim().to_string();
+        }
+        if !version_number.trim().is_empty() {
+            rec.version_number = version_number.trim().to_string();
+        }
+        Self::save(instance_dir, &rec)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InstalledPackOrigin {
     pub provider: String,

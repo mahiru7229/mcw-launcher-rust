@@ -34,24 +34,26 @@ pub struct ModpackInstallReport {
 }
 
 #[derive(Debug, Deserialize)]
-struct MrpackIndex {
-    name: String,
-    dependencies: HashMap<String, String>,
+pub(crate) struct MrpackIndex {
+    pub(crate) name: String,
+    #[serde(rename = "versionId", default)]
+    pub(crate) version_id: String,
+    pub(crate) dependencies: HashMap<String, String>,
     #[serde(default)]
-    files: Vec<MrpackFile>,
+    pub(crate) files: Vec<MrpackFile>,
 }
 
 #[derive(Debug, Deserialize)]
-struct MrpackFile {
-    path: String,
+pub(crate) struct MrpackFile {
+    pub(crate) path: String,
     #[serde(default)]
-    hashes: HashMap<String, String>,
+    pub(crate) hashes: HashMap<String, String>,
     #[serde(default)]
-    downloads: Vec<String>,
+    pub(crate) downloads: Vec<String>,
     #[serde(rename = "fileSize", default)]
-    file_size: u64,
+    pub(crate) file_size: u64,
     #[serde(default)]
-    env: Option<HashMap<String, String>>,
+    pub(crate) env: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -403,6 +405,7 @@ impl ModpackInstaller {
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
 
         let mut requests = Vec::new();
+        let mut managed_files = Vec::new();
         for f in &index.files {
             if let Some(ref env) = f.env {
                 if env
@@ -421,6 +424,7 @@ impl ModpackInstaller {
                     continue;
                 }
             }
+            managed_files.push(f.path.replace('\\', "/"));
             let Some(primary_url) = f.downloads.first() else {
                 continue;
             };
@@ -450,15 +454,18 @@ impl ModpackInstaller {
         let extracted_overrides =
             extract_overrides(archive_path, &["overrides/", "client-overrides/"], &mc_dir)?;
         extract_embedded_instance_icon(archive_path, &store, &inst.instance_id);
-        let _ = atomic_write_json(
-            &paths
-                .instance_dir(&inst.instance_id)
-                .join(".mcw")
-                .join("modrinth-pack.json"),
-            &serde_json::json!({
-                "source": "modrinth",
-                "packName": target_name,
-            }),
+        let _ = crate::pack_registry::ModrinthPackRegistry::save(
+            &paths.instance_dir(&inst.instance_id),
+            &crate::pack_registry::ModrinthPackRecord {
+                source: "modrinth".to_string(),
+                project_id: String::new(),
+                project_slug: String::new(),
+                version_id: String::new(),
+                version_number: index.version_id.clone(),
+                pack_name: target_name.to_string(),
+                managed_files,
+                updated_at: String::new(),
+            },
         );
 
         Ok(ModpackInstallReport {
@@ -1146,7 +1153,7 @@ pub fn normalize_modloader(loader_name: &str, raw_version: &str, game_version: &
     }
 }
 
-fn parse_mrpack_loader(deps: &HashMap<String, String>, game_version: &str) -> ModLoader {
+pub(crate) fn parse_mrpack_loader(deps: &HashMap<String, String>, game_version: &str) -> ModLoader {
     for (key, loader) in [
         ("fabric-loader", "fabric"),
         ("quilt-loader", "quilt"),
@@ -1247,7 +1254,20 @@ fn extract_embedded_instance_icon(archive_path: &Path, store: &InstanceStore, in
     }
 }
 
-fn extract_overrides(archive_path: &Path, prefixes: &[&str], mc_dir: &Path) -> Result<usize> {
+pub(crate) fn extract_overrides(
+    archive_path: &Path,
+    prefixes: &[&str],
+    mc_dir: &Path,
+) -> Result<usize> {
+    extract_overrides_filtered(archive_path, prefixes, mc_dir, &[])
+}
+
+pub(crate) fn extract_overrides_filtered(
+    archive_path: &Path,
+    prefixes: &[&str],
+    mc_dir: &Path,
+    skip_prefixes: &[&str],
+) -> Result<usize> {
     let file = File::open(archive_path)?;
     let mut archive =
         ZipArchive::new(file).map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
@@ -1265,6 +1285,13 @@ fn extract_overrides(archive_path: &Path, prefixes: &[&str], mc_dir: &Path) -> R
         if matched_rel.is_empty() {
             continue;
         }
+        let rel_lower = matched_rel.to_ascii_lowercase();
+        if skip_prefixes
+            .iter()
+            .any(|sp| rel_lower == *sp || rel_lower.starts_with(sp))
+        {
+            continue;
+        }
         let target = safe_join_under(mc_dir, matched_rel)?;
         if entry.is_dir() {
             fs::create_dir_all(&target)?;
@@ -1280,7 +1307,7 @@ fn extract_overrides(archive_path: &Path, prefixes: &[&str], mc_dir: &Path) -> R
     Ok(extracted)
 }
 
-fn safe_join_under(base: &Path, relative: &str) -> Result<PathBuf> {
+pub(crate) fn safe_join_under(base: &Path, relative: &str) -> Result<PathBuf> {
     let normalized = relative.replace('\\', "/");
     let mut out = base.to_path_buf();
     for comp in Path::new(&normalized).components() {

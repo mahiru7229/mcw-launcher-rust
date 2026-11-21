@@ -326,9 +326,110 @@ impl DiagnosticsExporter {
     }
 }
 
+/// Sanitized GitHub / bug report builder mirroring Python `IssueReportDialog` & `IssueReportBuilder`.
+#[derive(Debug, Clone, Default)]
+pub struct IssueReportInput {
+    pub launcher_version: String,
+    pub os_info: String,
+    pub summary: String,
+    pub instance_name: Option<String>,
+    pub minecraft_version: Option<String>,
+    pub mod_loader: Option<String>,
+    pub log_excerpt: String,
+}
+
+pub struct IssueReportBuilder;
+
+impl IssueReportBuilder {
+    pub fn build_markdown(input: &IssueReportInput) -> String {
+        let mut out = String::new();
+        out.push_str("## Environment\n");
+        out.push_str(&format!(
+            "- Launcher: MCW Launcher: Rust Edition {}\n",
+            input.launcher_version.trim()
+        ));
+        out.push_str(&format!("- OS: {}\n", input.os_info.trim()));
+        if let Some(ref inst) = input.instance_name {
+            let mc = input.minecraft_version.as_deref().unwrap_or("unknown");
+            let loader = input.mod_loader.as_deref().unwrap_or("vanilla");
+            out.push_str(&format!("- Instance: {inst} (MC {mc} - {loader})\n"));
+        }
+
+        out.push_str("\n## Description\n");
+        let desc = input.summary.trim();
+        if desc.is_empty() {
+            out.push_str("(Describe what happened and how to reproduce it.)\n");
+        } else {
+            out.push_str(&sanitize_log_text(desc));
+            out.push('\n');
+        }
+
+        let excerpt = sanitize_log_text(input.log_excerpt.trim());
+        if !excerpt.is_empty() {
+            let lines: Vec<&str> = excerpt.lines().collect();
+            let start = lines.len().saturating_sub(60);
+            let tail = lines[start..].join("\n");
+            out.push_str("\n## Sanitized Log Excerpt\n```text\n");
+            out.push_str(&tail);
+            out.push_str("\n```\n");
+        }
+        out
+    }
+
+    pub fn build_github_issue_url(input: &IssueReportInput, repo_slug: &str) -> String {
+        let body = Self::build_markdown(input);
+        let slug = repo_slug.trim().trim_matches('/');
+        let slug = if slug.is_empty() {
+            "mahiru7229/mcw-launcher-rust"
+        } else {
+            slug
+        };
+        format!(
+            "https://github.com/{slug}/issues/new?title={}&body={}",
+            url_encode_component("[Bug]: Launcher Issue"),
+            url_encode_component(&body)
+        )
+    }
+}
+
+fn url_encode_component(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builds_sanitized_issue_report_markdown_and_url() {
+        let input = IssueReportInput {
+            launcher_version: "v0.14.0-beta.1".to_string(),
+            os_info: "windows x86_64".to_string(),
+            summary: "Crashed when launching".to_string(),
+            instance_name: Some("FabricPack".to_string()),
+            minecraft_version: Some("1.21.4".to_string()),
+            mod_loader: Some("fabric".to_string()),
+            log_excerpt: "Token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456\nError at C:\\Users\\alice\\mc".to_string(),
+        };
+        let md = IssueReportBuilder::build_markdown(&input);
+        assert!(md.contains("MCW Launcher: Rust Edition v0.14.0-beta.1"));
+        assert!(!md.contains("eyJhbGciOi"));
+        assert!(!md.contains("alice"));
+        assert!(md.contains("<REDACTED_JWT>"));
+        let url =
+            IssueReportBuilder::build_github_issue_url(&input, "mahiru7229/mcw-launcher-rust");
+        assert!(url.starts_with("https://github.com/mahiru7229/mcw-launcher-rust/issues/new?"));
+    }
 
     #[test]
     fn classifies_launch_errors_and_locates_latest_crash_report() {

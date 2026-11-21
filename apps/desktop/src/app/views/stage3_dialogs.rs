@@ -84,6 +84,19 @@ impl McwApp {
                             let _ = std::fs::create_dir_all(&self.paths.theme_root);
                             open_external(&self.paths.theme_root.display().to_string());
                         }
+                        if !self.theme_catalog.issues.is_empty()
+                            && ui
+                                .button(
+                                    RichText::new(format!(
+                                        "Theme Issues ({})",
+                                        self.theme_catalog.issues.len()
+                                    ))
+                                    .color(p.warning),
+                                )
+                                .clicked()
+                        {
+                            self.show_theme_issues_window = true;
+                        }
                     });
 
                     if !active_def.description.is_empty() {

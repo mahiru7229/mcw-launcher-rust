@@ -148,8 +148,16 @@ pub struct ThemeDefinition {
 }
 
 #[derive(Debug, Clone)]
+pub struct ThemeIssue {
+    pub file_name: String,
+    pub path: PathBuf,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ThemeCatalog {
     pub themes: Vec<ThemeDefinition>,
+    pub issues: Vec<ThemeIssue>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -294,24 +302,39 @@ impl ThemeCatalog {
         }
         candidates.sort();
 
+        let mut issues = Vec::new();
         for path in candidates {
-            if let Some(def) = Self::parse_external(&path) {
-                if let Some(existing) = themes
-                    .iter_mut()
-                    .find(|t| t.id.eq_ignore_ascii_case(&def.id))
-                {
-                    *existing = def;
-                } else {
-                    themes.push(def);
+            match Self::parse_external(&path) {
+                Ok(def) => {
+                    if let Some(existing) = themes
+                        .iter_mut()
+                        .find(|t| t.id.eq_ignore_ascii_case(&def.id))
+                    {
+                        *existing = def;
+                    } else {
+                        themes.push(def);
+                    }
+                }
+                Err(message) => {
+                    let file_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("theme.json")
+                        .to_string();
+                    issues.push(ThemeIssue {
+                        file_name,
+                        path,
+                        message,
+                    });
                 }
             }
         }
 
-        Self { themes }
+        Self { themes, issues }
     }
 
-    fn parse_external(path: &Path) -> Option<ThemeDefinition> {
-        let raw = fs::read_to_string(path).ok()?;
+    fn parse_external(path: &Path) -> std::result::Result<ThemeDefinition, String> {
+        let raw = fs::read_to_string(path).map_err(|e| format!("Failed to read file: {e}"))?;
         let fallback_id = path
             .parent()
             .filter(|_| path.file_name().and_then(|n| n.to_str()) == Some("theme.json"))
@@ -319,7 +342,7 @@ impl ThemeCatalog {
             .or_else(|| path.file_stem())
             .and_then(|s| s.to_str())
             .unwrap_or("custom");
-        Self::parse_json_str(&raw, fallback_id, Some(path.to_path_buf()))
+        Self::parse_json_str_checked(&raw, fallback_id, Some(path.to_path_buf()))
     }
 
     pub fn parse_json_str(
@@ -327,7 +350,16 @@ impl ThemeCatalog {
         fallback_id: &str,
         source_path: Option<PathBuf>,
     ) -> Option<ThemeDefinition> {
-        let parsed: ExternalThemeJson = serde_json::from_str(raw).ok()?;
+        Self::parse_json_str_checked(raw, fallback_id, source_path).ok()
+    }
+
+    fn parse_json_str_checked(
+        raw: &str,
+        fallback_id: &str,
+        source_path: Option<PathBuf>,
+    ) -> std::result::Result<ThemeDefinition, String> {
+        let parsed: ExternalThemeJson =
+            serde_json::from_str(raw).map_err(|e| format!("Invalid theme JSON: {e}"))?;
         let id = if parsed.id.trim().is_empty() {
             fallback_id.to_string()
         } else {
@@ -346,41 +378,56 @@ impl ThemeCatalog {
 
         let mut pal = ThemePalette::for_mode(base_mode);
         let ep = &parsed.palette;
-        if let Some(c) = ep.canvas.as_deref().and_then(parse_hex_color) {
+        let check_hex = |field: &str,
+                         raw_opt: &Option<String>|
+         -> std::result::Result<Option<Color32>, String> {
+            let Some(ref s) = raw_opt else {
+                return Ok(None);
+            };
+            if s.trim().is_empty() {
+                return Ok(None);
+            }
+            parse_hex_color(s)
+                .map(Some)
+                .ok_or_else(|| format!("Invalid hex color '{s}' for '{field}' (expected #RRGGBB)"))
+        };
+
+        if let Some(c) = check_hex("canvas", &ep.canvas)? {
             pal.canvas = c;
         }
-        if let Some(c) = ep.surface.as_deref().and_then(parse_hex_color) {
+        if let Some(c) = check_hex("surface", &ep.surface)? {
             pal.surface = c;
         }
-        if let Some(c) = ep.elevated.as_deref().and_then(parse_hex_color) {
+        if let Some(c) = check_hex("elevated", &ep.elevated)? {
             pal.elevated = c;
         }
-        if let Some(c) = ep.border.as_deref().and_then(parse_hex_color) {
+        if let Some(c) = check_hex("border", &ep.border)? {
             pal.border = c;
         }
-        if let Some(c) = ep.text_primary.as_deref().and_then(parse_hex_color) {
+        if let Some(c) = check_hex("text_primary", &ep.text_primary)? {
             pal.text = c;
         }
-        if let Some(c) = ep.text_muted.as_deref().and_then(parse_hex_color) {
+        if let Some(c) = check_hex("text_muted", &ep.text_muted)? {
             pal.text_muted = c;
         }
         if let Some(ref primary) = ep.primary {
+            let _ = check_hex("primary", &Some(primary.clone()))?;
             let _ = apply_custom_accent(&mut pal, primary);
         }
-        if let Some(c) = ep.primary_text.as_deref().and_then(parse_hex_color) {
+        if let Some(c) = check_hex("primary_text", &ep.primary_text)? {
             pal.accent_text = c;
         }
-        if let Some(c) = ep.focus.as_deref().and_then(parse_hex_color) {
+        if let Some(c) = check_hex("focus", &ep.focus)? {
             pal.focus = c;
         }
-        if let Some(c) = ep.warning.as_deref().and_then(parse_hex_color) {
+        if let Some(c) = check_hex("warning", &ep.warning)? {
             pal.warning = c;
         }
-        if let Some(c) = ep.error.as_deref().and_then(parse_hex_color) {
+        if let Some(c) = check_hex("error", &ep.error)? {
             pal.danger = c;
         }
 
-        Some(ThemeDefinition {
+        Ok(ThemeDefinition {
             id,
             name,
             description: parsed.description.trim().to_string(),
@@ -626,5 +673,20 @@ mod tests {
         let custom = catalog.find("emerald-block");
         assert_eq!(custom.name, "Emerald Block");
         assert_eq!(custom.palette.accent, Color32::from_rgb(0x63, 0x98, 0x4a));
+        assert!(catalog.issues.is_empty());
+    }
+
+    #[test]
+    fn records_theme_validation_issues_for_malformed_json() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("broken.json"), "{ not valid json").unwrap();
+        fs::write(
+            dir.path().join("bad-color.json"),
+            r#"{"id":"bad","name":"Bad","palette":{"primary":"not-hex"}}"#,
+        )
+        .unwrap();
+
+        let catalog = ThemeCatalog::load(dir.path());
+        assert_eq!(catalog.issues.len(), 2);
     }
 }
