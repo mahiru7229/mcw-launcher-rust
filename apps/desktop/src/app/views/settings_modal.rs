@@ -374,6 +374,7 @@ impl McwApp {
         }
         if reset_defaults {
             self.prefs = LauncherPrefs::default();
+            self.pending_ui_scale_pct = 100.0;
             self.custom_accent_input = self.prefs.custom_accent_hex.clone();
             self.apply_current_theme(ctx);
             self.apply_typography_and_scale(ctx);

@@ -88,10 +88,19 @@ impl McwApp {
         global_mode: bool,
         ctx: &egui::Context,
     ) {
-        let was_open = self.show_content_browser;
+        let was_open = if global_mode {
+            self.active_page == AppPage::Modpacks
+        } else {
+            self.show_content_browser
+        };
         let prev_global = self.browser_global_mode;
         let prev_provider = self.browser_provider;
-        self.show_content_browser = true;
+        if global_mode {
+            self.show_content_browser = false;
+            self.active_page = AppPage::Modpacks;
+        } else {
+            self.show_content_browser = true;
+        }
         self.browser_global_mode = global_mode;
         let category_changed = self.browser_category != category;
         self.browser_category = category;
@@ -137,11 +146,13 @@ impl McwApp {
             }
         }
 
-        if was_open {
+        if was_open && !global_mode {
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_content_browser");
             let title =
                 content_browser_window_title(self.browser_global_mode, self.browser_category);
             focus_viewport(ctx, vp_id, Some(&title));
+        } else if global_mode {
+            self.record_nav_location();
         }
 
         let scope_key = if self.browser_global_mode {
@@ -359,5 +370,166 @@ impl McwApp {
             });
             ctx.request_repaint();
         });
+    }
+
+    pub(crate) fn current_nav_location(&self) -> NavLocation {
+        NavLocation {
+            page: self.active_page,
+            instance_id: self.selected_instance_id.clone(),
+            tab: self.active_tab,
+        }
+    }
+
+    pub(crate) fn record_nav_location(&mut self) {
+        if self.nav_suppress_record {
+            return;
+        }
+        let loc = self.current_nav_location();
+        push_nav_location(&mut self.nav_history, &mut self.nav_history_idx, loc);
+    }
+
+    pub(crate) fn can_go_back(&self) -> bool {
+        self.nav_history_idx > 0
+    }
+
+    pub(crate) fn can_go_forward(&self) -> bool {
+        self.nav_history_idx + 1 < self.nav_history.len()
+    }
+
+    pub(crate) fn navigate_to_page(&mut self, page: AppPage, ctx: &egui::Context) {
+        match page {
+            AppPage::Home => {
+                self.active_page = AppPage::Home;
+                self.ensure_active_tab_loaded(ctx);
+                self.record_nav_location();
+            }
+            AppPage::Modpacks => {
+                self.open_content_browser_mode(
+                    self.browser_category,
+                    Some(self.browser_provider),
+                    true,
+                    ctx,
+                );
+            }
+            AppPage::Versions => {
+                self.active_page = AppPage::Versions;
+                if self.cached_versions.is_empty() {
+                    self.load_cached_versions_async(ctx);
+                }
+                self.record_nav_location();
+            }
+            AppPage::Logs => {
+                self.active_page = AppPage::Logs;
+                self.record_nav_location();
+            }
+        }
+    }
+
+    pub(crate) fn navigate_back(&mut self, ctx: &egui::Context) {
+        if !self.can_go_back() {
+            return;
+        }
+        self.nav_history_idx -= 1;
+        if let Some(loc) = self.nav_history.get(self.nav_history_idx).cloned() {
+            self.apply_nav_location(loc, ctx);
+        }
+    }
+
+    pub(crate) fn navigate_forward(&mut self, ctx: &egui::Context) {
+        if !self.can_go_forward() {
+            return;
+        }
+        self.nav_history_idx += 1;
+        if let Some(loc) = self.nav_history.get(self.nav_history_idx).cloned() {
+            self.apply_nav_location(loc, ctx);
+        }
+    }
+
+    fn apply_nav_location(&mut self, loc: NavLocation, ctx: &egui::Context) {
+        self.nav_suppress_record = true;
+        if let Some(ref id) = loc.instance_id {
+            if self.instances.iter().any(|i| &i.instance_id == id)
+                && self.selected_instance_id.as_deref() != Some(id.as_str())
+            {
+                self.selected_instance_id = Some(id.clone());
+                self.sync_selected_from_cache();
+            }
+        }
+        self.active_tab = loc.tab;
+        self.navigate_to_page(loc.page, ctx);
+        self.nav_suppress_record = false;
+    }
+}
+
+pub(crate) fn push_nav_location(history: &mut Vec<NavLocation>, idx: &mut usize, loc: NavLocation) {
+    if history.is_empty() {
+        history.push(loc);
+        *idx = 0;
+        return;
+    }
+    let clamped = (*idx).min(history.len() - 1);
+    *idx = clamped;
+    if history.get(clamped) == Some(&loc) {
+        return;
+    }
+    history.truncate(clamped + 1);
+    history.push(loc);
+    const MAX_NAV_HISTORY: usize = 50;
+    if history.len() > MAX_NAV_HISTORY {
+        let drop_n = history.len() - MAX_NAV_HISTORY;
+        history.drain(0..drop_n);
+    }
+    *idx = history.len() - 1;
+}
+
+#[cfg(test)]
+mod nav_history_tests {
+    use super::*;
+
+    fn loc(page: AppPage, inst: Option<&str>, tab: DetailTab) -> NavLocation {
+        NavLocation {
+            page,
+            instance_id: inst.map(str::to_string),
+            tab,
+        }
+    }
+
+    #[test]
+    fn nav_history_push_back_forward_and_branch_truncate() {
+        let mut hist = vec![loc(AppPage::Home, Some("a"), DetailTab::Mods)];
+        let mut idx = 0usize;
+
+        // Duplicate current location is a no-op
+        push_nav_location(
+            &mut hist,
+            &mut idx,
+            loc(AppPage::Home, Some("a"), DetailTab::Mods),
+        );
+        assert_eq!(hist.len(), 1);
+        assert_eq!(idx, 0);
+
+        push_nav_location(
+            &mut hist,
+            &mut idx,
+            loc(AppPage::Modpacks, Some("a"), DetailTab::Mods),
+        );
+        push_nav_location(
+            &mut hist,
+            &mut idx,
+            loc(AppPage::Versions, Some("a"), DetailTab::Mods),
+        );
+        assert_eq!(hist.len(), 3);
+        assert_eq!(idx, 2);
+
+        // Simulate navigating back once, then branching to Logs (truncates Versions)
+        idx = 1;
+        push_nav_location(
+            &mut hist,
+            &mut idx,
+            loc(AppPage::Logs, Some("a"), DetailTab::Mods),
+        );
+        assert_eq!(hist.len(), 3);
+        assert_eq!(idx, 2);
+        assert_eq!(hist[2].page, AppPage::Logs);
     }
 }

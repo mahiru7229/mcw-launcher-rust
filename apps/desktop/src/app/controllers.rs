@@ -1189,6 +1189,7 @@ impl McwApp {
         self.install_target_new_name = candidate;
         self.install_target_new_mc_version = auto_mc;
         self.install_target_new_loader = auto_loader;
+        self.install_target_enable_lan_agent = false;
         if let Some(id) = preferred_id {
             self.install_target_create_new = false;
             self.install_target_instance_id = id.clone();
@@ -1654,6 +1655,10 @@ impl McwApp {
                         inst_settings.java_path =
                             Some(PathBuf::from(self.prefs.default_java_path.trim()));
                     }
+                    apply_lan_agent_option(
+                        &mut inst_settings,
+                        self.install_target_enable_lan_agent,
+                    );
                     let _ = store.save_settings(&created.instance_id, &inst_settings);
                     self.selected_instance_id = Some(created.instance_id.clone());
                     self.reload_instances();
@@ -2117,6 +2122,7 @@ impl McwApp {
                 Some(self.archive_selected_optional_ids.clone())
             },
         };
+        let enable_lan_agent = self.archive_enable_lan_agent;
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
@@ -2143,7 +2149,7 @@ impl McwApp {
                 } else {
                     Some(name_override.as_str())
                 };
-                ModpackInstaller::install_from_archive_with_options(
+                let rep = ModpackInstaller::install_from_archive_with_options(
                     &paths,
                     &archive,
                     opt_name,
@@ -2153,7 +2159,15 @@ impl McwApp {
                     Some(progress),
                 )
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+                if enable_lan_agent {
+                    let store = InstanceStore::new(&paths);
+                    if let Ok(mut settings) = store.load_settings(&rep.instance_id) {
+                        apply_lan_agent_option(&mut settings, true);
+                        let _ = store.save_settings(&rep.instance_id, &settings);
+                    }
+                }
+                Ok::<_, String>(rep)
             }
             .await;
             let _ = tx.send(AppEvent::ModpackInstalled {
@@ -3430,6 +3444,7 @@ impl McwApp {
             optional_files: Vec::new(),
             selected_optional_ids: HashSet::new(),
             loading_optional_files: false,
+            enable_lan_agent: false,
         };
 
         // ATLauncher versions are already present in `pack.versions` - populate instantaneously!
@@ -3681,6 +3696,7 @@ impl McwApp {
         let jvm_preset = d.jvm_preset;
         let min_ram = d.min_ram_mb.max(256).min(d.max_ram_mb.max(256));
         let max_ram = d.max_ram_mb.max(min_ram);
+        let enable_lan_agent = d.enable_lan_agent;
         let icon_url = d.icon_url.clone();
         let install_opts = ModpackInstallOptions {
             include_optional: d.include_optional_files,
@@ -3876,6 +3892,7 @@ impl McwApp {
                     if custom_java.is_some() {
                         settings.java_path = custom_java;
                     }
+                    apply_lan_agent_option(&mut settings, enable_lan_agent);
                     let _ = store.save_settings(&report.instance_id, &settings);
                 }
 
@@ -5055,10 +5072,12 @@ impl McwApp {
         }
         self.active_tab = tab;
         self.ensure_active_tab_loaded(ctx);
+        self.record_nav_location();
     }
 
     pub(crate) fn request_instance_switch(&mut self, instance_id: String, ctx: &egui::Context) {
         if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+            self.record_nav_location();
             return;
         }
         if self.active_tab == DetailTab::Settings && self.instance_settings_dirty {
@@ -5070,6 +5089,7 @@ impl McwApp {
         self.selected_instance_id = Some(instance_id);
         self.sync_selected_from_cache();
         self.ensure_active_tab_loaded(ctx);
+        self.record_nav_location();
     }
 
     pub(crate) fn save_selected_instance_settings(&mut self) -> bool {
@@ -5115,14 +5135,20 @@ impl McwApp {
     }
 
     pub(crate) fn apply_pending_unsaved_navigation(&mut self, ctx: &egui::Context) {
+        let mut changed = false;
         if let Some(tab) = self.pending_tab_switch.take() {
             self.active_tab = tab;
             self.ensure_active_tab_loaded(ctx);
+            changed = true;
         }
         if let Some(inst_id) = self.pending_instance_switch.take() {
             self.selected_instance_id = Some(inst_id);
             self.sync_selected_from_cache();
             self.ensure_active_tab_loaded(ctx);
+            changed = true;
+        }
+        if changed {
+            self.record_nav_location();
         }
     }
 
@@ -5317,6 +5343,14 @@ impl McwApp {
     }
 }
 
+pub(crate) fn apply_lan_agent_option(settings: &mut InstanceSettings, enable: bool) {
+    if enable {
+        settings.offline_multiplayer_enabled = true;
+        settings.lan_auth_mode = "private_offline".to_string();
+        settings.lan_connection_provider = "manual".to_string();
+    }
+}
+
 pub(crate) fn is_account_or_token_error(err: &str) -> bool {
     let low = err.to_ascii_lowercase();
     [
@@ -5343,7 +5377,20 @@ pub(crate) fn is_account_or_token_error(err: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_account_or_token_error;
+    use super::InstanceSettings;
+    use super::{apply_lan_agent_option, is_account_or_token_error};
+
+    #[test]
+    fn apply_lan_agent_option_enables_manual_offline_lan() {
+        let mut settings = InstanceSettings::default();
+        apply_lan_agent_option(&mut settings, false);
+        assert!(!settings.offline_multiplayer_enabled);
+
+        apply_lan_agent_option(&mut settings, true);
+        assert!(settings.offline_multiplayer_enabled);
+        assert_eq!(settings.lan_auth_mode, "private_offline");
+        assert_eq!(settings.lan_connection_provider, "manual");
+    }
 
     #[test]
     fn detects_account_and_token_expiration_errors() {

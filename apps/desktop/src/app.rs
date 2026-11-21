@@ -78,8 +78,16 @@ const MAX_LOG_LINES_PER_INSTANCE: usize = 1500;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppPage {
     Home,
+    Modpacks,
     Versions,
     Logs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NavLocation {
+    pub(crate) page: AppPage,
+    pub(crate) instance_id: Option<String>,
+    pub(crate) tab: DetailTab,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +170,7 @@ struct ModpackInstallDialogState {
     optional_files: Vec<ModpackOptionalFile>,
     selected_optional_ids: HashSet<String>,
     loading_optional_files: bool,
+    enable_lan_agent: bool,
 }
 
 pub struct McwApp {
@@ -272,8 +281,7 @@ pub struct McwApp {
     clone_include_saves: bool,
     show_delete_modal: bool,
 
-    // Sidebar filter & Instance runtime/metadata/arguments edit buffers
-    sidebar_search_query: String,
+    // Instance runtime/metadata/arguments edit buffers
     edit_runtime_version: String,
     edit_runtime_loader: String,
     edit_group_input: String,
@@ -444,11 +452,9 @@ pub struct McwApp {
     dedup_running: bool,
     optifine_installing: bool,
 
-    // v0.11+ shell: async background picture, icon rail flyout, in-app Settings modal, page fade
+    // v0.11+ shell: async background picture, in-app Settings modal, page fade
     background: BackgroundManager,
     bg_picker_open: bool,
-    show_instance_flyout: bool,
-    flyout_toggle_rect: Option<egui::Rect>,
     settings_search: String,
     settings_open_since: Option<Instant>,
     fade_page: AppPage,
@@ -510,6 +516,18 @@ pub struct McwApp {
     python_import_themes: bool,
     python_import_running: bool,
     python_import_result: Option<PythonMigrationResult>,
+
+    // v1.0.0-rc.1: Branding logo, navigation history, scale apply, LAN agent creation toggles, splash screen
+    app_logo_texture: Option<egui::TextureHandle>,
+    nav_history: Vec<NavLocation>,
+    nav_history_idx: usize,
+    nav_suppress_record: bool,
+    pending_ui_scale_pct: f32,
+    create_enable_lan_agent: bool,
+    archive_enable_lan_agent: bool,
+    install_target_enable_lan_agent: bool,
+    startup_splash_started_at: Instant,
+    startup_splash_done: bool,
 }
 
 impl McwApp {
@@ -531,6 +549,8 @@ impl McwApp {
         configure_fonts(&cc.egui_ctx, custom_font_path.as_deref());
         cc.egui_ctx
             .set_zoom_factor(prefs.ui_scale.clamp(0.75, 1.75));
+        let pending_ui_scale_pct = (prefs.ui_scale.clamp(0.75, 1.75) * 100.0).round();
+        let app_logo_texture = load_app_logo_texture(&cc.egui_ctx);
 
         mcw_net::set_global_bandwidth_limit_mbps(prefs.download_limit_mbps);
         let cf_api_key_input =
@@ -667,7 +687,6 @@ impl McwApp {
             clone_name_input: String::new(),
             clone_include_saves: false,
             show_delete_modal: false,
-            sidebar_search_query: String::new(),
             edit_runtime_version: String::new(),
             edit_runtime_loader: "vanilla".to_string(),
             edit_group_input: String::new(),
@@ -810,8 +829,6 @@ impl McwApp {
             optifine_installing: false,
             background: BackgroundManager::new(),
             bg_picker_open: false,
-            show_instance_flyout: false,
-            flyout_toggle_rect: None,
             settings_search: String::new(),
             settings_open_since: None,
             fade_page: AppPage::Home,
@@ -866,6 +883,16 @@ impl McwApp {
             python_import_themes: true,
             python_import_running: false,
             python_import_result: None,
+            app_logo_texture,
+            nav_history: Vec::new(),
+            nav_history_idx: 0,
+            nav_suppress_record: false,
+            pending_ui_scale_pct,
+            create_enable_lan_agent: false,
+            archive_enable_lan_agent: false,
+            install_target_enable_lan_agent: false,
+            startup_splash_started_at: Instant::now(),
+            startup_splash_done: motion_mode == MotionMode::Off,
         };
 
         app.content_store_stats = Some(ContentStore::stats(&app.paths));
@@ -889,6 +916,11 @@ impl McwApp {
         }
 
         app.reload_instances();
+        app.nav_history.push(NavLocation {
+            page: app.active_page,
+            instance_id: app.selected_instance_id.clone(),
+            tab: app.active_tab,
+        });
         app.reload_accounts();
         app.reload_java();
         app.start_java_diagnostics_scan(&cc.egui_ctx);
@@ -997,8 +1029,12 @@ impl eframe::App for McwApp {
                 self.quick_search_query.clear();
                 self.quick_search_open_since = Some(Instant::now());
                 self.quick_search_focus_pending = true;
-                self.show_instance_flyout = false;
             }
+        }
+        if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)) {
+            self.navigate_back(ctx);
+        } else if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight)) {
+            self.navigate_forward(ctx);
         }
         if !self.show_launcher_settings {
             self.settings_open_since = None;
@@ -1011,8 +1047,18 @@ impl eframe::App for McwApp {
         self.render_tasks_bar(ctx);
         self.render_instance_rail(ctx);
         self.render_active_page(ctx);
-        self.render_instance_flyout(ctx);
         self.render_modals(ctx);
         self.render_quick_search_modal(ctx);
+        if !self.startup_splash_done {
+            self.render_startup_splash(ctx);
+        }
     }
+}
+
+fn load_app_logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let bytes = include_bytes!("../../../assets/icons/mcw_launcher.png");
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    let color_img = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+    Some(ctx.load_texture("mcw_app_logo_main", color_img, egui::TextureOptions::LINEAR))
 }

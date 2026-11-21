@@ -12,10 +12,11 @@ members = [
     "crates/mcw-updater",
     "apps/cli",
     "apps/desktop",
+    "apps/updater",
 ]
 
 [workspace.package]
-version = "0.15.0-beta.1"
+version = "1.0.0-rc.1"
 edition = "2021"
 license = "MIT"
 

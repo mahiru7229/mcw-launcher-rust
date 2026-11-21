@@ -1,3 +1,4 @@
+use crate::app::controllers::apply_lan_agent_option;
 use crate::app::platform::*;
 use crate::app::*;
 
@@ -112,6 +113,10 @@ impl McwApp {
                                     }
                                 });
 
+                            ui.add_space(6.0);
+                            let lan_lbl = self.t("instance.create.enable_lan_agent").to_string();
+                            ui.checkbox(&mut self.create_enable_lan_agent, &lan_lbl);
+
                             if let Some(ref err) = self.create_error {
                                 ui.add_space(4.0);
                                 ui.label(RichText::new(err).color(p.danger));
@@ -154,6 +159,10 @@ impl McwApp {
                                                     self.prefs.default_java_path.trim(),
                                                 ));
                                             }
+                                            apply_lan_agent_option(
+                                                &mut inst_settings,
+                                                self.create_enable_lan_agent,
+                                            );
                                             let _ = store.save_settings(
                                                 &created.instance_id,
                                                 &inst_settings,
@@ -266,6 +275,10 @@ impl McwApp {
                                             .hint_text("Leave blank to use modpack name")
                                             .desired_width(300.0),
                                     );
+                                    ui.add_space(6.0);
+                                    let lan_lbl =
+                                        self.t("instance.create.enable_lan_agent").to_string();
+                                    ui.checkbox(&mut self.archive_enable_lan_agent, &lan_lbl);
                                     if !self.archive_optional_files.is_empty() {
                                         ui.add_space(6.0);
                                         let opt_hdr = self
@@ -2284,7 +2297,11 @@ impl McwApp {
 
                             ui.add_space(10.0);
 
-                            // 5. Optional Modpack Files Picker (Modrinth / CurseForge / ATLauncher)
+                            // 5. LAN Agent & Optional Modpack Files Picker
+                            let lan_lbl = self.t("instance.create.enable_lan_agent").to_string();
+                            ui.checkbox(&mut self.modpack_dialog.enable_lan_agent, &lan_lbl);
+                            ui.add_space(6.0);
+
                             let opt_lbl = self.t("modrinth.modpack.optional_files").to_string();
                             ui.checkbox(&mut self.modpack_dialog.include_optional_files, &opt_lbl);
                             if self.modpack_dialog.loading_optional_files {
@@ -2803,6 +2820,14 @@ impl McwApp {
                                                 });
                                         });
                                         ui.add_space(6.0);
+                                        let lan_lbl = self
+                                            .t("instance.create.enable_lan_agent")
+                                            .to_string();
+                                        ui.checkbox(
+                                            &mut self.install_target_enable_lan_agent,
+                                            &lan_lbl,
+                                        );
+                                        ui.add_space(4.0);
                                         ui.label(
                                             RichText::new(
                                                 "Uses default Launcher Settings (RAM & Java)",

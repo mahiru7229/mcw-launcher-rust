@@ -1,6 +1,6 @@
 # MCW Launcher Rust Edition - Product Design Direction
 
-Status: **v2.1 UPDATED (2026-11-21)** - incorporates owner UI/UX review & polish decisions after `v0.13.0-beta.1` (supersedes v1.0 Slate/Emerald sharp master-detail). Source of truth for `apps/desktop` GUI decisions.
+Status: **v2.2 UPDATED (2026-11-22)** - incorporates owner UI/UX review & Release Candidate (`v1.0.0-rc.1`) updates. Source of truth for `apps/desktop` GUI decisions.
 
 Stack: `egui` / `eframe` (pure Rust, no WebView). Reference mood: "Horizon"-style launcher screenshots provided by the owner (pixel-landscape background, floating translucent rounded panels, violet accent). We copy the **vibe**, not the brand, content, ads, or feature set.
 
@@ -133,3 +133,15 @@ Changes to foundational identity (palette model, typography, icon system, naviga
 4. **Custom Font, UI Scale & Font Size**: Scan OS `.ttf`/`.otf` fonts via SFNT `name` table in `theme.rs` with Segoe UI/Noto fallback, expose Font `ComboBox`, `UI Scale` (`75%-175%`), and `Font Size` (`10-22 px`) controls in *Appearance* with live preview and reset.
 5. **English i18n Completeness + Translation % Notice**: Maintain complete English keys in `lang/en-US.json` (never machine-translating `lang/vi-VN.json`) and display exact completion percentage + untranslated English fallback notice in First-Run Setup Step 1 and *Launcher Settings -> General*.
 6. **Safe Python Launcher Migration (`mcw_vp_python_import`)**: Read-only source inspection & copy-only migration (`inspect_python_launcher`, `migrate_from_python_launcher`) supporting Python 2.x flat instances and legacy 1.8.x `.minecraft/` layouts, normalizing `.mcw/` provenance & modpack registries, sanitizing custom Java paths, and warning clearly that encrypted DPAPI tokens in `accounts/accounts.db` require fresh sign-in.
+
+---
+
+## 12. Release Candidate Shell, Navigation & Updater (`v1.0.0-rc.1` - Completed)
+
+1. **Inline `Mod & Modpacks` Workspace Page**: Global **Mod & Modpacks** browsing (`AppPage::Modpacks`) now renders inline in the main workspace (synchronized visually with `Versions` and `Logs`), used by both the top navigation bar and *Create Instance -> Modpacks* providers. Per-instance `+ Add Mod` / Resource / Shader / Data pack triggers keep their dedicated OS viewport (`mcw_vp_content_browser`).
+2. **Top-Bar MCW Logo & `<` / `>` Navigation History**: Removed the top-left hamburger button and `render_instance_flyout` / `render_instance_list` (keeping the left instance rail). Placed the clickable MCW logo (`Home`) and circular Back (`<`) / Forward (`>`) history buttons (`Alt+Left` / `Alt+Right`) at the left end of the top bar.
+3. **Animated Startup Splash Screen**: Plays a `1.35s` dark splash overlay (`render_startup_splash`) displaying `"MCW Launcher: Rust Edition"`, version pill `v1.0.0-rc.1`, logo, progress bar, and stage status before entering the workspace (skipped cleanly under `MotionMode::Off`).
+4. **UI Scale Staged Apply & Warning**: *Appearance -> UI Scale* uses staged `pending_ui_scale_pct` with an explicit **Apply Scale** button so the slider never shifts mid-drag, plus a high-scale (`> 125%`) layout warning.
+5. **`Enable MCW LAN Agent` Across Every Instance Creation Flow**: Exposed `"Enable MCW LAN Agent"` consistently across Custom creation, Import Local Archive, Online Modpack Install Dialog, and Global Install Destination -> Create New Instance (`apply_lan_agent_option`).
+6. **First-Run Setup Step 0 Python Migration Entry**: Added a `"Migrating from MCW Launcher Python?"` card directly in First-Run Setup Welcome launching `mcw_vp_python_import`.
+7. **Standalone `mcw-updater` GUI + Transactional Fallback**: Built `apps/updater` (`mcw-updater.exe` / `mcw-updater`) with protected user directories, transactional backup + automatic rollback, `"Launch Previous Version"` recovery action, and automatic fallback to Method 2 detached scripts (also with `$backupDir` rollback). Auto-updating remains gated (`mcw_updater::UPDATES_ENABLED = false`) until official `v1.0.0`.

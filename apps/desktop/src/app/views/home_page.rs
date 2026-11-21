@@ -109,6 +109,7 @@ impl McwApp {
 
                 match self.active_page {
                     AppPage::Home => self.render_home_page(ui, ctx),
+                    AppPage::Modpacks => self.render_modpacks_page(ui, ctx),
                     AppPage::Versions => self.render_versions_page(ui, ctx),
                     AppPage::Logs => self.render_logs_page(ui, ctx),
                 }

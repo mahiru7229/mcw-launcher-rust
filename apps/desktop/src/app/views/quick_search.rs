@@ -110,6 +110,11 @@ impl McwApp {
                 "Instance overview & launch",
             ),
             (
+                AppPage::Modpacks,
+                self.t("navigation.mods").to_string(),
+                "Browse & install mods, modpacks, resource & shader packs",
+            ),
+            (
                 AppPage::Versions,
                 "Versions".to_string(),
                 "Cached Minecraft versions & manifests",
@@ -455,23 +460,16 @@ impl McwApp {
                 QuickAction::SelectInstance(id) => {
                     self.active_page = AppPage::Home;
                     self.request_instance_switch(id, ctx);
+                    self.record_nav_location();
                 }
                 QuickAction::GoPage(page) => {
-                    self.active_page = page;
-                    match page {
-                        AppPage::Home => self.ensure_active_tab_loaded(ctx),
-                        AppPage::Versions => {
-                            if self.cached_versions.is_empty() {
-                                self.load_cached_versions_async(ctx);
-                            }
-                        }
-                        AppPage::Logs => {}
-                    }
+                    self.navigate_to_page(page, ctx);
                 }
                 QuickAction::OpenServersTab => {
                     self.active_page = AppPage::Home;
                     self.active_tab = DetailTab::Servers;
                     self.ensure_active_tab_loaded(ctx);
+                    self.record_nav_location();
                 }
                 QuickAction::OpenContent(cat) => {
                     self.open_content_browser_mode(cat, None, true, ctx);

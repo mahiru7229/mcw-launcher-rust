@@ -2,6 +2,22 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.0.0-rc.1] - 2026-11-22
+
+### Added
+- **Standalone Transactional Updater (`apps/updater` -> `mcw-updater`)**: Added a dedicated `eframe` updater executable (`mcw-updater.exe` / `mcw-updater`) spawned by the launcher to display loading progress while safely replacing binaries even when the running executable would otherwise be locked. Protects user directories (`instances`, `accounts`, `config`, `cache`, `backups`, `logs`, `runtimes`, `themes`, `lang`), creates a transactional pre-update backup with automatic rollback + `"Launch Previous Version"` button on failure, and automatically falls back to detached script replacement (Method 2, also with transactional `$backupDir` rollback) if `mcw-updater` is missing or fails to launch. Updated `.github/workflows/release.yml` to build and package `mcw-updater` alongside `mcw-desktop` and `mcw-cli`. *(Note: `mcw_updater::UPDATES_ENABLED` remains `false` during `v1.0.0-rc.1`; self-updates will be enabled in the official `v1.0.0` release.)*
+- **Animated Startup Splash Screen (`render_startup_splash`)**: Added a `1.35s` startup loading screen featuring the embedded MCW logo, `"MCW Launcher: Rust Edition"`, version pill (`v1.0.0-rc.1`), ease-out progress bar, live stage status labels, and smooth fade-out (bypassed immediately when `MotionMode::Off`).
+- **Back / Forward Navigation History (`<` / `>`)**: Added `NavLocation` history navigation (`can_go_back`, `can_go_forward`, up to 50 entries across pages, instances, and detail tabs), circular top-bar `<` / `>` buttons, and `Alt+Left` / `Alt+Right` keyboard shortcuts.
+- **Python Migration Option in First-Run Setup**: Added a `"Migrating from MCW Launcher Python?"` card in First-Run Setup Step 0 (`Welcome`) so returning users can launch `mcw_vp_python_import` directly during onboarding.
+- **`Enable MCW LAN Agent` in All Instance Creation Flows**: Added an `"Enable MCW LAN Agent (allow offline players to join LAN worlds)"` option (`apply_lan_agent_option`) across Custom creation, Import Local Archive, Online Modpack Install Dialog, and Global Install Destination -> Create New Instance.
+
+### Changed
+- **Inline `Mod & Modpacks` Workspace Page**: Unified global **Mod & Modpacks** browsing (`AppPage::Modpacks`) directly into the main workspace alongside `Versions` and `Logs`, used for both the top pill bar and *Create Instance -> Modpacks* online providers (keeping per-instance `+ Add Mod` / Content Pack pickers in isolated OS windows).
+- **MCW Logo Replaces Top-Left Hamburger & Instance Flyout**: Removed the redundant top-left hamburger button and `render_instance_flyout` / `render_instance_list` (keeping the slim left instance rail as the single instance switcher) and placed the clickable MCW Launcher logo (navigating to `Home`) next to `<` / `>`.
+- **UI Scale Staged Apply + High-Scale Warning**: Changed the *Appearance -> UI Scale* slider to stage `pending_ui_scale_pct` until clicking **Apply Scale** (preventing the slider from shifting under the cursor mid-drag) and added a warning notice when selecting `> 125%` scale.
+
+---
+
 ## [0.15.0-beta.1] - 2026-11-21
 
 ### Added

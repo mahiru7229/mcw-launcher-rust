@@ -2411,7 +2411,17 @@
     "unsaved_changes.title": "Unsaved Instance Settings",
     "unsaved_changes.prompt": "You have unsaved changes in Instance Settings. Save them before switching?",
     "unsaved_changes.save_continue": "Save & Continue",
-    "unsaved_changes.discard_continue": "Discard Changes"
+    "unsaved_changes.discard_continue": "Discard Changes",
+    "nav.back": "Back (Alt+Left)",
+    "nav.forward": "Forward (Alt+Right)",
+    "appearance.scale.apply": "Apply Scale",
+    "appearance.scale.high_warning": "High UI scale (> 125%) may cause cramped panels or clipped text depending on your display resolution.",
+    "first_run.python_import.title": "Migrating from MCW Launcher Python?",
+    "first_run.python_import.detail": "Safely import your existing instances, saves, mods, resource packs, Java runtimes, and offline accounts without touching the original folder.",
+    "instance.create.enable_lan_agent": "Enable MCW LAN Agent (allow offline players to join LAN worlds)",
+    "startup.stage.init": "Initializing workspace and themes...",
+    "startup.stage.loading": "Loading instances and runtimes...",
+    "startup.stage.ready": "Ready to play!"
   },
   "aliases": {
     "MCW Launcher": "app.name",

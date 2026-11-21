@@ -1,6 +1,6 @@
 # MCW Launcher: Rust Edition
 
-[![Status](https://img.shields.io/badge/status-v0.15.0--beta.1-7C3AED?style=flat-square)](#)
+[![Status](https://img.shields.io/badge/status-v1.0.0--rc.1-7C3AED?style=flat-square)](#)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -11,21 +11,21 @@
 
 ## Performance & Footprint (vs. MCW Launcher Python)
 
-| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v0.15.0-beta.1`) |
+| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v1.0.0-rc.1`) |
 | --- | --- | --- |
-| **Idle / Active RAM** | ~150 MB | **~60–70 MB** (~55–60% lower memory footprint) |
-| **Runtime Performance** | Baseline | **~2× faster** UI responsiveness, mod scanning, and concurrent downloads |
-| **Package Size** | Larger (bundled Python + Qt runtime) | **Lighter (10.13 MiB / 10.62 MB single binary)** — zero bundled Python/Qt runtime |
+| **Idle / Active RAM** | ~150 MB | **~60-70 MB** (~55-60% lower memory footprint) |
+| **Runtime Performance** | Baseline | **~2x faster** UI responsiveness, mod scanning, and concurrent downloads |
+| **Package Size** | Larger (bundled Python + Qt runtime) | **Lighter (`10.14 MiB / 10.63 MB` main binary + `3.58 MiB / 3.75 MB` standalone `mcw-updater`)** - zero bundled Python/Qt runtime |
 
 ---
 
 ## Key Features
 
 - **UI v2.0 Native Desktop Interface (`egui` / `eframe`)**
-  - **Native App Icon, Custom Background & Typography Controls**: Embedded Windows `.ico` + window/taskbar icon (`assets/icons/`), pure `#000000` black backdrop by default in Dark mode, or asynchronous user PNG/JPEG/WebP wallpaper with *Panel transparency* and *Background dimming* sliders; 6 built-in presets (**Violet** default, **Sunrise**, **Neon**, **Ocean**, **Emerald**, **Light**), `#RRGGBB` custom accent override, `themes/*.json` pack loading + validation diagnostics (**Theme Issues** window), installed system font selector (`Scan` `.ttf`/`.otf`), **UI Scale** (`75%–175%`), **Font Size** (`10–22 px`), and DPI-aware screen window sizing (`1600x900` on Full HD+, `1280x720` on `1366x768+`).
-  - **Clean Shell & Navigation**: Floating top pill bar (**Home**, **Mod & Modpacks**, **Versions**, **Logs**, plus clickable **Offline** connectivity pill), slim left icon rail with status indicators and context menu, slide-out Instance Flyout (search, favorites, responsive Group/Tag pills), **in-app Launcher Settings modal** with cross-category right-pane content search, **`Ctrl+K` Global Quick Search**, and an **Unsaved Changes** guard when leaving modified Instance Settings.
-  - **Dedicated Pages & Floating Tabbed Home**: Home hero header (`Play`, `•••` Actions menu incl. **Check Modpack Update...**, **Installed Content Library...**, **Repair**, quick Add Content / Open Folder / Gear **Instance Settings** icons, `Mods`/`Worlds`/`Servers & LAN`/`Resource packs`/`Shaders`/`Screenshots`/`Backups`/`Logs` tabs), **Servers & LAN** per-instance tab (`servers.dat` NBT + Quick Play + instant-apply Manual MCW LAN Agent), **Versions** (single vertical scroll covering collapsible `Cached Versions` + Mojang manifest), and unified **Logs** view (with **Report Issue...**).
-  - **Dedicated Centered OS Windows**: Isolated OS viewports for paginated **Mod & Modpacks** (`Mods`, `Modpacks`, `Resource packs`, `Shader packs`, `Data packs` with responsive pill header, `Previous`/`Next` pagination, and 2-step **Install Destination** picker enforcing exact MC version + loader compatibility), **Installed Content Library**, **In-Place Modrinth Modpack Updater**, interactive **Forge/NeoForge Preflight Confirmation**, sanitized Markdown **Issue Report** builder, dedicated **Java Runtimes** manager (with dynamic Adoptium Latest JDK lookup), Modpack Install (with `JVM Preset` selector), origin-aware Export Modpack, Accounts, Create Instance, Manual Downloads, Repair Center, Global Logs, Python-parity 6-step **First-Run Setup Wizard** (including native dedicated GPU detection), and LAN Agent Log.
+  - **Native App Icon, Startup Splash & Typography Controls**: Embedded Windows `.ico` + window/taskbar icon (`assets/icons/`), animated startup loading splash screen (`MotionMode`-aware), pure `#000000` black backdrop by default in Dark mode, or asynchronous user PNG/JPEG/WebP wallpaper with *Panel transparency* and *Background dimming* sliders; 6 built-in presets (**Violet** default, **Sunrise**, **Neon**, **Ocean**, **Emerald**, **Light**), `#RRGGBB` custom accent override, `themes/*.json` pack loading + validation diagnostics (**Theme Issues** window), installed system font selector (`Scan` `.ttf`/`.otf`), staged **UI Scale** (`75%-175%` with explicit **Apply Scale** button and `> 125%` layout warning), **Font Size** (`10-22 px`), and DPI-aware screen window sizing (`1600x900` on Full HD+, `1280x720` on `1366x768+`).
+  - **Clean Shell & Navigation**: Clickable top-left MCW logo (`Home`), Back/Forward `<` / `>` history buttons (`Alt+Left` / `Alt+Right`), floating top pill bar (**Home**, **Mod & Modpacks**, **Versions**, **Logs**, plus clickable **Offline** connectivity pill), slim left instance rail with status indicators and context menu, **in-app Launcher Settings modal** with cross-category right-pane content search, **`Ctrl+K` Global Quick Search**, and an **Unsaved Changes** guard when leaving modified Instance Settings.
+  - **Dedicated Pages & Floating Tabbed Home**: Home hero header (`Play`, `...` Actions menu incl. **Check Modpack Update...**, **Installed Content Library...**, **Repair**, quick Add Content / Open Folder / Gear **Instance Settings** icons, `Mods`/`Worlds`/`Servers & LAN`/`Resource packs`/`Shaders`/`Screenshots`/`Backups`/`Logs` tabs), **Servers & LAN** per-instance tab (`servers.dat` NBT + Quick Play + instant-apply Manual MCW LAN Agent, also opt-in during every instance creation flow), inline **Mod & Modpacks** workspace page (shared with Create Instance online modpack providers, `Previous`/`Next` pagination, and 2-step **Install Destination** picker), **Versions** (single vertical scroll covering collapsible `Cached Versions` + Mojang manifest), and unified **Logs** view (with **Report Issue...**).
+  - **Dedicated Centered OS Windows**: Isolated OS viewports for per-instance `+ Add Mod`/content pickers, **Installed Content Library**, **In-Place Modrinth Modpack Updater**, interactive **Forge/NeoForge Preflight Confirmation**, sanitized Markdown **Issue Report** builder, dedicated **Java Runtimes** manager (with dynamic Adoptium Latest JDK lookup), Modpack Install (with `JVM Preset` selector & LAN Agent toggle), origin-aware Export Modpack, Accounts, Create Instance, Manual Downloads, Repair Center, Global Logs, Python-parity 6-step **First-Run Setup Wizard** (with native dedicated GPU detection & Python Migration entry), and LAN Agent Log.
   - **Simple Animations Only**: Hover/fade (`~120 ms`), modal/page fade-in (`~150 ms`), and smooth animated task progress bars honoring `MotionMode` (**Full** / **Reduced** / **Off**).
 - **Full Mod Loader Support & Safety**
   - **Vanilla**, **Fabric**, **Quilt**, **Forge** (legacy `1.12.2` + modern `--installClient`), **NeoForge**, and managed **OptiFine** validation/install.
@@ -42,7 +42,7 @@
   - `.class` bytecode inspection (`0xCAFEBABE`), JVM flag presets, and Win32 Job Object process supervision with live log streaming, crash classification, `mclo.gs` upload, sanitized issue report Markdown/URL builder, and diagnostic `.zip` export.
 - **Storage, Maintenance & Updater Status**
   - **Shared Content Store** SHA-256 hardlink deduplication, **Backup & Safe Rollback Restore**, **Instance Repair & Mod Compatibility Analyzer**, **CLI Migration** (`mcw-cli migrate`), and **GUI Safe Python Launcher Importer** (`mcw_vp_python_import` supporting both Python 2.x/v0.5+ flat layouts and legacy 1.8.x `.minecraft` layouts via non-destructive read-only copy).
-  - **Updater Status**: Launcher self-updates are currently **disabled** (`mcw_updater::UPDATES_ENABLED = false`) for MCW Launcher: Rust Edition until dedicated Rust Edition releases are published.
+  - **Updater Status**: Standalone transactional updater executable (`apps/updater` -> `mcw-updater.exe` / `mcw-updater` with Method 2 detached script fallback and automatic rollback) is ready; `mcw_updater::UPDATES_ENABLED` remains `false` for `v1.0.0-rc.1` and will be enabled in the official `v1.0.0` release.
 
 ---
 
@@ -52,6 +52,7 @@
 mcw-launcher-rust/
 ├── apps/
 │   ├── desktop/          # Native GUI application (mcw-desktop / MCW Launcher: Rust Edition)
+│   ├── updater/          # Standalone transactional updater GUI (mcw-updater)
 │   └── cli/              # Headless CLI tool (mcw-cli)
 └── crates/
     ├── mcw-models/       # Shared domain models, progress events, app metadata
@@ -113,12 +114,12 @@ cargo run -p mcw-cli -- --help
 `Cargo.toml` is configured with `[profile.release]` (`opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = "symbols"`) and `windows_subsystem = "windows"` on Windows for minimal executable size and no console popup:
 
 ```bash
-cargo build --release -p mcw-desktop
+cargo build --release -p mcw-desktop -p mcw-updater-app -p mcw-cli
 ```
 
-Output binary:
-- **Windows**: `target/release/mcw-desktop.exe`
-- **Linux**: `target/release/mcw-desktop`
+Output binaries:
+- **Windows**: `target/release/mcw-desktop.exe`, `target/release/mcw-updater.exe`, `target/release/mcw-cli.exe`
+- **Linux**: `target/release/mcw-desktop`, `target/release/mcw-updater`, `target/release/mcw-cli`
 
 ---
 

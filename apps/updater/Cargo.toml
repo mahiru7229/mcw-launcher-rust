@@ -1,0 +1,20 @@
+[package]
+name = "mcw-updater-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mcw-updater"
+path = "src/main.rs"
+
+[dependencies]
+eframe.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

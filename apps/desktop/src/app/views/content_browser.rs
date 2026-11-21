@@ -60,19 +60,21 @@ fn with_alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
+#[derive(Default)]
+struct ContentBrowserActions {
+    close_requested: bool,
+    switch_category: Option<BrowserCategory>,
+    switch_provider: Option<BrowserProvider>,
+    trigger_search: bool,
+    page_delta: i32,
+    switch_instance: Option<String>,
+    pending_install: Option<BrowserInstallAction>,
+}
+
 impl McwApp {
-    /// Dedicated centered OS window for browsing & installing Mods, Modpacks, Resource Packs,
-    /// Shader Packs, and Data Packs (Horizon split layout + COMBO filters + side detail panel).
-    pub(crate) fn render_content_browser_window(&mut self, ctx: &egui::Context) {
-        if !self.show_content_browser {
-            return;
-        }
-        let p = self.palette;
-        let mut open = self.show_content_browser;
+    fn prepare_content_browser_state(&mut self, ctx: &egui::Context) -> Vec<BrowserEntry> {
         let cat = self.browser_category;
         let prov = self.browser_provider;
-        let selected_inst = self.selected_instance().cloned();
-
         let entries = self.collect_browser_entries(cat, prov);
         let thumb_urls: Vec<String> = entries.iter().filter_map(|e| e.icon_url.clone()).collect();
         for url in thumb_urls {
@@ -86,6 +88,67 @@ impl McwApp {
         } else if let Some(first) = entries.first() {
             self.browser_selected_key = Some(first.key.clone());
         }
+        entries
+    }
+
+    /// Inline Mod & Modpacks browser page rendered inside the main workspace (matching Versions/Logs).
+    pub(crate) fn render_modpacks_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        self.browser_global_mode = true;
+        self.show_content_browser = false;
+        let entries = self.prepare_content_browser_state(ctx);
+        let actions = self.render_content_browser_body(ui, ctx, &entries, true);
+        self.apply_content_browser_actions(actions, ctx);
+    }
+
+    /// Dedicated centered OS window for per-instance content browsing (+ Add Mod / Resource Pack / etc.).
+    pub(crate) fn render_content_browser_window(&mut self, ctx: &egui::Context) {
+        if !self.show_content_browser || self.browser_global_mode {
+            return;
+        }
+        let p = self.palette;
+        let entries = self.prepare_content_browser_state(ctx);
+        let cat = self.browser_category;
+        let mut window_closed = false;
+        let mut actions = ContentBrowserActions::default();
+
+        let vp_id = egui::ViewportId::from_hash_of("mcw_vp_content_browser");
+        let builder = centered_viewport_builder(
+            ctx,
+            content_browser_window_title(self.browser_global_mode, cat),
+            [1020.0, 660.0],
+            [760.0, 480.0],
+        );
+
+        ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+            if vp_ctx.input(|i| i.viewport().close_requested()) {
+                window_closed = true;
+            }
+            if vp_ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                window_closed = true;
+            }
+
+            egui::CentralPanel::default()
+                .frame(Frame::new().fill(p.canvas).inner_margin(Margin::same(16)))
+                .show(vp_ctx, |ui| {
+                    actions = self.render_content_browser_body(ui, vp_ctx, &entries, false);
+                });
+        });
+
+        self.show_content_browser = !(window_closed || actions.close_requested);
+        self.apply_content_browser_actions(actions, ctx);
+    }
+
+    fn render_content_browser_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        key_ctx: &egui::Context,
+        entries: &[BrowserEntry],
+        inline_page: bool,
+    ) -> ContentBrowserActions {
+        let p = self.palette;
+        let cat = self.browser_category;
+        let prov = self.browser_provider;
+        let selected_inst = self.selected_instance().cloned();
 
         let target_subtitle = if cat == BrowserCategory::Modpacks {
             "Installs as a standalone new instance".to_string()
@@ -103,6 +166,7 @@ impl McwApp {
             "Select or create a Minecraft instance first".to_string()
         };
 
+        let mut close_requested = false;
         let mut switch_category: Option<BrowserCategory> = None;
         let mut switch_provider: Option<BrowserProvider> = None;
         let mut trigger_search = false;
@@ -110,317 +174,275 @@ impl McwApp {
         let mut switch_instance: Option<String> = None;
         let mut pending_install: Option<BrowserInstallAction> = None;
 
-        let vp_id = egui::ViewportId::from_hash_of("mcw_vp_content_browser");
-        let builder = centered_viewport_builder(
-            ctx,
-            content_browser_window_title(self.browser_global_mode, cat),
-            [1020.0, 660.0],
-            [760.0, 480.0],
-        );
-
-        ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| i.viewport().close_requested()) {
-                open = false;
+        // Row 1: Title + Subtitle (left) and optional Close button (right for OS window)
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new(cat.label())
+                        .size(if inline_page { 26.0 } else { 22.0 })
+                        .strong()
+                        .color(p.text),
+                );
+                ui.label(
+                    RichText::new(&target_subtitle)
+                        .size(12.0)
+                        .color(p.text_muted),
+                );
+            });
+            if !inline_page {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(Button::new("Close").corner_radius(CornerRadius::same(10)))
+                        .clicked()
+                    {
+                        close_requested = true;
+                    }
+                });
             }
-            if vp_ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                open = false;
-            }
+        });
 
-            egui::CentralPanel::default()
-                .frame(
-                    Frame::new()
-                        .fill(p.canvas)
-                        .inner_margin(Margin::same(16)),
-                )
-                .show(vp_ctx, |ui| {
-                    // Row 1: Title + Subtitle (left) and Close button (right)
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new(cat.label())
-                                    .size(22.0)
-                                    .strong()
-                                    .color(p.text),
-                            );
-                            ui.label(
-                                RichText::new(&target_subtitle)
-                                    .size(12.0)
-                                    .color(p.text_muted),
-                            );
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add(Button::new("Close").corner_radius(CornerRadius::same(10)))
-                                .clicked()
-                            {
-                                open = false;
+        ui.add_space(6.0);
+
+        // Row 2: Full-width Category Pill Bar (responsive, zero wrapping)
+        Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin::symmetric(6, 5))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    for c in [
+                        BrowserCategory::Mods,
+                        BrowserCategory::Modpacks,
+                        BrowserCategory::ResourcePacks,
+                        BrowserCategory::ShaderPacks,
+                        BrowserCategory::DataPacks,
+                    ] {
+                        let active = c == cat;
+                        let btn = Button::new(
+                            RichText::new(c.label())
+                                .size(12.0)
+                                .strong()
+                                .color(if active { p.text } else { p.text_muted }),
+                        )
+                        .fill(if active {
+                            with_alpha(p.accent, 64)
+                        } else {
+                            Color32::TRANSPARENT
+                        })
+                        .stroke(if active {
+                            Stroke::new(1.0_f32, p.accent)
+                        } else {
+                            Stroke::NONE
+                        })
+                        .corner_radius(CornerRadius::same(9));
+                        if ui.add(btn).clicked() && !active {
+                            switch_category = Some(c);
+                        }
+                    }
+                });
+            });
+
+        ui.add_space(10.0);
+
+        // Filter Bar (ComboBoxes per Rule 6!)
+        Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let te = ui.add(
+                        TextEdit::singleline(&mut self.browser_query)
+                            .hint_text(format!("Search {}...", cat.label()))
+                            .desired_width(230.0),
+                    );
+                    let enter =
+                        te.lost_focus() && key_ctx.input(|i| i.key_pressed(egui::Key::Enter));
+
+                    let mut picked_prov = prov;
+                    let prov_w = auto_combo_width(ui, picked_prov.label(), 96.0, 145.0);
+                    egui::ComboBox::from_id_salt("cb_provider_combo")
+                        .selected_text(picked_prov.label())
+                        .width(prov_w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            let list: &[BrowserProvider] = if cat == BrowserCategory::Modpacks {
+                                &[
+                                    BrowserProvider::Modrinth,
+                                    BrowserProvider::CurseForge,
+                                    BrowserProvider::Ftb,
+                                    BrowserProvider::AtLauncher,
+                                ]
+                            } else {
+                                &[BrowserProvider::Modrinth, BrowserProvider::CurseForge]
+                            };
+                            for &p_opt in list {
+                                ui.selectable_value(&mut picked_prov, p_opt, p_opt.label());
                             }
                         });
-                    });
+                    if picked_prov != prov {
+                        switch_provider = Some(picked_prov);
+                    }
 
-                    ui.add_space(6.0);
-
-                    // Row 2: Full-width Category Pill Bar (responsive, zero wrapping)
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(12))
-                        .inner_margin(Margin::symmetric(6, 5))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal_wrapped(|ui| {
-                                for c in [
-                                    BrowserCategory::Mods,
-                                    BrowserCategory::Modpacks,
-                                    BrowserCategory::ResourcePacks,
-                                    BrowserCategory::ShaderPacks,
-                                    BrowserCategory::DataPacks,
+                    if matches!(
+                        prov,
+                        BrowserProvider::Modrinth | BrowserProvider::CurseForge
+                    ) {
+                        let prev_sort = self.browser_sort.clone();
+                        let sort_lbl = match self.browser_sort.as_str() {
+                            "downloads" => "Downloads",
+                            "newest" => "Newest",
+                            "updated" => "Updated",
+                            _ => "Relevance",
+                        };
+                        let sort_w = auto_combo_width(ui, sort_lbl, 95.0, 140.0);
+                        egui::ComboBox::from_id_salt("cb_sort_combo")
+                            .selected_text(sort_lbl)
+                            .width(sort_w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for (val, txt) in [
+                                    ("relevance", "Relevance"),
+                                    ("downloads", "Downloads"),
+                                    ("newest", "Newest"),
+                                    ("updated", "Updated"),
                                 ] {
-                                    let active = c == cat;
-                                    let btn = Button::new(
-                                        RichText::new(c.label()).size(12.0).strong().color(
-                                            if active { p.text } else { p.text_muted },
-                                        ),
-                                    )
-                                    .fill(if active {
-                                        with_alpha(p.accent, 64)
-                                    } else {
-                                        Color32::TRANSPARENT
-                                    })
-                                    .stroke(if active {
-                                        Stroke::new(1.0_f32, p.accent)
-                                    } else {
-                                        Stroke::NONE
-                                    })
-                                    .corner_radius(CornerRadius::same(9));
-                                    if ui.add(btn).clicked() && !active {
-                                        switch_category = Some(c);
-                                    }
+                                    ui.selectable_value(
+                                        &mut self.browser_sort,
+                                        val.to_string(),
+                                        txt,
+                                    );
                                 }
                             });
-                        });
+                        if self.browser_sort != prev_sort {
+                            trigger_search = true;
+                        }
 
-                    ui.add_space(10.0);
-
-                    // Filter Bar (ComboBoxes per Rule 6!)
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(12))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                let te = ui.add(
-                                    TextEdit::singleline(&mut self.browser_query)
-                                        .hint_text(format!("Search {}...", cat.label()))
-                                        .desired_width(230.0),
-                                );
-                                let enter = te.lost_focus()
-                                    && vp_ctx.input(|i| i.key_pressed(egui::Key::Enter));
-
-                                let mut picked_prov = prov;
-                                let prov_w = auto_combo_width(ui, picked_prov.label(), 96.0, 145.0);
-                                egui::ComboBox::from_id_salt("cb_provider_combo")
-                                    .selected_text(picked_prov.label())
-                                    .width(prov_w)
-                                    .truncate()
-                                    .show_ui(ui, |ui| {
-                                        let list: &[BrowserProvider] =
-                                            if cat == BrowserCategory::Modpacks {
-                                                &[
-                                                    BrowserProvider::Modrinth,
-                                                    BrowserProvider::CurseForge,
-                                                    BrowserProvider::Ftb,
-                                                    BrowserProvider::AtLauncher,
-                                                ]
-                                            } else {
-                                                &[
-                                                    BrowserProvider::Modrinth,
-                                                    BrowserProvider::CurseForge,
-                                                ]
-                                            };
-                                        for &p_opt in list {
-                                            ui.selectable_value(
-                                                &mut picked_prov,
-                                                p_opt,
-                                                p_opt.label(),
-                                            );
-                                        }
-                                    });
-                                if picked_prov != prov {
-                                    switch_provider = Some(picked_prov);
-                                }
-
-                                if matches!(
-                                    prov,
-                                    BrowserProvider::Modrinth | BrowserProvider::CurseForge
-                                ) {
-                                    let prev_sort = self.browser_sort.clone();
-                                    let sort_lbl = match self.browser_sort.as_str() {
-                                        "downloads" => "Downloads",
-                                        "newest" => "Newest",
-                                        "updated" => "Updated",
-                                        _ => "Relevance",
-                                    };
-                                    let sort_w = auto_combo_width(ui, sort_lbl, 95.0, 140.0);
-                                    egui::ComboBox::from_id_salt("cb_sort_combo")
-                                        .selected_text(sort_lbl)
-                                        .width(sort_w)
-                                        .truncate()
-                                        .show_ui(ui, |ui| {
-                                            for (val, txt) in [
-                                                ("relevance", "Relevance"),
-                                                ("downloads", "Downloads"),
-                                                ("newest", "Newest"),
-                                                ("updated", "Updated"),
-                                            ] {
-                                                ui.selectable_value(
-                                                    &mut self.browser_sort,
-                                                    val.to_string(),
-                                                    txt,
-                                                );
-                                            }
-                                        });
-                                    if self.browser_sort != prev_sort {
-                                        trigger_search = true;
-                                    }
-
-                                    if matches!(
-                                        cat,
-                                        BrowserCategory::Mods | BrowserCategory::Modpacks
-                                    ) {
-                                        let prev_loader = self.browser_loader_filter.clone();
-                                        let cur_loader_lbl =
-                                            display_loader_name(&self.browser_loader_filter);
-                                        let lw =
-                                            auto_combo_width(ui, &cur_loader_lbl, 88.0, 140.0);
-                                        egui::ComboBox::from_id_salt("cb_loader_combo")
-                                            .selected_text(&cur_loader_lbl)
-                                            .width(lw)
-                                            .truncate()
-                                            .show_ui(ui, |ui| {
-                                                for l in [
-                                                    "fabric",
-                                                    "forge",
-                                                    "neoforge",
-                                                    "quilt",
-                                                    "all",
-                                                ] {
-                                                    ui.selectable_value(
-                                                        &mut self.browser_loader_filter,
-                                                        l.to_string(),
-                                                        display_loader_name(l),
-                                                    );
-                                                }
-                                            });
-                                        if self.browser_loader_filter != prev_loader {
-                                            trigger_search = true;
-                                        }
-                                    }
-                                }
-
-                                if self.browser_global_mode
-                                    && cat != BrowserCategory::Modpacks
-                                    && matches!(
-                                        prov,
-                                        BrowserProvider::Modrinth | BrowserProvider::CurseForge
-                                    )
-                                {
-                                    let prev_mc = self.browser_mc_version_filter.clone();
-                                    let mc_lbl = if prev_mc.trim().is_empty()
-                                        || prev_mc.eq_ignore_ascii_case("all")
-                                    {
-                                        "All Versions".to_string()
-                                    } else {
-                                        format!("MC {prev_mc}")
-                                    };
-                                    let mw = auto_combo_width(ui, &mc_lbl, 102.0, 155.0);
-                                    egui::ComboBox::from_id_salt("cb_mc_ver_filter_combo")
-                                        .selected_text(&mc_lbl)
-                                        .width(mw)
-                                        .truncate()
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(
-                                                &mut self.browser_mc_version_filter,
-                                                String::new(),
-                                                "All Versions",
-                                            );
-                                            for (vid, vtype) in &self.available_versions {
-                                                if vtype != "release" {
-                                                    continue;
-                                                }
-                                                ui.selectable_value(
-                                                    &mut self.browser_mc_version_filter,
-                                                    vid.clone(),
-                                                    vid,
-                                                );
-                                            }
-                                        });
-                                    if self.browser_mc_version_filter != prev_mc {
-                                        trigger_search = true;
-                                    }
-                                } else if !self.browser_global_mode
-                                    && cat != BrowserCategory::Modpacks
-                                    && !self.instances.is_empty()
-                                {
-                                    let cur_inst = selected_inst
-                                        .as_ref()
-                                        .map(|i| format!("{} ({})", i.name, i.version_id))
-                                        .unwrap_or_else(|| "Target Instance".to_string());
-                                    let iw = auto_combo_width(ui, &cur_inst, 130.0, 220.0);
-                                    egui::ComboBox::from_id_salt("cb_target_inst_combo")
-                                        .selected_text(&cur_inst)
-                                        .width(iw)
-                                        .truncate()
-                                        .show_ui(ui, |ui| {
-                                            for inst in &self.instances {
-                                                let sel = self.selected_instance_id.as_deref()
-                                                    == Some(inst.instance_id.as_str());
-                                                let lbl =
-                                                    format!("{} ({})", inst.name, inst.version_id);
-                                                if ui.selectable_label(sel, lbl).clicked() && !sel {
-                                                    switch_instance =
-                                                        Some(inst.instance_id.clone());
-                                                }
-                                            }
-                                        });
-                                }
-
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let search_btn = Button::new(
-                                        RichText::new(if self.browser_searching {
-                                            "Searching..."
-                                        } else {
-                                            "Search"
-                                        })
-                                        .color(p.accent_text)
-                                        .strong(),
-                                    )
-                                    .fill(p.accent)
-                                    .corner_radius(CornerRadius::same(8));
-                                    if ui
-                                        .add_enabled(!self.browser_searching, search_btn)
-                                        .clicked()
-                                        || (enter && !self.browser_searching)
-                                    {
-                                        trigger_search = true;
-                                    }
-                                    if self.browser_searching {
-                                        ui.spinner();
+                        if matches!(cat, BrowserCategory::Mods | BrowserCategory::Modpacks) {
+                            let prev_loader = self.browser_loader_filter.clone();
+                            let cur_loader_lbl = display_loader_name(&self.browser_loader_filter);
+                            let lw = auto_combo_width(ui, &cur_loader_lbl, 88.0, 140.0);
+                            egui::ComboBox::from_id_salt("cb_loader_combo")
+                                .selected_text(&cur_loader_lbl)
+                                .width(lw)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    for l in ["fabric", "forge", "neoforge", "quilt", "all"] {
+                                        ui.selectable_value(
+                                            &mut self.browser_loader_filter,
+                                            l.to_string(),
+                                            display_loader_name(l),
+                                        );
                                     }
                                 });
+                            if self.browser_loader_filter != prev_loader {
+                                trigger_search = true;
+                            }
+                        }
+                    }
+
+                    if self.browser_global_mode
+                        && cat != BrowserCategory::Modpacks
+                        && matches!(
+                            prov,
+                            BrowserProvider::Modrinth | BrowserProvider::CurseForge
+                        )
+                    {
+                        let prev_mc = self.browser_mc_version_filter.clone();
+                        let mc_lbl =
+                            if prev_mc.trim().is_empty() || prev_mc.eq_ignore_ascii_case("all") {
+                                "All Versions".to_string()
+                            } else {
+                                format!("MC {prev_mc}")
+                            };
+                        let mw = auto_combo_width(ui, &mc_lbl, 102.0, 155.0);
+                        egui::ComboBox::from_id_salt("cb_mc_ver_filter_combo")
+                            .selected_text(&mc_lbl)
+                            .width(mw)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.browser_mc_version_filter,
+                                    String::new(),
+                                    "All Versions",
+                                );
+                                for (vid, vtype) in &self.available_versions {
+                                    if vtype != "release" {
+                                        continue;
+                                    }
+                                    ui.selectable_value(
+                                        &mut self.browser_mc_version_filter,
+                                        vid.clone(),
+                                        vid,
+                                    );
+                                }
                             });
-                        });
+                        if self.browser_mc_version_filter != prev_mc {
+                            trigger_search = true;
+                        }
+                    } else if !self.browser_global_mode
+                        && cat != BrowserCategory::Modpacks
+                        && !self.instances.is_empty()
+                    {
+                        let cur_inst = selected_inst
+                            .as_ref()
+                            .map(|i| format!("{} ({})", i.name, i.version_id))
+                            .unwrap_or_else(|| "Target Instance".to_string());
+                        let iw = auto_combo_width(ui, &cur_inst, 130.0, 220.0);
+                        egui::ComboBox::from_id_salt("cb_target_inst_combo")
+                            .selected_text(&cur_inst)
+                            .width(iw)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for inst in &self.instances {
+                                    let sel = self.selected_instance_id.as_deref()
+                                        == Some(inst.instance_id.as_str());
+                                    let lbl = format!("{} ({})", inst.name, inst.version_id);
+                                    if ui.selectable_label(sel, lbl).clicked() && !sel {
+                                        switch_instance = Some(inst.instance_id.clone());
+                                    }
+                                }
+                            });
+                    }
 
-                    ui.add_space(10.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let search_btn = Button::new(
+                            RichText::new(if self.browser_searching {
+                                "Searching..."
+                            } else {
+                                "Search"
+                            })
+                            .color(p.accent_text)
+                            .strong(),
+                        )
+                        .fill(p.accent)
+                        .corner_radius(CornerRadius::same(8));
+                        if ui
+                            .add_enabled(!self.browser_searching, search_btn)
+                            .clicked()
+                            || (enter && !self.browser_searching)
+                        {
+                            trigger_search = true;
+                        }
+                        if self.browser_searching {
+                            ui.spinner();
+                        }
+                    });
+                });
+            });
 
-                    // Split Body: Master Result List (left) + Detail Card (right)
-                    let avail = ui.available_size();
-                    let detail_w = (avail.x * 0.34).clamp(280.0, 340.0);
-                    let list_w = (avail.x - detail_w - 12.0).max(260.0);
-                    let body_h = avail.y.max(200.0);
+        ui.add_space(10.0);
 
-                    ui.horizontal_top(|ui| {
+        // Split Body: Master Result List (left) + Detail Card (right)
+        let avail = ui.available_size();
+        let detail_w = (avail.x * 0.34).clamp(280.0, 340.0);
+        let list_w = (avail.x - detail_w - 12.0).max(260.0);
+        let body_h = avail.y.max(200.0);
+
+        ui.horizontal_top(|ui| {
                         // Left Result List Panel (explicit top-down layout so cards stack vertically)
                         ui.allocate_ui_with_layout(
                             Vec2::new(list_w, body_h),
@@ -466,7 +488,7 @@ impl McwApp {
                                                 );
                                             });
                                         } else {
-                                            for entry in &entries {
+                                            for entry in entries {
                                                 let is_sel = self
                                                     .browser_selected_key
                                                     .as_deref()
@@ -579,7 +601,7 @@ impl McwApp {
                                                         });
                                                     });
                                                 if ui.rect_contains_pointer(card_resp.response.rect)
-                                                    && vp_ctx.input(|i| i.pointer.primary_clicked())
+                                                    && key_ctx.input(|i| i.pointer.primary_clicked())
                                                 {
                                                     self.browser_selected_key =
                                                         Some(entry.key.clone());
@@ -857,11 +879,24 @@ impl McwApp {
                             },
                         );
                     });
-                });
-        });
 
-        self.show_content_browser = open;
-        if let Some(new_id) = switch_instance {
+        ContentBrowserActions {
+            close_requested,
+            switch_category,
+            switch_provider,
+            trigger_search,
+            page_delta,
+            switch_instance,
+            pending_install,
+        }
+    }
+
+    fn apply_content_browser_actions(
+        &mut self,
+        actions: ContentBrowserActions,
+        ctx: &egui::Context,
+    ) {
+        if let Some(new_id) = actions.switch_instance {
             self.selected_instance_id = Some(new_id);
             self.sync_selected_from_cache();
             self.open_content_browser_mode(
@@ -872,11 +907,11 @@ impl McwApp {
             );
             return;
         }
-        if let Some(new_cat) = switch_category {
+        if let Some(new_cat) = actions.switch_category {
             self.open_content_browser_mode(new_cat, None, self.browser_global_mode, ctx);
             return;
         }
-        if let Some(new_prov) = switch_provider {
+        if let Some(new_prov) = actions.switch_provider {
             self.open_content_browser_mode(
                 self.browser_category,
                 Some(new_prov),
@@ -885,12 +920,12 @@ impl McwApp {
             );
             return;
         }
-        if trigger_search {
+        if actions.trigger_search {
             self.browser_page = 0;
             self.browser_selected_key = None;
             self.start_content_browser_search(ctx);
-        } else if page_delta != 0 {
-            let target_page = if page_delta < 0 {
+        } else if actions.page_delta != 0 {
+            let target_page = if actions.page_delta < 0 {
                 self.browser_page.saturating_sub(1)
             } else {
                 self.browser_page.saturating_add(1)
@@ -901,7 +936,7 @@ impl McwApp {
                 self.start_content_browser_search(ctx);
             }
         }
-        if let Some(action) = pending_install {
+        if let Some(action) = actions.pending_install {
             match action {
                 BrowserInstallAction::ModrinthModPicker {
                     slug,

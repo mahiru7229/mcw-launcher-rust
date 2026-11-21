@@ -1,15 +1,16 @@
-# MCW Launcher: Rust Edition - Backlog (updated 2026-11-21, v0.15.0-beta.1)
+# MCW Launcher: Rust Edition - Backlog (updated 2026-11-22, v1.0.0-rc.1)
 
-Parity checklist (Guide Section 7.1-7.8), UI v2.0 rebuild (`v0.11.0-beta.1` - `v0.13.2-beta.1`), full Python parity (`v0.14.0-beta.1`), and migration/typography/i18n polish (`v0.15.0-beta.1`) are complete. Remaining pre-RC / post-publish items:
+Parity checklist (Guide Section 7.1-7.8), UI v2.0 rebuild (`v0.11.0-beta.1` - `v0.13.2-beta.1`), full Python parity (`v0.14.0-beta.1`), migration/typography/i18n polish (`v0.15.0-beta.1`), and Release Candidate refinements + standalone updater (`v1.0.0-rc.1`) are complete. Remaining release items:
 
 ## 1. Release readiness
-- [x] Sync `README.md` to current release (`v0.14.0-beta.1`), UI v2.0 features, and `UPDATES_ENABLED = false` status.
-- [x] Backfill `CHANGELOG.md` entries across all 15 releases (`0.1.0-alpha.1` -> `0.14.0-beta.1`).
+- [x] Sync `README.md` to `v1.0.0-rc.1`, UI v2.2 features, exact binary metrics, and `UPDATES_ENABLED = false` status.
+- [x] Backfill `CHANGELOG.md` entries across all releases through `v1.0.0-rc.1`.
 - [x] Copy `SECURITY.md` from the Python repo.
-- [x] Copy `assets/icons/` (`mcw_launcher.ico`, `mcw_launcher.png`); add `apps/desktop/build.rs` for Windows `.ico` + version metadata and runtime `ViewportBuilder::with_icon`.
-- [x] `release.yml`: package `themes/` next to binaries and gate releases strictly on created GitHub Releases.
-- [ ] Push to GitHub, verify CI on `ubuntu-latest` + `windows-latest`, and create official GitHub Releases for `mahiru7229/mcw-launcher-rust`.
-- [ ] Enable Rust-Edition-only auto-updater (`UPDATES_ENABLED = false` today) once GitHub Releases for `mahiru7229/mcw-launcher-rust` are live.
+- [x] Copy `assets/icons/` (`mcw_launcher.ico`, `mcw_launcher.png`); add `apps/desktop/build.rs` and `apps/updater/build.rs` for Windows `.ico` + version metadata and runtime `ViewportBuilder::with_icon`.
+- [x] `release.yml`: package `mcw-updater` and `themes/` next to `mcw-desktop` and `mcw-cli`, and gate releases strictly on created GitHub Releases.
+- [x] Build standalone transactional updater binary (`apps/updater` -> `mcw-updater`) with automatic fallback script + rollback protection.
+- [ ] Push `v1.0.0-rc.1` to GitHub, verify CI on `ubuntu-latest` + `windows-latest`, and publish the RC release on `mahiru7229/mcw-launcher-rust`.
+- [ ] Enable Rust-Edition auto-updater (`UPDATES_ENABLED = true`) when publishing the official `v1.0.0` release.
 
 ## 2. Optional / Python-parity features (Completed in v0.14.0-beta.1)
 - [x] UI OS window for `InstalledContentLibrary` (`mcw_vp_content_library` with search/filters/Pin/Open Folder).

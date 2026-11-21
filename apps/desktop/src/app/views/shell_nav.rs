@@ -85,6 +85,8 @@ impl McwApp {
         self.create_tab = CreateInstanceTab::Custom;
         self.create_name.clear();
         self.create_error = None;
+        self.create_enable_lan_agent = false;
+        self.archive_enable_lan_agent = false;
         self.modpack_manual_downloads.clear();
         let latest = self.latest_mc_version(self.create_show_snapshots);
         if !latest.is_empty() {
@@ -178,7 +180,8 @@ impl McwApp {
             (NavTarget::Logs, logs_lbl),
         ];
         let mut clicked: Option<NavTarget> = None;
-        let mut toggle_flyout = false;
+        let mut go_back = false;
+        let mut go_forward = false;
         let mut open_accounts = false;
         let mut open_about = false;
         let mut check_connectivity = false;
@@ -188,20 +191,59 @@ impl McwApp {
             .frame(Frame::new().inner_margin(Margin::symmetric(10, 9)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    // Hamburger: opens the instance flyout.
-                    let (resp, rect) = self.round_button(ui, 38.0, self.show_instance_flyout);
-                    for dy in [-6.0_f32, 0.0, 6.0] {
-                        ui.painter().line_segment(
-                            [
-                                egui::pos2(rect.center().x - 8.0, rect.center().y + dy),
-                                egui::pos2(rect.center().x + 8.0, rect.center().y + dy),
-                            ],
-                            Stroke::new(2.0_f32, p.text),
+                    // Clickable MCW Launcher logo -> Home
+                    let (logo_rect, logo_resp) =
+                        ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+                    let logo_hover = ui.ctx().animate_bool_with_time(
+                        logo_resp.id.with("hover"),
+                        logo_resp.hovered(),
+                        self.motion_secs(0.12),
+                    );
+                    ui.painter().rect(
+                        logo_rect,
+                        CornerRadius::same(10),
+                        lerp_color(p.surface, p.elevated, logo_hover),
+                        Stroke::new(
+                            1.0_f32,
+                            if logo_resp.hovered() {
+                                p.accent
+                            } else {
+                                p.border
+                            },
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                    if let Some(ref tex) = self.app_logo_texture {
+                        let inner = logo_rect.shrink(4.0);
+                        ui.painter().image(
+                            tex.id(),
+                            inner,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    } else {
+                        ui.painter().text(
+                            logo_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "M",
+                            egui::FontId::proportional(16.0),
+                            p.accent,
                         );
                     }
-                    self.flyout_toggle_rect = Some(rect);
-                    if resp.on_hover_text(self.t("Instances")).clicked() {
-                        toggle_flyout = true;
+                    if logo_resp.on_hover_text("MCW Launcher").clicked() {
+                        clicked = Some(NavTarget::Home);
+                    }
+
+                    ui.add_space(4.0);
+                    let can_back = self.can_go_back();
+                    let back_resp = self.nav_arrow_button(ui, can_back, false);
+                    if can_back && back_resp.clicked() {
+                        go_back = true;
+                    }
+                    let can_fwd = self.can_go_forward();
+                    let fwd_resp = self.nav_arrow_button(ui, can_fwd, true);
+                    if can_fwd && fwd_resp.clicked() {
+                        go_forward = true;
                     }
 
                     ui.add_space(4.0);
@@ -216,7 +258,10 @@ impl McwApp {
                                 for (target, label) in &items {
                                     let active = match target {
                                         NavTarget::Home => self.active_page == AppPage::Home,
-                                        NavTarget::Mods => self.show_content_browser,
+                                        NavTarget::Mods => {
+                                            self.active_page == AppPage::Modpacks
+                                                || self.show_content_browser
+                                        }
                                         NavTarget::Versions => {
                                             self.active_page == AppPage::Versions
                                         }
@@ -367,7 +412,6 @@ impl McwApp {
                                 self.quick_search_query.clear();
                                 self.quick_search_open_since = Some(Instant::now());
                                 self.quick_search_focus_pending = true;
-                                self.show_instance_flyout = false;
                             }
                         }
 
@@ -382,9 +426,6 @@ impl McwApp {
                 });
             });
 
-        if toggle_flyout {
-            self.show_instance_flyout = !self.show_instance_flyout;
-        }
         if open_accounts {
             self.open_accounts_window(ctx);
         }
@@ -394,26 +435,84 @@ impl McwApp {
         if check_connectivity {
             self.start_connectivity_check(ctx);
         }
+        if go_back {
+            self.navigate_back(ctx);
+        } else if go_forward {
+            self.navigate_forward(ctx);
+        }
         if let Some(target) = clicked {
             match target {
                 NavTarget::Home => {
-                    self.active_page = AppPage::Home;
-                    self.ensure_active_tab_loaded(ctx);
+                    self.navigate_to_page(AppPage::Home, ctx);
                 }
                 NavTarget::Mods => {
                     self.open_content_browser_mode(BrowserCategory::Mods, None, true, ctx);
                 }
                 NavTarget::Versions => {
-                    self.active_page = AppPage::Versions;
-                    if self.cached_versions.is_empty() {
-                        self.load_cached_versions_async(ctx);
-                    }
+                    self.navigate_to_page(AppPage::Versions, ctx);
                 }
                 NavTarget::Logs => {
-                    self.active_page = AppPage::Logs;
+                    self.navigate_to_page(AppPage::Logs, ctx);
                 }
             }
         }
+    }
+
+    fn nav_arrow_button(&self, ui: &mut egui::Ui, enabled: bool, forward: bool) -> egui::Response {
+        let p = self.palette;
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(30.0), sense);
+        let t = ui.ctx().animate_bool_with_time(
+            resp.id.with("hover"),
+            enabled && resp.hovered(),
+            self.motion_secs(0.12),
+        );
+        let fill = if enabled {
+            lerp_color(p.surface, p.elevated, t)
+        } else {
+            with_alpha(p.surface, 130)
+        };
+        let stroke_col = if enabled && resp.hovered() {
+            p.accent
+        } else if enabled {
+            p.border
+        } else {
+            with_alpha(p.border, 100)
+        };
+        let radius = rect.width() * 0.5;
+        ui.painter().circle(
+            rect.center(),
+            radius,
+            fill,
+            Stroke::new(1.0_f32, stroke_col),
+        );
+        let arrow_col = if enabled {
+            p.text
+        } else {
+            with_alpha(p.text_muted, 110)
+        };
+        let cx = rect.center().x;
+        let cy = rect.center().y;
+        let dir = if forward { 1.0_f32 } else { -1.0_f32 };
+        let pts = [
+            egui::pos2(cx - 2.5 * dir, cy - 4.5),
+            egui::pos2(cx + 2.5 * dir, cy),
+            egui::pos2(cx - 2.5 * dir, cy + 4.5),
+        ];
+        ui.painter()
+            .line_segment([pts[0], pts[1]], Stroke::new(1.8_f32, arrow_col));
+        ui.painter()
+            .line_segment([pts[1], pts[2]], Stroke::new(1.8_f32, arrow_col));
+        let tip = if forward {
+            self.t("nav.forward")
+        } else {
+            self.t("nav.back")
+        };
+        resp.on_hover_text(tip)
     }
 
     /// Slim floating icon rail: add instance, instance icons, Settings and version.
@@ -512,7 +611,7 @@ impl McwApp {
             self.ensure_active_tab_loaded(ctx);
             self.sidebar_context_menu = Some((id, pos));
         } else if let Some(id) = select {
-            if self.active_page == AppPage::Versions {
+            if self.active_page != AppPage::Home {
                 self.active_page = AppPage::Home;
             }
             self.sidebar_context_menu = None;
@@ -592,46 +691,128 @@ impl McwApp {
         }
     }
 
-    /// Dropdown flyout with the full instance list (search, favorites, groups, tags).
-    pub(crate) fn render_instance_flyout(&mut self, ctx: &egui::Context) {
-        if !self.show_instance_flyout {
+    /// Animated startup splash screen displayed when entering the launcher.
+    pub(crate) fn render_startup_splash(&mut self, ctx: &egui::Context) {
+        if self.startup_splash_done {
             return;
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.show_instance_flyout = false;
+        let elapsed = self.startup_splash_started_at.elapsed().as_secs_f32();
+        const TOTAL_SECS: f32 = 1.35;
+        const FADE_SECS: f32 = 0.25;
+        if elapsed >= TOTAL_SECS {
+            self.startup_splash_done = true;
             return;
         }
+
         let p = self.palette;
+        let raw_t = (elapsed / (TOTAL_SECS - FADE_SECS)).clamp(0.0, 1.0);
+        let progress = 1.0 - (1.0 - raw_t).powi(3);
+        let alpha = if elapsed > (TOTAL_SECS - FADE_SECS) {
+            ((TOTAL_SECS - elapsed) / FADE_SECS).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let intro_t = (elapsed / 0.35).clamp(0.0, 1.0);
+        let logo_scale = 0.88 + 0.12 * (1.0 - (1.0 - intro_t).powi(3));
+
+        let fade_u8 = |col: Color32, base_a: u8| -> Color32 {
+            let a = ((f32::from(base_a)) * alpha).round().clamp(0.0, 255.0) as u8;
+            Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), a)
+        };
+
+        let status_key = if progress < 0.40 {
+            "startup.stage.init"
+        } else if progress < 0.85 {
+            "startup.stage.loading"
+        } else {
+            "startup.stage.ready"
+        };
+        let status_text = self.t(status_key).to_string();
         let screen = ctx.screen_rect();
-        let max_h = (screen.height() - TOP_BAR_H - 120.0).max(160.0);
-        let area = egui::Area::new(Id::new("mcw_instance_flyout"))
+
+        egui::Area::new(Id::new("mcw_startup_splash"))
             .order(Order::Foreground)
-            .fixed_pos(egui::pos2(10.0, TOP_BAR_H - 2.0))
+            .fixed_pos(screen.min)
+            .interactable(true)
             .show(ctx, |ui| {
-                Frame::new()
-                    .fill(with_alpha(p.canvas, 246))
-                    .stroke(Stroke::new(1.0_f32, p.border))
-                    .corner_radius(CornerRadius::same(18))
-                    .inner_margin(Margin::same(12))
-                    .show(ui, |ui| {
-                        ui.set_width(300.0);
-                        self.render_instance_list(ui, ctx, max_h);
-                    });
+                ui.set_min_size(screen.size());
+                ui.set_max_size(screen.size());
+                let bg_col = fade_u8(Color32::from_rgb(7, 9, 14), 255);
+                ui.painter().rect_filled(screen, 0.0, bg_col);
+
+                let center = screen.center();
+                let logo_side = 76.0 * logo_scale;
+                let logo_rect = egui::Rect::from_center_size(
+                    egui::pos2(center.x, center.y - 68.0),
+                    Vec2::splat(logo_side),
+                );
+                ui.painter().rect(
+                    logo_rect.expand(6.0),
+                    CornerRadius::same(22),
+                    fade_u8(p.surface, 235),
+                    Stroke::new(1.5_f32, fade_u8(p.accent, 210)),
+                    egui::StrokeKind::Outside,
+                );
+                if let Some(ref tex) = self.app_logo_texture {
+                    ui.painter().image(
+                        tex.id(),
+                        logo_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        fade_u8(Color32::WHITE, 255),
+                    );
+                }
+
+                ui.painter().text(
+                    egui::pos2(center.x, center.y + 4.0),
+                    egui::Align2::CENTER_CENTER,
+                    "MCW Launcher: Rust Edition",
+                    egui::FontId::proportional(24.0),
+                    fade_u8(p.text, 255),
+                );
+
+                let ver_text = format!("v{}", mcw_models::APP_VERSION);
+                let pill_w = (ver_text.len() as f32 * 7.5 + 28.0).max(96.0);
+                let pill_rect = egui::Rect::from_center_size(
+                    egui::pos2(center.x, center.y + 34.0),
+                    Vec2::new(pill_w, 22.0),
+                );
+                ui.painter().rect(
+                    pill_rect,
+                    CornerRadius::same(11),
+                    fade_u8(p.surface, 220),
+                    Stroke::new(1.0_f32, fade_u8(p.accent, 140)),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().text(
+                    pill_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    ver_text,
+                    egui::FontId::monospace(11.5),
+                    fade_u8(p.accent, 255),
+                );
+
+                let bar_w = (screen.width() * 0.34).clamp(240.0, 360.0);
+                let bar_rect = egui::Rect::from_center_size(
+                    egui::pos2(center.x, center.y + 66.0),
+                    Vec2::new(bar_w, 7.0),
+                );
+                ui.painter()
+                    .rect_filled(bar_rect, CornerRadius::same(4), fade_u8(p.surface, 230));
+                let fill_w = (bar_rect.width() * progress).max(8.0);
+                let fill_rect =
+                    egui::Rect::from_min_size(bar_rect.min, Vec2::new(fill_w, bar_rect.height()));
+                ui.painter()
+                    .rect_filled(fill_rect, CornerRadius::same(4), fade_u8(p.accent, 255));
+
+                ui.painter().text(
+                    egui::pos2(center.x, center.y + 88.0),
+                    egui::Align2::CENTER_CENTER,
+                    status_text,
+                    egui::FontId::proportional(12.5),
+                    fade_u8(p.text_muted, 255),
+                );
             });
 
-        if ctx.input(|i| i.pointer.primary_clicked()) {
-            let inside_toggle = self
-                .flyout_toggle_rect
-                .zip(ctx.input(|i| i.pointer.interact_pos()))
-                .map(|(r, pos)| r.contains(pos))
-                .unwrap_or(false);
-            let inside_flyout = ctx
-                .input(|i| i.pointer.interact_pos())
-                .map(|pos| area.response.rect.contains(pos))
-                .unwrap_or(false);
-            if !inside_toggle && !inside_flyout {
-                self.show_instance_flyout = false;
-            }
-        }
+        ctx.request_repaint();
     }
 }

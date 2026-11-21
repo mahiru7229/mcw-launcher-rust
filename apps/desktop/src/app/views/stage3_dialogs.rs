@@ -424,29 +424,44 @@ impl McwApp {
                     }
 
                     ui.add_space(6.0);
-                    let mut scale_pct = (self.prefs.ui_scale * 100.0).round();
+                    let applied_scale = self.prefs.ui_scale.clamp(0.75, 1.75);
+                    let scale_pending_diff =
+                        ((self.pending_ui_scale_pct / 100.0) - applied_scale).abs() > 0.005;
+                    let apply_lbl = self.t("appearance.scale.apply").to_string();
+                    let high_warn = self.t("appearance.scale.high_warning").to_string();
                     ui.horizontal_wrapped(|ui| {
                         ui.label(&scale_lbl);
+                        ui.add(
+                            egui::Slider::new(&mut self.pending_ui_scale_pct, 75.0..=175.0)
+                                .step_by(5.0)
+                                .suffix("%"),
+                        );
                         if ui
-                            .add(
-                                egui::Slider::new(&mut scale_pct, 75.0..=175.0)
-                                    .step_by(5.0)
-                                    .suffix("%"),
+                            .add_enabled(
+                                scale_pending_diff,
+                                Button::new(RichText::new(&apply_lbl).strong()),
                             )
-                            .changed()
+                            .clicked()
                         {
-                            self.prefs.ui_scale = (scale_pct / 100.0).clamp(0.75, 1.75);
+                            self.prefs.ui_scale =
+                                (self.pending_ui_scale_pct / 100.0).clamp(0.75, 1.75);
+                            self.pending_ui_scale_pct = (self.prefs.ui_scale * 100.0).round();
                             self.apply_typography_and_scale(ctx);
                             *prefs_dirty = true;
                         }
-                        if (self.prefs.ui_scale - 1.0).abs() > 0.01
+                        if ((applied_scale - 1.0).abs() > 0.01
+                            || (self.pending_ui_scale_pct - 100.0).abs() > 0.5)
                             && ui.button(format!("{reset_lbl} (100%)")).clicked()
                         {
+                            self.pending_ui_scale_pct = 100.0;
                             self.prefs.ui_scale = 1.0;
                             self.apply_typography_and_scale(ctx);
                             *prefs_dirty = true;
                         }
                     });
+                    if self.pending_ui_scale_pct > 125.0 {
+                        ui.label(RichText::new(high_warn).size(11.5).color(p.warning));
+                    }
 
                     ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
@@ -1400,6 +1415,37 @@ impl McwApp {
                                                 "Enable Discord Rich Presence",
                                             );
                                         });
+                                    ui.add_space(8.0);
+                                    let py_title =
+                                        self.t("first_run.python_import.title").to_string();
+                                    let py_detail =
+                                        self.t("first_run.python_import.detail").to_string();
+                                    let py_btn = self.t("python_import.open_button").to_string();
+                                    let mut open_py = false;
+                                    Frame::new()
+                                        .fill(p.surface)
+                                        .stroke(Stroke::new(1.0_f32, p.border))
+                                        .corner_radius(CornerRadius::same(12))
+                                        .inner_margin(egui::Margin::same(12))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.label(RichText::new(py_title).strong().color(p.text));
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(py_detail)
+                                                        .size(12.0)
+                                                        .color(p.text_muted),
+                                                )
+                                                .wrap(),
+                                            );
+                                            ui.add_space(6.0);
+                                            if ui.button(py_btn).clicked() {
+                                                open_py = true;
+                                            }
+                                        });
+                                    if open_py {
+                                        self.open_python_import_window(ctx);
+                                    }
                                 }
                                 // Step 2: Account
                                 1 => {

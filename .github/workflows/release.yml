@@ -122,7 +122,7 @@ jobs:
       - name: Build size-optimized release binaries
         env:
           CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
-        run: cargo build --release -p mcw-desktop -p mcw-cli
+        run: cargo build --release -p mcw-desktop -p mcw-cli -p mcw-updater-app
 
       - name: Package Windows release archive
         if: runner.os == 'Windows'
@@ -131,6 +131,7 @@ jobs:
           $stage = "dist/mcw-launcher-windows-x64"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "target/release/mcw-desktop.exe" "$stage/MCW-Launcher.exe"
+          Copy-Item "target/release/mcw-updater.exe" "$stage/mcw-updater.exe"
           Copy-Item "target/release/mcw-cli.exe" "$stage/mcw-cli.exe"
           Copy-Item ".env.example" "$stage/.env.example"
           Copy-Item "CHANGELOG.md" "$stage/CHANGELOG.md"
@@ -140,7 +141,7 @@ jobs:
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/mcw-launcher-windows-x64.zip" -Force
           $hash = (Get-FileHash "dist/mcw-launcher-windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  mcw-launcher-windows-x64.zip" | Out-File -Encoding ascii "dist/mcw-launcher-windows-x64.zip.sha256"
-          Get-Item "target/release/mcw-desktop.exe", "dist/mcw-launcher-windows-x64.zip" | Select-Object Name, Length
+          Get-Item "target/release/mcw-desktop.exe", "target/release/mcw-updater.exe", "dist/mcw-launcher-windows-x64.zip" | Select-Object Name, Length
 
       - name: Package Linux release archive
         if: runner.os == 'Linux'
@@ -149,8 +150,9 @@ jobs:
           STAGE="dist/mcw-launcher-linux-x64"
           mkdir -p "$STAGE"
           cp target/release/mcw-desktop "$STAGE/mcw-launcher"
+          cp target/release/mcw-updater "$STAGE/mcw-updater"
           cp target/release/mcw-cli "$STAGE/mcw-cli"
-          chmod +x "$STAGE/mcw-launcher" "$STAGE/mcw-cli"
+          chmod +x "$STAGE/mcw-launcher" "$STAGE/mcw-updater" "$STAGE/mcw-cli"
           cp .env.example CHANGELOG.md README.md LICENSE "$STAGE/"
           if [ -d "themes" ]; then cp -r themes "$STAGE/themes"; fi
           tar -C dist -czf dist/mcw-launcher-linux-x64.tar.gz mcw-launcher-linux-x64

@@ -87,8 +87,21 @@ impl UpdateInstaller {
         })
     }
 
-    /// Generate the detached Windows PowerShell self-update script mirroring
-    /// `src/core/update/windows_update_installer.py` (preserving user data folders).
+    /// Locate the external standalone updater binary next to the installed launcher executable.
+    pub fn find_updater_binary(install_dir: &Path) -> Option<PathBuf> {
+        #[cfg(windows)]
+        let candidates = ["mcw-updater.exe", "updater.exe"];
+        #[cfg(not(windows))]
+        let candidates = ["mcw-updater", "updater"];
+
+        candidates
+            .iter()
+            .map(|name| install_dir.join(name))
+            .find(|p| p.is_file())
+    }
+
+    /// Generate the detached Windows PowerShell self-update fallback script with
+    /// transactional backup/rollback and protected user data folders.
     pub fn build_windows_update_script(
         staged_path: &Path,
         install_dir: &Path,
@@ -105,7 +118,8 @@ $waitPid = {wait_pid}
 $stagedPath = '{staged}'
 $installDir = '{install}'
 $targetExe = '{exe}'
-$protectedDirs = @('instances', 'accounts', 'config', 'cache', 'backups', 'logs', 'runtimes', 'themes')
+$protectedDirs = @('instances', 'accounts', 'config', 'cache', 'backups', 'logs', 'runtimes', 'themes', 'lang')
+$backupDir = Join-Path $installDir ('.mcw-update-backup-' + $waitPid)
 
 $deadline = (Get-Date).AddSeconds(60)
 while ((Get-Date) -lt $deadline) {{
@@ -116,36 +130,58 @@ while ((Get-Date) -lt $deadline) {{
 
 Start-Sleep -Milliseconds 300
 
-if ($stagedPath.ToLowerInvariant().EndsWith('.zip')) {{
-    $extractDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mcw-extract-" + $waitPid + "-" + [guid]::NewGuid().ToString('N'))
-    try {{
-        New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-        Expand-Archive -Path $stagedPath -DestinationPath $extractDir -Force
-        $sourceRoot = $extractDir
-        $topEntries = Get-ChildItem -Path $extractDir
-        if ($topEntries.Count -eq 1 -and $topEntries[0].PSIsContainer -and -not (Test-Path (Join-Path $extractDir ([System.IO.Path]::GetFileName($targetExe))))) {{
-            $sourceRoot = $topEntries[0].FullName
-        }}
-        Get-ChildItem -Path $sourceRoot | ForEach-Object {{
-            if ($_.PSIsContainer -and ($protectedDirs -contains $_.Name.ToLowerInvariant())) {{
-                return
+try {{
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+    Get-ChildItem -Path $installDir | ForEach-Object {{
+        if ($_.Name -eq $backupDir -or $_.Name.StartsWith('.mcw-update-backup')) {{ return }}
+        if ($_.PSIsContainer -and ($protectedDirs -contains $_.Name.ToLowerInvariant())) {{ return }}
+        Copy-Item -Path $_.FullName -Destination (Join-Path $backupDir $_.Name) -Recurse -Force
+    }}
+
+    if ($stagedPath.ToLowerInvariant().EndsWith('.zip')) {{
+        $extractDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mcw-extract-" + $waitPid + "-" + [guid]::NewGuid().ToString('N'))
+        try {{
+            New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+            Expand-Archive -Path $stagedPath -DestinationPath $extractDir -Force
+            $sourceRoot = $extractDir
+            $topEntries = Get-ChildItem -Path $extractDir
+            if ($topEntries.Count -eq 1 -and $topEntries[0].PSIsContainer -and -not (Test-Path (Join-Path $extractDir ([System.IO.Path]::GetFileName($targetExe))))) {{
+                $sourceRoot = $topEntries[0].FullName
             }}
-            $dest = Join-Path $installDir $_.Name
-            Copy-Item -Path $_.FullName -Destination $dest -Recurse -Force
+            Get-ChildItem -Path $sourceRoot | ForEach-Object {{
+                if ($_.PSIsContainer -and ($protectedDirs -contains $_.Name.ToLowerInvariant())) {{
+                    return
+                }}
+                $dest = Join-Path $installDir $_.Name
+                Copy-Item -Path $_.FullName -Destination $dest -Recurse -Force
+            }}
+        }} finally {{
+            if (Test-Path $extractDir) {{
+                Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+            }}
         }}
-    }} finally {{
-        if (Test-Path $extractDir) {{
-            Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    }} else {{
+        $copied = $false
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {{
+            try {{
+                Copy-Item -Path $stagedPath -Destination $targetExe -Force
+                $copied = $true
+                break
+            }} catch {{
+                Start-Sleep -Milliseconds 250
+            }}
+        }}
+        if (-not $copied) {{ throw 'Timed out waiting to replace launcher executable.' }}
+    }}
+}} catch {{
+    if (Test-Path $backupDir) {{
+        Get-ChildItem -Path $backupDir | ForEach-Object {{
+            Copy-Item -Path $_.FullName -Destination (Join-Path $installDir $_.Name) -Recurse -Force
         }}
     }}
-}} else {{
-    for ($attempt = 0; $attempt -lt 20; $attempt++) {{
-        try {{
-            Copy-Item -Path $stagedPath -Destination $targetExe -Force
-            break
-        }} catch {{
-            Start-Sleep -Milliseconds 250
-        }}
+}} finally {{
+    if (Test-Path $backupDir) {{
+        Remove-Item -Path $backupDir -Recurse -Force -ErrorAction SilentlyContinue
     }}
 }}
 
@@ -154,7 +190,7 @@ Start-Process -FilePath $targetExe -WorkingDirectory $installDir
         )
     }
 
-    /// Generate the detached Unix shell self-update script preserving user data folders.
+    /// Generate the detached Unix shell self-update fallback script with backup/rollback.
     pub fn build_linux_update_script(
         staged_path: &Path,
         install_dir: &Path,
@@ -172,6 +208,7 @@ WAIT_PID={wait_pid}
 STAGED='{staged}'
 INSTALL_DIR='{install}'
 TARGET_EXE='{exe}'
+BACKUP_DIR="$INSTALL_DIR/.mcw-update-backup-$WAIT_PID"
 
 i=0
 while [ $i -lt 240 ]; do
@@ -182,36 +219,58 @@ while [ $i -lt 240 ]; do
   i=$((i + 1))
 done
 
-case "$STAGED" in
-  *.tar.gz|*.tgz)
-    TMP_DIR="$(mktemp -d)"
-    tar -xzf "$STAGED" -C "$TMP_DIR"
-    for item in "$TMP_DIR"/*; do
-      base="$(basename "$item")"
-      case "$base" in
-        instances|accounts|config|cache|backups|logs|runtimes|themes) continue ;;
-      esac
-      cp -rf "$item" "$INSTALL_DIR/"
-    done
-    rm -rf "$TMP_DIR"
-    ;;
-  *.zip)
-    TMP_DIR="$(mktemp -d)"
-    unzip -o "$STAGED" -d "$TMP_DIR" >/dev/null
-    for item in "$TMP_DIR"/*; do
-      base="$(basename "$item")"
-      case "$base" in
-        instances|accounts|config|cache|backups|logs|runtimes|themes) continue ;;
-      esac
-      cp -rf "$item" "$INSTALL_DIR/"
-    done
-    rm -rf "$TMP_DIR"
-    ;;
-  *)
-    cp -f "$STAGED" "$TARGET_EXE"
-    chmod +x "$TARGET_EXE"
-    ;;
-esac
+mkdir -p "$BACKUP_DIR"
+for item in "$INSTALL_DIR"/*; do
+  [ -e "$item" ] || continue
+  base="$(basename "$item")"
+  case "$base" in
+    instances|accounts|config|cache|backups|logs|runtimes|themes|lang|.mcw-update-backup*) continue ;;
+  esac
+  cp -rf "$item" "$BACKUP_DIR/" || true
+done
+
+rollback() {{
+  cp -rf "$BACKUP_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
+  rm -rf "$BACKUP_DIR"
+}}
+
+apply_update() {{
+  case "$STAGED" in
+    *.tar.gz|*.tgz)
+      TMP_DIR="$(mktemp -d)"
+      tar -xzf "$STAGED" -C "$TMP_DIR"
+      for item in "$TMP_DIR"/*; do
+        base="$(basename "$item")"
+        case "$base" in
+          instances|accounts|config|cache|backups|logs|runtimes|themes|lang) continue ;;
+        esac
+        cp -rf "$item" "$INSTALL_DIR/"
+      done
+      rm -rf "$TMP_DIR"
+      ;;
+    *.zip)
+      TMP_DIR="$(mktemp -d)"
+      unzip -o "$STAGED" -d "$TMP_DIR" >/dev/null
+      for item in "$TMP_DIR"/*; do
+        base="$(basename "$item")"
+        case "$base" in
+          instances|accounts|config|cache|backups|logs|runtimes|themes|lang) continue ;;
+        esac
+        cp -rf "$item" "$INSTALL_DIR/"
+      done
+      rm -rf "$TMP_DIR"
+      ;;
+    *)
+      cp -f "$STAGED" "$TARGET_EXE"
+      chmod +x "$TARGET_EXE"
+      ;;
+  esac
+}}
+
+if ! apply_update; then
+  rollback
+fi
+rm -rf "$BACKUP_DIR"
 
 chmod +x "$TARGET_EXE" || true
 nohup "$TARGET_EXE" >/dev/null 2>&1 &
@@ -219,8 +278,8 @@ nohup "$TARGET_EXE" >/dev/null 2>&1 &
         )
     }
 
-    /// Spawn a detached updater helper that waits for `current_pid` to exit, replaces binaries
-    /// from `staged`, preserves user data directories, and relaunches `current_exe`.
+    /// Spawn the external transactional updater (`mcw-updater`) with automatic fallback to
+    /// Method 2 (detached PowerShell/sh self-update script with rollback) if unavailable.
     pub fn launch_self_update(
         staged: &StagedUpdate,
         current_exe: &Path,
@@ -235,6 +294,42 @@ nohup "$TARGET_EXE" >/dev/null 2>&1 &
         let install_dir = current_exe.parent().ok_or_else(|| {
             UpdateError::InstallFailed("Unable to determine launcher install directory".to_string())
         })?;
+
+        // Method 1 (Primary): Copy external updater executable to temp dir & spawn detached
+        // so it can safely display progress, replace even itself in install_dir, and roll back cleanly.
+        if let Some(updater_bin) = Self::find_updater_binary(install_dir) {
+            let ext = updater_bin
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| format!(".{s}"))
+                .unwrap_or_default();
+            let temp_runner =
+                std::env::temp_dir().join(format!("mcw-updater-runner-{current_pid}{ext}"));
+            if fs::copy(&updater_bin, &temp_runner).is_ok() {
+                #[cfg(unix)]
+                if let Ok(meta) = fs::metadata(&updater_bin) {
+                    let _ = fs::set_permissions(&temp_runner, meta.permissions());
+                }
+                let spawn_res = Command::new(&temp_runner)
+                    .args([
+                        "--wait-pid",
+                        &current_pid.to_string(),
+                        "--staged",
+                        &staged.staged_path.display().to_string(),
+                        "--install-dir",
+                        &install_dir.display().to_string(),
+                        "--target-exe",
+                        &current_exe.display().to_string(),
+                        "--version",
+                        &staged.version,
+                    ])
+                    .spawn();
+                if spawn_res.is_ok() {
+                    return Ok(());
+                }
+                let _ = fs::remove_file(&temp_runner);
+            }
+        }
 
         #[cfg(windows)]
         {
@@ -330,7 +425,20 @@ mod tests {
         assert!(script.contains("'accounts'"));
         assert!(script.contains("'config'"));
         assert!(script.contains("'themes'"));
+        assert!(script.contains("$backupDir"));
         assert!(script.contains("Start-Process -FilePath $targetExe"));
+
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(UpdateInstaller::find_updater_binary(tmp.path()).is_none());
+        #[cfg(windows)]
+        let fake_name = "mcw-updater.exe";
+        #[cfg(not(windows))]
+        let fake_name = "mcw-updater";
+        fs::write(tmp.path().join(fake_name), b"bin").unwrap();
+        assert_eq!(
+            UpdateInstaller::find_updater_binary(tmp.path()).as_deref(),
+            Some(tmp.path().join(fake_name).as_path())
+        );
     }
 
     #[tokio::test]
