@@ -1013,7 +1013,7 @@ impl McwApp {
 
     fn setup_version_picker_target_defaults(
         &mut self,
-        title: &str,
+        _title: &str,
         content_kind: Option<ContentKind>,
         global_mode: bool,
         ctx: &egui::Context,
@@ -1027,10 +1027,65 @@ impl McwApp {
         }
         self.version_picker_global_mode = global_mode;
         self.version_picker_content_kind = content_kind;
-        self.version_picker_datapack_world.clear();
+    }
+
+    pub(crate) fn exact_compatible_instances_for_choice(
+        &self,
+        choice: &ModVersionChoice,
+        content_kind: Option<ContentKind>,
+    ) -> Vec<Instance> {
+        self.instances
+            .iter()
+            .filter(|inst| {
+                let ver_ok = choice.game_versions.is_empty()
+                    || choice
+                        .game_versions
+                        .iter()
+                        .any(|gv| gv.eq_ignore_ascii_case(&inst.version_id));
+                if !ver_ok {
+                    return false;
+                }
+                if content_kind.is_none() {
+                    if inst.mod_loader.is_vanilla() {
+                        return false;
+                    }
+                    choice.loaders.is_empty()
+                        || choice
+                            .loaders
+                            .iter()
+                            .any(|l| l.eq_ignore_ascii_case(&inst.mod_loader.name))
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn open_install_target_dialog(
+        &mut self,
+        choice: ModVersionChoice,
+        ctx: &egui::Context,
+    ) {
+        if self.install_target_open {
+            let title = format!("Install Destination - {}", self.version_picker_title);
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_install_target"),
+                Some(&title),
+            );
+        }
+        let kind = self.version_picker_content_kind;
+        let compat = self.exact_compatible_instances_for_choice(&choice, kind);
+        let preferred_id = self
+            .selected_instance_id
+            .as_ref()
+            .filter(|id| compat.iter().any(|i| &i.instance_id == *id))
+            .cloned()
+            .or_else(|| compat.first().map(|i| i.instance_id.clone()));
 
         let store = InstanceStore::new(&self.paths);
-        let base_name = title.trim();
+        let base_name = self.version_picker_title.trim();
         let base_name = if base_name.is_empty() {
             "New Instance"
         } else {
@@ -1042,58 +1097,52 @@ impl McwApp {
             candidate = format!("{base_name} ({idx})");
             idx += 1;
         }
-        self.version_picker_new_inst_name = candidate;
 
-        if global_mode {
-            let compatible = self.compatible_instances_for_content(content_kind);
-            let preferred_id = self
-                .selected_instance_id
-                .as_ref()
-                .filter(|id| compatible.iter().any(|i| &i.instance_id == *id))
-                .cloned()
-                .or_else(|| compatible.first().map(|i| i.instance_id.clone()));
-            if let Some(id) = preferred_id {
-                self.version_picker_create_new = false;
-                self.version_picker_target_instance_id = id.clone();
-                if content_kind == Some(ContentKind::DataPack) {
-                    self.load_worlds_async(&id, ctx, false);
-                }
-            } else {
-                self.version_picker_create_new = true;
-                self.version_picker_target_instance_id.clear();
-            }
-            self.version_picker_new_inst_loader = if content_kind.is_some() {
-                "vanilla".to_string()
-            } else if !self.browser_loader_filter.is_empty() && self.browser_loader_filter != "all"
-            {
-                self.browser_loader_filter.to_ascii_lowercase()
-            } else {
-                "fabric".to_string()
-            };
-        } else {
-            self.version_picker_create_new = false;
-            self.version_picker_target_instance_id =
-                self.selected_instance_id.clone().unwrap_or_default();
-            self.version_picker_datapack_world = self.browser_datapack_world.clone();
-            self.version_picker_new_inst_loader = "fabric".to_string();
-        }
-    }
-
-    pub(crate) fn compatible_instances_for_content(
-        &self,
-        content_kind: Option<ContentKind>,
-    ) -> Vec<Instance> {
-        self.instances
-            .iter()
-            .filter(|inst| {
-                if content_kind.is_none() {
-                    !inst.mod_loader.is_vanilla()
-                } else {
-                    true
-                }
-            })
+        let auto_mc = choice
+            .game_versions
+            .first()
             .cloned()
-            .collect()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                let latest = self.latest_mc_version(false);
+                (!latest.is_empty()).then_some(latest)
+            })
+            .unwrap_or_else(|| "1.21.4".to_string());
+
+        let auto_loader = if kind.is_some() {
+            "vanilla".to_string()
+        } else {
+            choice
+                .loaders
+                .iter()
+                .map(|l| l.to_ascii_lowercase())
+                .find(|l| matches!(l.as_str(), "fabric" | "forge" | "neoforge" | "quilt"))
+                .or_else(|| {
+                    let b = self.browser_loader_filter.to_ascii_lowercase();
+                    matches!(b.as_str(), "fabric" | "forge" | "neoforge" | "quilt").then_some(b)
+                })
+                .unwrap_or_else(|| "fabric".to_string())
+        };
+
+        self.install_target_title = self.version_picker_title.clone();
+        self.install_target_icon = self.version_picker_icon.clone();
+        self.install_target_content_kind = kind;
+        self.install_target_choice = Some(choice);
+        self.install_target_datapack_world.clear();
+        self.install_target_new_name = candidate;
+        self.install_target_new_mc_version = auto_mc;
+        self.install_target_new_loader = auto_loader;
+        if let Some(id) = preferred_id {
+            self.install_target_create_new = false;
+            self.install_target_instance_id = id.clone();
+            if kind == Some(ContentKind::DataPack) {
+                self.load_worlds_async(&id, ctx, false);
+            }
+        } else {
+            self.install_target_create_new = true;
+            self.install_target_instance_id.clear();
+        }
+        self.install_target_open = true;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1452,6 +1501,7 @@ impl McwApp {
         create_new: bool,
         target_instance_id: String,
         new_inst_name: String,
+        new_mc_version: String,
         new_inst_loader: String,
         datapack_world: Option<String>,
         ctx: &egui::Context,
@@ -1466,18 +1516,26 @@ impl McwApp {
             ));
             return;
         }
-        let content_kind = self.version_picker_content_kind;
+        let content_kind = self
+            .install_target_content_kind
+            .or(self.version_picker_content_kind);
         let dest_inst = if create_new {
-            let mc_ver = choice
-                .game_versions
-                .first()
-                .cloned()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    let latest = self.latest_mc_version(false);
-                    (!latest.is_empty()).then_some(latest)
-                })
-                .unwrap_or_else(|| "1.21.4".to_string());
+            let trimmed_mc = new_mc_version.trim();
+            let mc_ver = if !trimmed_mc.is_empty() {
+                trimmed_mc.to_string()
+            } else {
+                choice
+                    .game_versions
+                    .first()
+                    .cloned()
+                    .filter(|v| !v.trim().is_empty())
+                    .or_else(|| {
+                        let latest = self.latest_mc_version(false);
+                        (!latest.is_empty()).then_some(latest)
+                    })
+                    .unwrap_or_else(|| "1.21.4".to_string())
+            };
+
             let loader_name = if content_kind.is_none() {
                 let l = new_inst_loader.trim().to_ascii_lowercase();
                 if matches!(l.as_str(), "fabric" | "forge" | "neoforge" | "quilt") {
@@ -1535,6 +1593,10 @@ impl McwApp {
                     inst_settings.width = self.prefs.default_width;
                     inst_settings.height = self.prefs.default_height;
                     inst_settings.fullscreen = self.prefs.default_fullscreen;
+                    if !self.prefs.default_java_path.trim().is_empty() {
+                        inst_settings.java_path =
+                            Some(PathBuf::from(self.prefs.default_java_path.trim()));
+                    }
                     let _ = store.save_settings(&created.instance_id, &inst_settings);
                     self.selected_instance_id = Some(created.instance_id.clone());
                     self.reload_instances();
@@ -1848,7 +1910,7 @@ impl McwApp {
         self.runtime.spawn(async move {
             let res = async {
                 let client = DownloadClient::new().map_err(|e| e.to_string())?;
-                JavaProvisioner::ensure_managed(&runtimes_root, major, &client)
+                JavaProvisioner::install_managed_exact(&runtimes_root, major, true, &client)
                     .await
                     .map_err(|e| e.to_string())
             }
@@ -2244,24 +2306,6 @@ impl McwApp {
                                 self.version_picker_items = list;
                                 self.version_picker_error = None;
                                 self.sync_mod_version_picker_selection();
-                                if self.version_picker_content_kind.is_none() {
-                                    if let Some(sel) = self
-                                        .version_picker_items
-                                        .iter()
-                                        .find(|v| v.id == self.version_picker_selected_id)
-                                        .or_else(|| self.version_picker_items.first())
-                                    {
-                                        if let Some(first_loader) = sel.loaders.iter().find(|l| {
-                                            matches!(
-                                                l.to_ascii_lowercase().as_str(),
-                                                "fabric" | "forge" | "neoforge" | "quilt"
-                                            )
-                                        }) {
-                                            self.version_picker_new_inst_loader =
-                                                first_loader.to_ascii_lowercase();
-                                        }
-                                    }
-                                }
                             }
                             Err(err) => {
                                 self.version_picker_error = Some(err);
@@ -2573,6 +2617,7 @@ impl McwApp {
                     match result {
                         Ok(java) => {
                             self.reload_java();
+                            self.start_java_diagnostics_scan(ctx);
                             self.notice_banner = Some((
                                 format!(
                                     "Installed managed Temurin Java {} ({}).",
@@ -2853,6 +2898,9 @@ impl McwApp {
                     self.first_run_scanning = false;
                     self.first_run_min_ram = rec.recommended_min_memory_mb;
                     self.first_run_max_ram = rec.recommended_max_memory_mb;
+                    if !rec.gpu_detection.has_dedicated_gpu() {
+                        self.first_run_prefer_dedicated_gpu = false;
+                    }
                     self.first_run_rec = Some(rec);
                 }
                 AppEvent::StorageUsageScanned {
@@ -2965,6 +3013,18 @@ impl McwApp {
                     self.cached_versions_loading = false;
                     self.cached_versions = list;
                 }
+                AppEvent::LatestJavaReleaseLoaded(res) => {
+                    self.latest_java_checking = false;
+                    match res {
+                        Ok(major) => {
+                            self.latest_java_major = Some(major);
+                            self.latest_java_error = None;
+                        }
+                        Err(err) => {
+                            self.latest_java_error = Some(err);
+                        }
+                    }
+                }
                 AppEvent::BackgroundPicturePicked(picked) => {
                     self.bg_picker_open = false;
                     if let Some(path) = picked {
@@ -2988,6 +3048,7 @@ impl McwApp {
                     request_id,
                     category,
                     provider,
+                    total_hits,
                     modrinth,
                     curseforge,
                     ftb,
@@ -2997,6 +3058,7 @@ impl McwApp {
                         continue;
                     }
                     self.browser_searching = false;
+                    self.browser_total_hits = total_hits;
                     let _ = category;
                     match provider {
                         BrowserProvider::Modrinth => match modrinth {
@@ -3842,10 +3904,56 @@ impl McwApp {
             );
         }
         self.show_first_run_wizard = true;
+        self.first_run_page = 0;
         self.first_run_language = self.lang.current_locale().to_string();
         self.first_run_auto_updates = self.prefs.auto_check_updates;
         self.first_run_discord_rpc = self.prefs.discord_rpc_enabled;
+        self.first_run_download_concurrency = self.prefs.download_concurrency;
+        self.first_run_java_path = self.prefs.default_java_path.clone();
+        self.first_run_prefer_dedicated_gpu = self.prefs.prefer_dedicated_gpu;
+        self.first_run_min_ram = self.prefs.default_min_memory;
+        self.first_run_max_ram = self.prefs.default_max_memory;
+        self.first_run_offline_msg = None;
         self.start_first_run_scan(ctx);
+    }
+
+    pub(crate) fn open_java_manager_window(&mut self, ctx: &egui::Context) {
+        if self.show_java_manager_window {
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_java_manager"),
+                Some("Java Runtimes - MCW Launcher"),
+            );
+        }
+        self.show_java_manager_window = true;
+        if self.java_diagnostics.is_empty() && !self.java_scanning {
+            self.start_java_diagnostics_scan(ctx);
+        }
+        if self.latest_java_major.is_none() && !self.latest_java_checking {
+            self.start_check_latest_java_release(ctx);
+        }
+    }
+
+    pub(crate) fn start_check_latest_java_release(&mut self, ctx: &egui::Context) {
+        if self.latest_java_checking {
+            return;
+        }
+        self.latest_java_checking = true;
+        self.latest_java_error = None;
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let client = DownloadClient::new().map_err(|e| e.to_string())?;
+                JavaProvisioner::fetch_latest_feature_release(&client)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+            let _ = tx.send(AppEvent::LatestJavaReleaseLoaded(res));
+            ctx_c.request_repaint();
+        });
     }
 
     pub(crate) fn start_first_run_scan(&mut self, ctx: &egui::Context) {

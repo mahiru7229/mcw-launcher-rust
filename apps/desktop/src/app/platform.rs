@@ -2,6 +2,85 @@ use crate::theme::ThemePalette;
 use eframe::egui::{self, CornerRadius, Stroke, Vec2};
 use std::path::PathBuf;
 
+pub(crate) fn window_size_for_resolution(phys_w: i32, phys_h: i32, dpi_scale: f32) -> [f32; 2] {
+    let scale = if dpi_scale.is_finite() && dpi_scale > 0.5 {
+        dpi_scale
+    } else {
+        1.0
+    };
+    let [target_w, target_h] = if phys_w >= 1920 && phys_h >= 1080 {
+        [1600.0_f32, 900.0_f32]
+    } else if phys_w >= 1366 && phys_h >= 768 {
+        [1280.0_f32, 720.0_f32]
+    } else {
+        let w = if phys_w > 0 {
+            (phys_w as f32 * 0.88).clamp(840.0, 1280.0)
+        } else {
+            1280.0
+        };
+        let h = if phys_h > 0 {
+            (phys_h as f32 * 0.88).clamp(560.0, 720.0)
+        } else {
+            720.0
+        };
+        [w, h]
+    };
+
+    if phys_w > 0 && phys_h > 0 {
+        let max_logical_w = ((phys_w as f32 / scale) - 16.0).max(840.0);
+        let max_logical_h = ((phys_h as f32 / scale) - 40.0).max(560.0);
+        [
+            target_w.min(max_logical_w).max(840.0),
+            target_h.min(max_logical_h).max(560.0),
+        ]
+    } else {
+        [target_w, target_h]
+    }
+}
+
+pub(crate) fn default_window_size_for_screen() -> [f32; 2] {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetDC(hwnd: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+            fn ReleaseDC(hwnd: *mut core::ffi::c_void, hdc: *mut core::ffi::c_void) -> i32;
+            fn GetSystemMetrics(n_index: i32) -> i32;
+        }
+        #[link(name = "gdi32")]
+        extern "system" {
+            fn GetDeviceCaps(hdc: *mut core::ffi::c_void, index: i32) -> i32;
+        }
+        const DESKTOPVERTRES: i32 = 117;
+        const DESKTOPHORZRES: i32 = 118;
+        const LOGPIXELSX: i32 = 88;
+        unsafe {
+            let hdc = GetDC(core::ptr::null_mut());
+            let mut phys_w = 0;
+            let mut phys_h = 0;
+            let mut dpi_scale = 1.0_f32;
+            if !hdc.is_null() {
+                phys_w = GetDeviceCaps(hdc, DESKTOPHORZRES);
+                phys_h = GetDeviceCaps(hdc, DESKTOPVERTRES);
+                let dpi_x = GetDeviceCaps(hdc, LOGPIXELSX);
+                if dpi_x > 0 {
+                    dpi_scale = dpi_x as f32 / 96.0;
+                }
+                ReleaseDC(core::ptr::null_mut(), hdc);
+            }
+            if phys_w <= 0 || phys_h <= 0 {
+                phys_w = GetSystemMetrics(0);
+                phys_h = GetSystemMetrics(1);
+                dpi_scale = 1.0;
+            }
+            if phys_w > 0 && phys_h > 0 {
+                return window_size_for_resolution(phys_w, phys_h, dpi_scale);
+            }
+        }
+    }
+    [1600.0, 900.0]
+}
+
 pub(crate) fn primary_screen_size(pixels_per_point: f32) -> Vec2 {
     #[cfg(target_os = "windows")]
     {
@@ -413,5 +492,20 @@ pub(crate) fn open_external(target: &str) {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = std::process::Command::new("xdg-open").arg(target).spawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_size_for_resolution;
+
+    #[test]
+    fn selects_expected_default_window_sizes_for_1080p_and_768p() {
+        assert_eq!(window_size_for_resolution(1920, 1080, 1.0), [1600.0, 900.0]);
+        assert_eq!(window_size_for_resolution(2560, 1440, 1.0), [1600.0, 900.0]);
+        assert_eq!(window_size_for_resolution(1366, 768, 1.0), [1280.0, 720.0]);
+        let scaled = window_size_for_resolution(1920, 1080, 1.25);
+        assert!(scaled[0] <= (1920.0 / 1.25) - 16.0);
+        assert!(scaled[1] <= (1080.0 / 1.25) - 40.0);
     }
 }

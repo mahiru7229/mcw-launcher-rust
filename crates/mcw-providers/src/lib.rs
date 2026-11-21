@@ -12,7 +12,7 @@ pub use cache::ApiCache;
 pub use curseforge::{
     load_curseforge_api_key, load_custom_curseforge_api_key, save_curseforge_api_key_to_dotenv,
     save_custom_curseforge_api_key, CurseForgeClient, CurseForgeFile, CurseForgeMod,
-    CurseForgeSearchParams, CurseForgeSearchResult,
+    CurseForgePagination, CurseForgeSearchParams, CurseForgeSearchResult,
 };
 pub use ftb::{FtbClient, FtbPackSummary, FtbVersionSummary};
 pub use mod_updates::{

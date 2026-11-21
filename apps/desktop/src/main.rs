@@ -24,13 +24,18 @@ fn main() -> eframe::Result {
     let paths = LauncherPaths::portable(root);
     let _ = paths.initialize();
     let prefs = i18n::LauncherPrefs::load(&paths);
-    let init_size = if prefs.remember_window_size {
+    let screen_default = app::platform::default_window_size_for_screen();
+    let init_size = if prefs.remember_window_size
+        && prefs.window_size_customized
+        && prefs.window_width >= 840.0
+        && prefs.window_height >= 560.0
+    {
         [
             prefs.window_width.clamp(840.0, 3840.0),
             prefs.window_height.clamp(560.0, 2160.0),
         ]
     } else {
-        [1080.0, 680.0]
+        screen_default
     };
 
     let options = eframe::NativeOptions {
@@ -45,6 +50,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "MCW Launcher: Rust Edition",
         options,
-        Box::new(move |cc| Ok(Box::new(McwApp::new(cc, paths)))),
+        Box::new(move |cc| Ok(Box::new(McwApp::new(cc, paths, init_size)))),
     )
 }

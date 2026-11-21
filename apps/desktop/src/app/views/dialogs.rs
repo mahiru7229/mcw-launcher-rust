@@ -149,6 +149,11 @@ impl McwApp {
                                             inst_settings.height = self.prefs.default_height;
                                             inst_settings.fullscreen =
                                                 self.prefs.default_fullscreen;
+                                            if !self.prefs.default_java_path.trim().is_empty() {
+                                                inst_settings.java_path = Some(PathBuf::from(
+                                                    self.prefs.default_java_path.trim(),
+                                                ));
+                                            }
                                             let _ = store.save_settings(
                                                 &created.instance_id,
                                                 &inst_settings,
@@ -380,6 +385,8 @@ impl McwApp {
         self.render_global_logs_window(ctx);
         self.render_about_window(ctx);
         self.render_lan_agent_log_window(ctx);
+        self.render_install_target_dialog(ctx);
+        self.render_java_manager_window(ctx);
 
         // 1a. Modpack Install Configuration Isolated OS Window (Version + Beta/Alpha + RAM + Java + Open Web)
         self.render_modpack_install_dialog(ctx);
@@ -624,24 +631,14 @@ impl McwApp {
             }
         }
 
-        // 1c. Mod / Content / Modpack Version Picker Isolated OS Window (with optional 1-step target instance selector)
+        // 1c. Mod / Content / Modpack Version Picker Isolated OS Window (Step 1: select file version)
         if self.version_picker_open {
             let mut open = self.version_picker_open;
             let mut chosen: Option<ModVersionChoice> = None;
             let mut filter_changed = false;
-            let mut load_worlds_for: Option<String> = None;
-            let title = if self.version_picker_global_mode {
-                format!("Install Content - {}", self.version_picker_title)
-            } else {
-                format!("Select Version - {}", self.version_picker_title)
-            };
+            let title = format!("Select Version - {}", self.version_picker_title);
             let vp_id = egui::ViewportId::from_hash_of("mcw_vp_version_picker");
-            let init_h = if self.version_picker_global_mode {
-                640.0
-            } else {
-                540.0
-            };
-            let builder = centered_viewport_builder(ctx, title, [680.0, init_h], [480.0, 380.0]);
+            let builder = centered_viewport_builder(ctx, title, [680.0, 540.0], [480.0, 380.0]);
 
             let beta_lbl = self.t("content.channel.beta").to_string();
             let alpha_lbl = self.t("content.channel.alpha").to_string();
@@ -664,26 +661,6 @@ impl McwApp {
 
             let filtered_items: Vec<ModVersionChoice> =
                 self.filtered_mod_versions().into_iter().cloned().collect();
-            let compat_instances = if self.version_picker_global_mode {
-                self.compatible_instances_for_content(self.version_picker_content_kind)
-            } else {
-                Vec::new()
-            };
-            let target_worlds: Vec<WorldInfo> = if self.version_picker_global_mode
-                && !self.version_picker_create_new
-                && self.version_picker_content_kind == Some(ContentKind::DataPack)
-            {
-                self.worlds_cache
-                    .get(&self.version_picker_target_instance_id)
-                    .cloned()
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let target_ready = !self.version_picker_global_mode
-                || self.version_picker_create_new
-                || (!compat_instances.is_empty()
-                    && !self.version_picker_target_instance_id.trim().is_empty());
 
             ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
                 if vp_ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
@@ -711,7 +688,7 @@ impl McwApp {
                                     RichText::new(if self.version_picker_is_pack {
                                         "Choose a modpack version to download and install."
                                     } else if self.version_picker_global_mode {
-                                        "Choose an existing instance or create a new matching one, then select a version."
+                                        "Select a file version first, then click Install to pick or create a matching instance."
                                     } else {
                                         "Filter and select a compatible file version to install."
                                     })
@@ -732,220 +709,6 @@ impl McwApp {
                         ui.add_space(8.0);
                         ui.separator();
                         ui.add_space(6.0);
-
-                        if self.version_picker_global_mode && !self.version_picker_is_pack {
-                            Frame::new()
-                                .fill(p.surface)
-                                .stroke(Stroke::new(1.0_f32, p.border))
-                                .corner_radius(CornerRadius::same(10))
-                                .inner_margin(egui::Margin::same(10))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label(RichText::new("Install Destination:").strong());
-                                        let mode_lbl = if self.version_picker_create_new {
-                                            "Create New Instance"
-                                        } else {
-                                            "Existing Instance"
-                                        };
-                                        let mw = auto_combo_width(ui, mode_lbl, 150.0, 210.0);
-                                        egui::ComboBox::from_id_salt("vp_dest_mode_combo")
-                                            .selected_text(mode_lbl)
-                                            .width(mw)
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(
-                                                    &mut self.version_picker_create_new,
-                                                    false,
-                                                    "Existing Instance",
-                                                );
-                                                ui.selectable_value(
-                                                    &mut self.version_picker_create_new,
-                                                    true,
-                                                    "Create New Instance",
-                                                );
-                                            });
-                                    });
-                                    ui.add_space(6.0);
-                                    if !self.version_picker_create_new {
-                                        if compat_instances.is_empty() {
-                                            ui.label(
-                                                RichText::new(
-                                                    "No compatible instances exist yet. Switch Destination to 'Create New Instance'.",
-                                                )
-                                                .size(11.5)
-                                                .color(p.warning),
-                                            );
-                                        } else {
-                                            let cur_inst = compat_instances
-                                                .iter()
-                                                .find(|i| {
-                                                    i.instance_id
-                                                        == self.version_picker_target_instance_id
-                                                })
-                                                .or_else(|| compat_instances.first());
-                                            let cur_inst_lbl = cur_inst
-                                                .map(|i| {
-                                                    format!(
-                                                        "{} (MC {} - {})",
-                                                        i.name,
-                                                        i.version_id,
-                                                        display_loader_name(&i.mod_loader.name)
-                                                    )
-                                                })
-                                                .unwrap_or_else(|| "Select instance...".to_string());
-                                            ui.horizontal_wrapped(|ui| {
-                                                ui.label("Target Instance:");
-                                                let iw = auto_combo_width(
-                                                    ui,
-                                                    &cur_inst_lbl,
-                                                    200.0,
-                                                    360.0,
-                                                );
-                                                egui::ComboBox::from_id_salt("vp_target_inst_combo")
-                                                    .selected_text(&cur_inst_lbl)
-                                                    .width(iw)
-                                                    .truncate()
-                                                    .show_ui(ui, |ui| {
-                                                        for inst in &compat_instances {
-                                                            let sel = self
-                                                                .version_picker_target_instance_id
-                                                                == inst.instance_id;
-                                                            let lbl = format!(
-                                                                "{} (MC {} - {})",
-                                                                inst.name,
-                                                                inst.version_id,
-                                                                display_loader_name(
-                                                                    &inst.mod_loader.name
-                                                                )
-                                                            );
-                                                            if ui.selectable_label(sel, lbl).clicked()
-                                                                && !sel
-                                                            {
-                                                                self.version_picker_target_instance_id =
-                                                                    inst.instance_id.clone();
-                                                                self.version_picker_datapack_world
-                                                                    .clear();
-                                                                if self.version_picker_content_kind
-                                                                    == Some(ContentKind::DataPack)
-                                                                {
-                                                                    load_worlds_for = Some(
-                                                                        inst.instance_id.clone(),
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    });
-                                            });
-                                            if self.version_picker_content_kind
-                                                == Some(ContentKind::DataPack)
-                                            {
-                                                ui.add_space(4.0);
-                                                ui.horizontal_wrapped(|ui| {
-                                                    ui.label("Data Pack Target:");
-                                                    let w_lbl = if self
-                                                        .version_picker_datapack_world
-                                                        .trim()
-                                                        .is_empty()
-                                                    {
-                                                        "Global (.minecraft/datapacks)".to_string()
-                                                    } else {
-                                                        format!(
-                                                            "World: {}",
-                                                            self.version_picker_datapack_world
-                                                        )
-                                                    };
-                                                    let ww = auto_combo_width(
-                                                        ui,
-                                                        &w_lbl,
-                                                        190.0,
-                                                        320.0,
-                                                    );
-                                                    egui::ComboBox::from_id_salt(
-                                                        "vp_datapack_world_combo",
-                                                    )
-                                                    .selected_text(&w_lbl)
-                                                    .width(ww)
-                                                    .truncate()
-                                                    .show_ui(ui, |ui| {
-                                                        ui.selectable_value(
-                                                            &mut self.version_picker_datapack_world,
-                                                            String::new(),
-                                                            "Global (.minecraft/datapacks)",
-                                                        );
-                                                        for w in &target_worlds {
-                                                            let lbl = format!(
-                                                                "{} ({})",
-                                                                w.display_name, w.folder_name
-                                                            );
-                                                            ui.selectable_value(
-                                                                &mut self
-                                                                    .version_picker_datapack_world,
-                                                                w.folder_name.clone(),
-                                                                lbl,
-                                                            );
-                                                        }
-                                                    });
-                                                });
-                                            }
-                                        }
-                                    } else {
-                                        let loaders_list: &[&str] =
-                                            if self.version_picker_content_kind.is_some() {
-                                                &[
-                                                    "vanilla",
-                                                    "fabric",
-                                                    "quilt",
-                                                    "forge",
-                                                    "neoforge",
-                                                ]
-                                            } else {
-                                                &["fabric", "quilt", "forge", "neoforge"]
-                                            };
-                                        let auto_mc = filtered_items
-                                            .iter()
-                                            .find(|v| v.id == self.version_picker_selected_id)
-                                            .or_else(|| filtered_items.first())
-                                            .and_then(|v| v.game_versions.first().cloned())
-                                            .unwrap_or_else(|| "latest".to_string());
-                                        ui.horizontal_wrapped(|ui| {
-                                            ui.label("New Name:");
-                                            ui.add(
-                                                TextEdit::singleline(
-                                                    &mut self.version_picker_new_inst_name,
-                                                )
-                                                .hint_text("Instance name")
-                                                .desired_width(210.0),
-                                            );
-                                            ui.label("Loader:");
-                                            let l_disp = display_loader_name(
-                                                &self.version_picker_new_inst_loader,
-                                            );
-                                            let lw = auto_combo_width(ui, &l_disp, 96.0, 145.0);
-                                            egui::ComboBox::from_id_salt("vp_new_inst_loader_combo")
-                                                .selected_text(&l_disp)
-                                                .width(lw)
-                                                .show_ui(ui, |ui| {
-                                                    for &l in loaders_list {
-                                                        ui.selectable_value(
-                                                            &mut self.version_picker_new_inst_loader,
-                                                            l.to_string(),
-                                                            display_loader_name(l),
-                                                        );
-                                                    }
-                                                });
-                                        });
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "Auto-configured MC {auto_mc} - {} (uses default launcher RAM/Java)",
-                                                display_loader_name(&self.version_picker_new_inst_loader)
-                                            ))
-                                            .size(11.0)
-                                            .color(p.text_muted),
-                                        );
-                                    }
-                                });
-                            ui.add_space(6.0);
-                        }
 
                         // Row 1: Release channels (Include Beta / Include Alpha) + auto-sized MC Version & Loader dropdowns
                         ui.horizontal_wrapped(|ui| {
@@ -1151,7 +914,7 @@ impl McwApp {
                                         .fill(p.accent);
                                         if ui
                                             .add_enabled(
-                                                selected_item.is_some() && target_ready,
+                                                selected_item.is_some(),
                                                 install_btn,
                                             )
                                             .clicked()
@@ -1251,10 +1014,7 @@ impl McwApp {
                                                                     .strong(),
                                                             )
                                                             .fill(p.accent);
-                                                            if ui
-                                                                .add_enabled(target_ready, btn)
-                                                                .clicked()
-                                                            {
+                                                            if ui.add(btn).clicked() {
                                                                 chosen = Some(item.clone());
                                                             }
                                                         },
@@ -1268,9 +1028,6 @@ impl McwApp {
                     });
             });
             self.version_picker_open = open;
-            if let Some(wid) = load_worlds_for {
-                self.load_worlds_async(&wid, ctx, false);
-            }
             if filter_changed {
                 self.sync_mod_version_picker_selection();
             }
@@ -1285,17 +1042,7 @@ impl McwApp {
                     let title = self.version_picker_title.clone();
                     self.start_modrinth_pack_install(slug, title, Some(choice.id), ctx);
                 } else if self.version_picker_global_mode {
-                    let dp_world = (!self.version_picker_datapack_world.trim().is_empty())
-                        .then(|| self.version_picker_datapack_world.clone());
-                    self.install_content_choice_to_target(
-                        choice,
-                        self.version_picker_create_new,
-                        self.version_picker_target_instance_id.clone(),
-                        self.version_picker_new_inst_name.clone(),
-                        self.version_picker_new_inst_loader.clone(),
-                        dp_world,
-                        ctx,
-                    );
+                    self.open_install_target_dialog(choice, ctx);
                 } else {
                     self.start_direct_mod_file_install(choice, ctx);
                 }
@@ -2555,6 +2302,476 @@ impl McwApp {
         }
         if trigger_install {
             self.confirm_modpack_install_dialog(ctx);
+        }
+    }
+
+    /// Dedicated Step-2 OS window for global Content Browser installs:
+    /// pick an exact-compatible existing instance or create a new matching instance.
+    pub(crate) fn render_install_target_dialog(&mut self, ctx: &egui::Context) {
+        if !self.install_target_open {
+            return;
+        }
+        let Some(choice) = self.install_target_choice.clone() else {
+            self.install_target_open = false;
+            return;
+        };
+
+        let p = self.palette;
+        let mut open = self.install_target_open;
+        let mut trigger_install = false;
+        let mut go_back = false;
+        let mut load_worlds_for: Option<String> = None;
+
+        let title = format!("Install Destination - {}", self.install_target_title);
+        let vp_id = egui::ViewportId::from_hash_of("mcw_vp_install_target");
+        let builder = centered_viewport_builder(ctx, title, [580.0, 440.0], [460.0, 340.0]);
+
+        let compat =
+            self.exact_compatible_instances_for_choice(&choice, self.install_target_content_kind);
+        let active_existing = compat
+            .iter()
+            .find(|i| i.instance_id == self.install_target_instance_id)
+            .or_else(|| compat.first())
+            .cloned();
+        let active_existing_id = active_existing.as_ref().map(|i| i.instance_id.clone());
+
+        let target_worlds: Vec<WorldInfo> = if !self.install_target_create_new
+            && self.install_target_content_kind == Some(ContentKind::DataPack)
+        {
+            active_existing_id
+                .as_ref()
+                .and_then(|id| self.worlds_cache.get(id))
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Available MC versions & Loaders for Create New Instance mode
+        let mut mc_options: Vec<String> = choice
+            .game_versions
+            .iter()
+            .filter(|v| !v.trim().is_empty())
+            .cloned()
+            .collect();
+        if mc_options.is_empty() {
+            mc_options = self
+                .available_versions
+                .iter()
+                .filter(|(_, vt)| vt == "release")
+                .take(40)
+                .map(|(vid, _)| vid.clone())
+                .collect();
+        }
+        if !mc_options.is_empty()
+            && !mc_options
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(&self.install_target_new_mc_version))
+        {
+            self.install_target_new_mc_version = mc_options[0].clone();
+        }
+
+        let allowed_loaders: Vec<&'static str> = if self.install_target_content_kind.is_some() {
+            vec!["vanilla", "fabric", "quilt", "forge", "neoforge"]
+        } else {
+            let matching: Vec<&'static str> = ["fabric", "quilt", "forge", "neoforge"]
+                .into_iter()
+                .filter(|l| choice.loaders.iter().any(|cl| cl.eq_ignore_ascii_case(l)))
+                .collect();
+            if matching.is_empty() {
+                vec!["fabric", "quilt", "forge", "neoforge"]
+            } else {
+                matching
+            }
+        };
+        if !allowed_loaders
+            .iter()
+            .any(|l| l.eq_ignore_ascii_case(&self.install_target_new_loader))
+        {
+            self.install_target_new_loader = allowed_loaders[0].to_string();
+        }
+
+        let can_install = if self.install_target_create_new {
+            !self.install_target_new_name.trim().is_empty()
+                && !self.install_target_new_mc_version.trim().is_empty()
+        } else {
+            active_existing_id.is_some()
+        };
+
+        let cancel_lbl = self.t("common.cancel").to_string();
+        let badge = match choice.channel {
+            ModpackChannel::Release => "[R]",
+            ModpackChannel::Beta => "[B]",
+            ModpackChannel::Alpha => "[A]",
+        };
+        let loaders_text = if choice.loaders.is_empty() {
+            String::new()
+        } else {
+            choice
+                .loaders
+                .iter()
+                .map(|l| display_loader_name(l))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let gvs_text = choice
+            .game_versions
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let version_summary = if loaders_text.is_empty() {
+            format!(
+                "{badge} {} ({}) - MC {} - {}",
+                choice.title,
+                choice.version_number,
+                gvs_text,
+                format_bytes(choice.file_size)
+            )
+        } else {
+            format!(
+                "{badge} {} ({}) - {} - MC {} - {}",
+                choice.title,
+                choice.version_number,
+                loaders_text,
+                gvs_text,
+                format_bytes(choice.file_size)
+            )
+        };
+
+        ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
+            if vp_ctx
+                .input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
+            {
+                open = false;
+            }
+            egui::CentralPanel::default()
+                .frame(
+                    Frame::new()
+                        .fill(p.canvas)
+                        .inner_margin(egui::Margin::same(14)),
+                )
+                .show(vp_ctx, |ui| {
+                    // Header
+                    ui.horizontal(|ui| {
+                        self.render_thumbnail(ui, self.install_target_icon.as_deref(), 40.0);
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(&self.install_target_title)
+                                    .strong()
+                                    .size(15.5)
+                                    .color(p.text),
+                            );
+                            ui.label(
+                                RichText::new(&version_summary)
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(p.accent),
+                            );
+                        });
+                    });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    egui::TopBottomPanel::bottom("install_target_footer_panel")
+                        .frame(
+                            Frame::new()
+                                .fill(p.canvas)
+                                .inner_margin(egui::Margin::symmetric(0, 6)),
+                        )
+                        .show_inside(ui, |ui| {
+                            ui.separator();
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                let action_lbl = if self.install_target_create_new {
+                                    "Create & Install"
+                                } else {
+                                    "Install to Instance"
+                                };
+                                let btn = Button::new(
+                                    RichText::new(action_lbl)
+                                        .color(p.accent_text)
+                                        .strong(),
+                                )
+                                .fill(p.accent);
+                                if ui.add_enabled(can_install, btn).clicked() {
+                                    trigger_install = true;
+                                }
+                                if ui.button("Back").clicked() {
+                                    open = false;
+                                    go_back = true;
+                                }
+                                if ui.button(&cancel_lbl).clicked() {
+                                    open = false;
+                                }
+                            });
+                        });
+
+                    ScrollArea::vertical()
+                        .id_salt("install_target_body_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            Frame::new()
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0_f32, p.border))
+                                .corner_radius(CornerRadius::same(12))
+                                .inner_margin(egui::Margin::same(12))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(RichText::new("Install Mode:").strong());
+                                        let mode_lbl = if self.install_target_create_new {
+                                            "Create New Instance"
+                                        } else {
+                                            "Existing Instance"
+                                        };
+                                        let mw = auto_combo_width(ui, mode_lbl, 160.0, 230.0);
+                                        egui::ComboBox::from_id_salt("it_dest_mode_combo")
+                                            .selected_text(mode_lbl)
+                                            .width(mw)
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(
+                                                    &mut self.install_target_create_new,
+                                                    false,
+                                                    "Existing Instance",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut self.install_target_create_new,
+                                                    true,
+                                                    "Create New Instance",
+                                                );
+                                            });
+                                    });
+
+                                    ui.add_space(10.0);
+
+                                    if !self.install_target_create_new {
+                                        if compat.is_empty() {
+                                            let msg = if self.install_target_content_kind.is_none() {
+                                                "No existing instance matches this file's exact Minecraft version and mod loader."
+                                            } else {
+                                                "No existing instance matches this file's exact Minecraft version."
+                                            };
+                                            ui.label(RichText::new(msg).color(p.warning));
+                                            ui.add_space(6.0);
+                                            if ui.button("Switch to Create New Instance").clicked() {
+                                                self.install_target_create_new = true;
+                                            }
+                                        } else {
+                                            let cur_inst_lbl = active_existing
+                                                .as_ref()
+                                                .map(|i| {
+                                                    format!(
+                                                        "{} (MC {} - {})",
+                                                        i.name,
+                                                        i.version_id,
+                                                        display_loader_name(&i.mod_loader.name)
+                                                    )
+                                                })
+                                                .unwrap_or_else(|| "Select instance...".to_string());
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label("Target Instance:");
+                                                let iw = auto_combo_width(
+                                                    ui,
+                                                    &cur_inst_lbl,
+                                                    210.0,
+                                                    380.0,
+                                                );
+                                                egui::ComboBox::from_id_salt(
+                                                    "it_target_inst_combo",
+                                                )
+                                                .selected_text(&cur_inst_lbl)
+                                                .width(iw)
+                                                .truncate()
+                                                .show_ui(ui, |ui| {
+                                                    for inst in &compat {
+                                                        let sel = active_existing_id.as_deref()
+                                                            == Some(inst.instance_id.as_str());
+                                                        let lbl = format!(
+                                                            "{} (MC {} - {})",
+                                                            inst.name,
+                                                            inst.version_id,
+                                                            display_loader_name(
+                                                                &inst.mod_loader.name
+                                                            )
+                                                        );
+                                                        if ui.selectable_label(sel, lbl).clicked()
+                                                            && !sel
+                                                        {
+                                                            self.install_target_instance_id =
+                                                                inst.instance_id.clone();
+                                                            self.install_target_datapack_world
+                                                                .clear();
+                                                            if self.install_target_content_kind
+                                                                == Some(ContentKind::DataPack)
+                                                            {
+                                                                load_worlds_for = Some(
+                                                                    inst.instance_id.clone(),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                });
+                                            });
+
+                                            if self.install_target_content_kind
+                                                == Some(ContentKind::DataPack)
+                                                && active_existing_id.is_some()
+                                            {
+                                                ui.add_space(6.0);
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label("Data Pack Target:");
+                                                    let w_lbl = if self
+                                                        .install_target_datapack_world
+                                                        .trim()
+                                                        .is_empty()
+                                                    {
+                                                        "Global (.minecraft/datapacks)"
+                                                            .to_string()
+                                                    } else {
+                                                        format!(
+                                                            "World: {}",
+                                                            self.install_target_datapack_world
+                                                        )
+                                                    };
+                                                    let ww =
+                                                        auto_combo_width(ui, &w_lbl, 200.0, 340.0);
+                                                    egui::ComboBox::from_id_salt(
+                                                        "it_datapack_world_combo",
+                                                    )
+                                                    .selected_text(&w_lbl)
+                                                    .width(ww)
+                                                    .truncate()
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut self
+                                                                .install_target_datapack_world,
+                                                            String::new(),
+                                                            "Global (.minecraft/datapacks)",
+                                                        );
+                                                        for w in &target_worlds {
+                                                            let lbl = format!(
+                                                                "{} ({})",
+                                                                w.display_name, w.folder_name
+                                                            );
+                                                            ui.selectable_value(
+                                                                &mut self
+                                                                    .install_target_datapack_world,
+                                                                w.folder_name.clone(),
+                                                                lbl,
+                                                            );
+                                                        }
+                                                    });
+                                                });
+                                            }
+                                        }
+                                    } else {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label("Instance Name:");
+                                            ui.add(
+                                                TextEdit::singleline(
+                                                    &mut self.install_target_new_name,
+                                                )
+                                                .hint_text("Instance name")
+                                                .desired_width(250.0),
+                                            );
+                                        });
+                                        ui.add_space(6.0);
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label("MC Version:");
+                                            let mc_disp = if self
+                                                .install_target_new_mc_version
+                                                .trim()
+                                                .is_empty()
+                                            {
+                                                "Select version...".to_string()
+                                            } else {
+                                                self.install_target_new_mc_version.clone()
+                                            };
+                                            let mw = auto_combo_width(ui, &mc_disp, 110.0, 175.0);
+                                            egui::ComboBox::from_id_salt("it_new_mc_ver_combo")
+                                                .selected_text(&mc_disp)
+                                                .width(mw)
+                                                .show_ui(ui, |ui| {
+                                                    for gv in &mc_options {
+                                                        ui.selectable_value(
+                                                            &mut self.install_target_new_mc_version,
+                                                            gv.clone(),
+                                                            gv,
+                                                        );
+                                                    }
+                                                });
+
+                                            ui.label("Loader:");
+                                            let l_disp = display_loader_name(
+                                                &self.install_target_new_loader,
+                                            );
+                                            let lw = auto_combo_width(ui, &l_disp, 100.0, 155.0);
+                                            egui::ComboBox::from_id_salt("it_new_loader_combo")
+                                                .selected_text(&l_disp)
+                                                .width(lw)
+                                                .show_ui(ui, |ui| {
+                                                    for &l in &allowed_loaders {
+                                                        ui.selectable_value(
+                                                            &mut self.install_target_new_loader,
+                                                            l.to_string(),
+                                                            display_loader_name(l),
+                                                        );
+                                                    }
+                                                });
+                                        });
+                                        ui.add_space(6.0);
+                                        ui.label(
+                                            RichText::new(
+                                                "Uses default Launcher Settings (RAM & Java)",
+                                            )
+                                            .size(11.0)
+                                            .color(p.text_muted),
+                                        );
+                                    }
+                                });
+                        });
+                });
+        });
+
+        self.install_target_open = open;
+        if let Some(wid) = load_worlds_for {
+            self.load_worlds_async(&wid, ctx, false);
+        }
+        if go_back {
+            self.install_target_choice = None;
+            self.version_picker_open = true;
+            focus_viewport(
+                ctx,
+                egui::ViewportId::from_hash_of("mcw_vp_version_picker"),
+                None,
+            );
+            return;
+        }
+        if trigger_install {
+            self.install_target_open = false;
+            if let Some(choice_to_install) = self.install_target_choice.take() {
+                let effective_id =
+                    active_existing_id.unwrap_or_else(|| self.install_target_instance_id.clone());
+                let dp_world = (!self.install_target_datapack_world.trim().is_empty())
+                    .then(|| self.install_target_datapack_world.clone());
+                self.install_content_choice_to_target(
+                    choice_to_install,
+                    self.install_target_create_new,
+                    effective_id,
+                    self.install_target_new_name.clone(),
+                    self.install_target_new_mc_version.clone(),
+                    self.install_target_new_loader.clone(),
+                    dp_world,
+                    ctx,
+                );
+            }
+        } else if !self.install_target_open {
+            self.install_target_choice = None;
         }
     }
 }

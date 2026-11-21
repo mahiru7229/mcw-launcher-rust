@@ -1,4 +1,4 @@
-use crate::app::controllers_pages::content_browser_window_title;
+use crate::app::controllers_pages::{content_browser_window_title, BROWSER_PAGE_SIZE};
 use crate::app::platform::*;
 use crate::app::*;
 use eframe::egui::Margin;
@@ -106,6 +106,7 @@ impl McwApp {
         let mut switch_category: Option<BrowserCategory> = None;
         let mut switch_provider: Option<BrowserProvider> = None;
         let mut trigger_search = false;
+        let mut page_delta: i32 = 0;
         let mut switch_instance: Option<String> = None;
         let mut pending_install: Option<BrowserInstallAction> = None;
 
@@ -132,12 +133,12 @@ impl McwApp {
                         .inner_margin(Margin::same(16)),
                 )
                 .show(vp_ctx, |ui| {
-                    // Header: Title + Category Pill Bar
-                    ui.horizontal_wrapped(|ui| {
+                    // Row 1: Title + Subtitle (left) and Close button (right)
+                    ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(
                                 RichText::new(cat.label())
-                                    .size(24.0)
+                                    .size(22.0)
                                     .strong()
                                     .color(p.text),
                             );
@@ -154,48 +155,50 @@ impl McwApp {
                             {
                                 open = false;
                             }
-                            Frame::new()
-                                .fill(p.surface)
-                                .stroke(Stroke::new(1.0_f32, p.border))
-                                .corner_radius(CornerRadius::same(12))
-                                .inner_margin(Margin::symmetric(5, 4))
-                                .show(ui, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
-                                        for c in [
-                                            BrowserCategory::DataPacks,
-                                            BrowserCategory::ShaderPacks,
-                                            BrowserCategory::ResourcePacks,
-                                            BrowserCategory::Modpacks,
-                                            BrowserCategory::Mods,
-                                        ]
-                                        .into_iter()
-                                        .rev()
-                                        {
-                                            let active = c == cat;
-                                            let btn = Button::new(
-                                                RichText::new(c.label()).size(12.0).strong().color(
-                                                    if active { p.text } else { p.text_muted },
-                                                ),
-                                            )
-                                            .fill(if active {
-                                                with_alpha(p.accent, 64)
-                                            } else {
-                                                Color32::TRANSPARENT
-                                            })
-                                            .stroke(if active {
-                                                Stroke::new(1.0_f32, p.accent)
-                                            } else {
-                                                Stroke::NONE
-                                            })
-                                            .corner_radius(CornerRadius::same(9));
-                                            if ui.add(btn).clicked() && !active {
-                                                switch_category = Some(c);
-                                            }
-                                        }
-                                    });
-                                });
                         });
                     });
+
+                    ui.add_space(6.0);
+
+                    // Row 2: Full-width Category Pill Bar (responsive, zero wrapping)
+                    Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .corner_radius(CornerRadius::same(12))
+                        .inner_margin(Margin::symmetric(6, 5))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal_wrapped(|ui| {
+                                for c in [
+                                    BrowserCategory::Mods,
+                                    BrowserCategory::Modpacks,
+                                    BrowserCategory::ResourcePacks,
+                                    BrowserCategory::ShaderPacks,
+                                    BrowserCategory::DataPacks,
+                                ] {
+                                    let active = c == cat;
+                                    let btn = Button::new(
+                                        RichText::new(c.label()).size(12.0).strong().color(
+                                            if active { p.text } else { p.text_muted },
+                                        ),
+                                    )
+                                    .fill(if active {
+                                        with_alpha(p.accent, 64)
+                                    } else {
+                                        Color32::TRANSPARENT
+                                    })
+                                    .stroke(if active {
+                                        Stroke::new(1.0_f32, p.accent)
+                                    } else {
+                                        Stroke::NONE
+                                    })
+                                    .corner_radius(CornerRadius::same(9));
+                                    if ui.add(btn).clicked() && !active {
+                                        switch_category = Some(c);
+                                    }
+                                }
+                            });
+                        });
 
                     ui.add_space(10.0);
 
@@ -431,8 +434,21 @@ impl McwApp {
                                     .show(ui, |ui| {
                                         ui.set_width((list_w - 22.0).max(180.0));
                                         ui.set_height((body_h - 22.0).max(160.0));
+                                        let page_size = BROWSER_PAGE_SIZE.max(1);
+                                        let total_pages = if self.browser_total_hits == 0 {
+                                            1
+                                        } else {
+                                            self.browser_total_hits.div_ceil(page_size)
+                                        };
+                                        let current_page_disp = self.browser_page + 1;
+                                        let can_prev =
+                                            self.browser_page > 0 && !self.browser_searching;
+                                        let can_next = !self.browser_searching
+                                            && (self.browser_page + 1) < total_pages;
+
                                         ScrollArea::vertical()
                                             .id_salt("mcw_browser_results_scroll")
+                                            .max_height((body_h - 64.0).max(120.0))
                                             .auto_shrink([false, false])
                                             .show(ui, |ui| {
                                                 ui.set_width(ui.available_width());
@@ -572,6 +588,58 @@ impl McwApp {
                                             }
                                         }
                                             });
+
+                                        ui.add_space(4.0);
+                                        ui.separator();
+                                        ui.add_space(2.0);
+                                        ui.horizontal(|ui| {
+                                            if ui
+                                                .add_enabled(
+                                                    can_prev,
+                                                    Button::new(
+                                                        RichText::new("Previous").size(11.5),
+                                                    )
+                                                    .corner_radius(CornerRadius::same(7)),
+                                                )
+                                                .clicked()
+                                            {
+                                                page_delta = -1;
+                                            }
+                                            ui.add_space(6.0);
+                                            let page_info = if self.browser_total_hits > 0 {
+                                                format!(
+                                                    "Page {} / {} ({} results)",
+                                                    current_page_disp,
+                                                    total_pages.max(current_page_disp),
+                                                    self.browser_total_hits
+                                                )
+                                            } else {
+                                                format!("Page {current_page_disp}")
+                                            };
+                                            ui.label(
+                                                RichText::new(page_info)
+                                                    .monospace()
+                                                    .size(11.0)
+                                                    .color(p.text_muted),
+                                            );
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .add_enabled(
+                                                            can_next,
+                                                            Button::new(
+                                                                RichText::new("Next").size(11.5),
+                                                            )
+                                                            .corner_radius(CornerRadius::same(7)),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        page_delta = 1;
+                                                    }
+                                                },
+                                            );
+                                        });
                                     });
                             },
                         );
@@ -818,7 +886,20 @@ impl McwApp {
             return;
         }
         if trigger_search {
+            self.browser_page = 0;
+            self.browser_selected_key = None;
             self.start_content_browser_search(ctx);
+        } else if page_delta != 0 {
+            let target_page = if page_delta < 0 {
+                self.browser_page.saturating_sub(1)
+            } else {
+                self.browser_page.saturating_add(1)
+            };
+            if target_page != self.browser_page {
+                self.browser_page = target_page;
+                self.browser_selected_key = None;
+                self.start_content_browser_search(ctx);
+            }
         }
         if let Some(action) = pending_install {
             match action {

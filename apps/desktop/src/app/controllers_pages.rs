@@ -3,6 +3,8 @@
 use super::platform::focus_viewport;
 use super::*;
 
+pub(crate) const BROWSER_PAGE_SIZE: u32 = 20;
+
 pub(crate) fn content_browser_window_title(global_mode: bool, category: BrowserCategory) -> String {
     if global_mode {
         "Mod & Modpacks - MCW Content Browser".to_string()
@@ -166,6 +168,8 @@ impl McwApp {
             || self.browser_initialized_key.as_deref() != Some(target_key.as_str())
             || provider_empty
         {
+            self.browser_page = 0;
+            self.browser_total_hits = 0;
             self.browser_selected_key = None;
             self.browser_initialized_key = Some(target_key);
             self.start_content_browser_search(ctx);
@@ -224,6 +228,8 @@ impl McwApp {
         };
 
         let api_key = self.resolved_cf_api_key();
+        let page_size = BROWSER_PAGE_SIZE;
+        let offset = self.browser_page.saturating_mul(page_size);
         let cache_path = self
             .paths
             .cache_root
@@ -238,10 +244,11 @@ impl McwApp {
             let mut cf_res = Ok(Vec::new());
             let mut ftb_res = Ok(Vec::new());
             let mut atl_res = Ok(Vec::new());
+            let mut total_hits: u32 = 0;
 
             match provider {
                 BrowserProvider::Modrinth => {
-                    mr_res = async {
+                    match async {
                         let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
                         let search = mr
                             .search(&ModrinthSearchParams {
@@ -250,17 +257,24 @@ impl McwApp {
                                 loader,
                                 game_version,
                                 index: sort,
-                                limit: 20,
-                                ..Default::default()
+                                limit: page_size,
+                                offset,
                             })
                             .await
                             .map_err(|e| e.to_string())?;
-                        Ok(search.hits)
+                        Ok::<_, String>((search.hits, search.total_hits))
                     }
-                    .await;
+                    .await
+                    {
+                        Ok((hits, tot)) => {
+                            total_hits = tot;
+                            mr_res = Ok(hits);
+                        }
+                        Err(err) => mr_res = Err(err),
+                    }
                 }
                 BrowserProvider::CurseForge => {
-                    cf_res = async {
+                    match async {
                         let cf =
                             CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
                         let search = cf
@@ -270,30 +284,66 @@ impl McwApp {
                                 loader,
                                 game_version,
                                 sort,
-                                page_size: 20,
-                                ..Default::default()
+                                page_size,
+                                index: offset.min(9980),
                             })
                             .await
                             .map_err(|e| e.to_string())?;
-                        Ok(search.data)
+                        let tot = search
+                            .pagination
+                            .as_ref()
+                            .map(|pg| pg.total_count)
+                            .unwrap_or(0);
+                        Ok::<_, String>((search.data, tot))
                     }
-                    .await;
+                    .await
+                    {
+                        Ok((mods, tot)) => {
+                            total_hits = tot;
+                            cf_res = Ok(mods);
+                        }
+                        Err(err) => cf_res = Err(err),
+                    }
                 }
                 BrowserProvider::Ftb => {
-                    ftb_res = async {
+                    match async {
                         let ftb = FtbClient::new(cache).map_err(|e| e.to_string())?;
-                        ftb.search_packs(&query, 20)
+                        let all = ftb
+                            .search_packs(&query, 50)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let tot = all.len() as u32;
+                        let page: Vec<_> = all
+                            .into_iter()
+                            .skip(offset as usize)
+                            .take(page_size as usize)
+                            .collect();
+                        Ok::<_, String>((page, tot))
+                    }
+                    .await
+                    {
+                        Ok((packs, tot)) => {
+                            total_hits = tot;
+                            ftb_res = Ok(packs);
+                        }
+                        Err(err) => ftb_res = Err(err),
+                    }
+                }
+                BrowserProvider::AtLauncher => {
+                    match async {
+                        let atl = AtLauncherClient::new(cache).map_err(|e| e.to_string())?;
+                        atl.search_paged(&query, offset as usize, page_size as usize)
                             .await
                             .map_err(|e| e.to_string())
                     }
-                    .await;
-                }
-                BrowserProvider::AtLauncher => {
-                    atl_res = async {
-                        let atl = AtLauncherClient::new(cache).map_err(|e| e.to_string())?;
-                        atl.search(&query, 20).await.map_err(|e| e.to_string())
+                    .await
+                    {
+                        Ok((packs, tot)) => {
+                            total_hits = tot;
+                            atl_res = Ok(packs);
+                        }
+                        Err(err) => atl_res = Err(err),
                     }
-                    .await;
                 }
             }
 
@@ -301,6 +351,7 @@ impl McwApp {
                 request_id,
                 category,
                 provider,
+                total_hits,
                 modrinth: mr_res,
                 curseforge: cf_res,
                 ftb: ftb_res,

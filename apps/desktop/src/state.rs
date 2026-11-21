@@ -290,6 +290,7 @@ pub enum AppEvent {
         servers: Vec<SavedServer>,
     },
     CachedVersionsLoaded(Vec<CachedVersionInfo>),
+    LatestJavaReleaseLoaded(Result<u32, String>),
     BackgroundPicturePicked(Option<std::path::PathBuf>),
     BackgroundImageLoaded {
         key: String,
@@ -299,6 +300,7 @@ pub enum AppEvent {
         request_id: u64,
         category: BrowserCategory,
         provider: BrowserProvider,
+        total_hits: u32,
         modrinth: Result<Vec<ModrinthSearchHit>, String>,
         curseforge: Result<Vec<CurseForgeMod>, String>,
         ftb: Result<Vec<FtbPackSummary>, String>,

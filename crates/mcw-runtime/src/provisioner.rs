@@ -10,6 +10,7 @@ use tracing::info;
 use zip::ZipArchive;
 
 const ADOPTIUM_ASSETS_URL: &str = "https://api.adoptium.net/v3/assets/latest";
+const ADOPTIUM_AVAILABLE_RELEASES_URL: &str = "https://api.adoptium.net/v3/info/available_releases";
 
 #[derive(Debug, Clone)]
 pub struct AdoptiumRelease {
@@ -35,11 +36,57 @@ impl JavaProvisioner {
             .join(exe)
     }
 
+    pub fn parse_latest_feature_release(raw: &str) -> Result<u32> {
+        let payload: serde_json::Value = serde_json::from_str(raw).map_err(|e| {
+            RuntimeError::ProvisionFailed(format!(
+                "Invalid Adoptium available-releases response: {e}"
+            ))
+        })?;
+        if let Some(major) = payload
+            .get("most_recent_feature_release")
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|&n| n >= 8)
+        {
+            return Ok(major);
+        }
+        if let Some(max_major) = payload
+            .get("available_releases")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.as_u64().and_then(|n| u32::try_from(n).ok()))
+                    .filter(|&n| n >= 8)
+                    .max()
+            })
+        {
+            return Ok(max_major);
+        }
+        Err(RuntimeError::ProvisionFailed(
+            "Adoptium did not report a latest GA Java feature release.".to_string(),
+        ))
+    }
+
+    pub async fn fetch_latest_feature_release(client: &DownloadClient) -> Result<u32> {
+        let raw = client.get_text(ADOPTIUM_AVAILABLE_RELEASES_URL).await?;
+        Self::parse_latest_feature_release(&raw)
+    }
+
     pub async fn fetch_latest_adoptium(
         client: &DownloadClient,
         major: u32,
     ) -> Result<AdoptiumRelease> {
         let managed_major = JavaMajorPolicy::resolve(major)?;
+        Self::fetch_latest_adoptium_exact(client, managed_major).await
+    }
+
+    pub async fn fetch_latest_adoptium_exact(
+        client: &DownloadClient,
+        exact_major: u32,
+    ) -> Result<AdoptiumRelease> {
+        if exact_major < 8 {
+            return Err(RuntimeError::InvalidJavaMajor(exact_major.to_string()));
+        }
         let os_name = if cfg!(target_os = "windows") {
             "windows"
         } else if cfg!(target_os = "linux") {
@@ -62,7 +109,7 @@ impl JavaProvisioner {
         };
 
         let url = format!(
-            "{ADOPTIUM_ASSETS_URL}/{managed_major}/hotspot?heap_size=normal&image_type=jdk&jvm_impl=hotspot&project=jdk&vendor=eclipse&os={os_name}&architecture={arch}"
+            "{ADOPTIUM_ASSETS_URL}/{exact_major}/hotspot?heap_size=normal&image_type=jdk&jvm_impl=hotspot&project=jdk&vendor=eclipse&os={os_name}&architecture={arch}"
         );
         let raw = client.get_text(&url).await?;
         let payload: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
@@ -74,7 +121,7 @@ impl JavaProvisioner {
         })?;
         let asset = arr.first().ok_or_else(|| {
             RuntimeError::ProvisionFailed(format!(
-                "No Adoptium Temurin JDK {managed_major} release found for {os_name}/{arch}"
+                "No Adoptium Temurin JDK {exact_major} release found for {os_name}/{arch}"
             ))
         })?;
 
@@ -112,7 +159,7 @@ impl JavaProvisioner {
         }
 
         Ok(AdoptiumRelease {
-            major: managed_major,
+            major: exact_major,
             release_name,
             url: download_url,
             sha256,
@@ -127,16 +174,30 @@ impl JavaProvisioner {
         client: &DownloadClient,
     ) -> Result<JavaInstallation> {
         let managed_major = JavaMajorPolicy::resolve(required_major)?;
-        let existing_exe = Self::managed_executable(runtimes_root, managed_major);
-        if existing_exe.is_file() {
-            if let Some(info) = JavaDiscovery::probe(&existing_exe) {
-                return Ok(info);
+        Self::install_managed_exact(runtimes_root, managed_major, false, client).await
+    }
+
+    pub async fn install_managed_exact(
+        runtimes_root: &Path,
+        exact_major: u32,
+        force: bool,
+        client: &DownloadClient,
+    ) -> Result<JavaInstallation> {
+        if exact_major < 8 {
+            return Err(RuntimeError::InvalidJavaMajor(exact_major.to_string()));
+        }
+        if !force {
+            let existing_exe = Self::managed_executable(runtimes_root, exact_major);
+            if existing_exe.is_file() {
+                if let Some(info) = JavaDiscovery::probe(&existing_exe) {
+                    return Ok(info);
+                }
             }
         }
 
-        let release = Self::fetch_latest_adoptium(client, managed_major).await?;
+        let release = Self::fetch_latest_adoptium_exact(client, exact_major).await?;
         info!(
-            major = managed_major,
+            major = exact_major,
             release = %release.release_name,
             "Downloading managed Eclipse Temurin JDK"
         );
@@ -157,14 +218,14 @@ impl JavaProvisioner {
             )));
         }
 
-        let target_dir = Self::managed_dir(runtimes_root, managed_major);
+        let target_dir = Self::managed_dir(runtimes_root, exact_major);
         if target_dir.exists() {
             fs::remove_dir_all(&target_dir)?;
         }
         extract_jdk_zip(&archive_path, &target_dir)?;
         let _ = fs::remove_file(&archive_path);
 
-        let exe = Self::managed_executable(runtimes_root, managed_major);
+        let exe = Self::managed_executable(runtimes_root, exact_major);
         let installed = JavaDiscovery::probe(&exe).ok_or_else(|| {
             RuntimeError::ProvisionFailed(format!(
                 "Extracted JDK at {} did not produce a working java executable",
@@ -240,4 +301,24 @@ fn extract_jdk_zip(archive_path: &Path, target_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_adoptium_latest_feature_release() {
+        let json = r#"{"available_releases":[8,11,17,21,25,26],"most_recent_feature_release":26}"#;
+        assert_eq!(
+            JavaProvisioner::parse_latest_feature_release(json).unwrap(),
+            26
+        );
+        let fallback = r#"{"available_releases":[8,17,21,25]}"#;
+        assert_eq!(
+            JavaProvisioner::parse_latest_feature_release(fallback).unwrap(),
+            25
+        );
+        assert!(JavaProvisioner::parse_latest_feature_release("{}").is_err());
+    }
 }

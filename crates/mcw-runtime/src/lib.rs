@@ -23,7 +23,7 @@ pub use discord_rpc::{DiscordActivity, DiscordRpcService, DEFAULT_DISCORD_CLIENT
 pub use first_run::{
     detect_available_memory_mb, FirstRunRecommendation, FirstRunRecommendationService,
 };
-pub use gpu::GpuPreferenceManager;
+pub use gpu::{GpuPreferenceManager, GraphicsAdapter, GraphicsDetectionResult};
 pub use java::{
     prefer_javaw_on_windows, JavaDiscovery, JavaInstallation, JavaMajorPolicy, JavaResolver,
 };

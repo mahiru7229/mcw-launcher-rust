@@ -1,6 +1,6 @@
 # MCW Launcher: Rust Edition
 
-[![Status](https://img.shields.io/badge/status-v0.13.1--beta.1-7C3AED?style=flat-square)](#)
+[![Status](https://img.shields.io/badge/status-v0.13.2--beta.1-7C3AED?style=flat-square)](#)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -11,34 +11,34 @@
 
 ## Performance & Footprint (vs. MCW Launcher Python)
 
-| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v0.13.1-beta.1`) |
+| Metric | MCW Launcher (Python / PySide6) | MCW Launcher: Rust Edition (`v0.13.2-beta.1`) |
 | --- | --- | --- |
 | **Idle / Active RAM** | ~150 MB | **~60–70 MB** (~55–60% lower memory footprint) |
 | **Runtime Performance** | Baseline | **~2× faster** UI responsiveness, mod scanning, and concurrent downloads |
-| **Package Size** | Larger (bundled Python + Qt runtime) | **Lighter (~9.66 MiB / ~10.13 MB single binary)** — zero bundled Python/Qt runtime |
+| **Package Size** | Larger (bundled Python + Qt runtime) | **Lighter (9.72 MiB / 10.19 MB single binary)** — zero bundled Python/Qt runtime |
 
 ---
 
 ## Key Features
 
 - **UI v2.0 Native Desktop Interface (`egui` / `eframe`)**
-  - **Custom Background & Theme Presets**: Bundled procedural pixel-landscape or user PNG/JPEG/WebP background with *Panel opacity* and *Background dimming* sliders (no blur); 6 built-in presets (**Violet** default, **Sunrise**, **Neon**, **Ocean**, **Emerald**, **Light**), `#RRGGBB` custom accent override, and `themes/*.json` pack loading.
+  - **Pure Black Default & Custom Background**: Pure `#000000` black backdrop by default in Dark mode, or asynchronous user PNG/JPEG/WebP wallpaper with *Panel transparency* and *Background dimming* sliders; 6 built-in presets (**Violet** default, **Sunrise**, **Neon**, **Ocean**, **Emerald**, **Light**), `#RRGGBB` custom accent override, and `themes/*.json` pack loading; screen-aware initial window sizing (`1600x900` on Full HD+, `1280x720` on `1366x768+`).
   - **Clean Shell & Navigation**: Floating top pill bar (**Home**, **Mod & Modpacks**, **Versions**, **Logs**), slim left icon rail with status indicators and context menu, slide-out Instance Flyout (search, favorites, responsive Group/Tag pills), **in-app Launcher Settings modal** with cross-category right-pane content search, and **`Ctrl+K` Global Quick Search**.
-  - **Dedicated Pages & Floating Tabbed Home**: Home hero header (`Play`, `•••` Actions menu, quick Add Content / Open Folder / Gear **Instance Settings** icons, `Mods`/`Worlds`/`Resource packs`/`Shaders`/`Screenshots`/`Backups`/`Logs`/`Servers & LAN` tabs), **Servers & LAN** per-instance tab (`servers.dat` NBT + Quick Play + instant-apply Manual MCW LAN Agent), **Versions** (single vertical scroll covering collapsible `Cached Versions` + Mojang manifest), and unified **Logs** view.
-  - **Dedicated Centered OS Windows**: Isolated OS viewports for **Mod & Modpacks** (`Mods`, `Modpacks`, `Resource packs`, `Shader packs`, `Data packs` — including 1-step global instance/new-instance target selection), Modpack Install (with `JVM Preset` selector), origin-aware Export Modpack, Accounts, Create Instance, Manual Downloads, Repair Center, Global Logs, First-Run Wizard, and LAN Agent Log (re-focusing when already open).
+  - **Dedicated Pages & Floating Tabbed Home**: Home hero header (`Play`, `•••` Actions menu, quick Add Content / Open Folder / Gear **Instance Settings** icons, `Mods`/`Worlds`/`Servers & LAN`/`Resource packs`/`Shaders`/`Screenshots`/`Backups`/`Logs` tabs), **Servers & LAN** per-instance tab (`servers.dat` NBT + Quick Play + instant-apply Manual MCW LAN Agent), **Versions** (single vertical scroll covering collapsible `Cached Versions` + Mojang manifest), and unified **Logs** view.
+  - **Dedicated Centered OS Windows**: Isolated OS viewports for paginated **Mod & Modpacks** (`Mods`, `Modpacks`, `Resource packs`, `Shader packs`, `Data packs` with responsive pill header, `Previous`/`Next` pagination, and 2-step **Install Destination** picker enforcing exact MC version + loader compatibility), dedicated **Java Runtimes** manager (with dynamic Adoptium Latest JDK lookup), Modpack Install (with `JVM Preset` selector), origin-aware Export Modpack, Accounts, Create Instance, Manual Downloads, Repair Center, Global Logs, Python-parity 6-step **First-Run Setup Wizard** (including native dedicated GPU detection), and LAN Agent Log.
   - **Simple Animations Only**: Hover/fade (`~120 ms`), modal/page fade-in (`~150 ms`), and smooth animated task progress bars honoring `MotionMode` (**Full** / **Reduced** / **Off**).
 - **Full Mod Loader Support & Safety**
   - **Vanilla**, **Fabric**, **Quilt**, **Forge** (legacy `1.12.2` + modern `--installClient`), **NeoForge**, and managed **OptiFine** validation/install.
   - Parallel library & asset downloads (`mcw-net`) with SHA-1 `VerificationCache`, pause/resume/cancel, and safe atomic writes.
 - **Mod & Modpack Ecosystem**
-  - Browse & install from **Modrinth** (with dependency resolution) and **CurseForge**; import `.mrpack`, `.mcwpack`, & CurseForge `.zip` archives; search & install **FTB** and **ATLauncher** packs with optional-file selection.
+  - Browse & install paginated results (`PageSize = 20`) from **Modrinth** (with dependency resolution) and **CurseForge**; import `.mrpack`, `.mcwpack`, & CurseForge `.zip` archives; search & install **FTB** and **ATLauncher** packs with optional-file selection.
   - **Incomplete Modpack Guard & Manual Downloads**: Tracks CurseForge opt-out mods (`Incomplete (N)`), auto-scans `Downloads/` every 2s, and imports matching files cleanly.
 - **Account Management & Security**
   - **Microsoft Account (MSA)** via Browser OAuth2 PKCE (`localhost:8400`) and Device Code flow with 2D skin avatars.
   - **Offline** accounts with spec-compliant offline UUIDv3 generation.
   - Refresh tokens encrypted at rest via OS DPAPI + HMAC-SHA256 integrity checks.
 - **Java Runtime Provisioner & Process Supervisor**
-  - Automatic Java discovery + managed **Eclipse Temurin** (Java 8 / 17 / 21 / 25) downloads via Adoptium API.
+  - Automatic Java discovery + managed **Eclipse Temurin** (Java 8 / 17 / 21 / 25 + dynamic latest GA JDK via Adoptium `available_releases` API) inside the isolated `Java Runtimes` OS window.
   - `.class` bytecode inspection (`0xCAFEBABE`), JVM flag presets, and Win32 Job Object process supervision with live log streaming, crash classification, `mclo.gs` upload, and diagnostic `.zip` export.
 - **Storage, Maintenance & Updater Status**
   - **Shared Content Store** SHA-256 hardlink deduplication, **Backup & Safe Rollback Restore**, **Instance Repair & Mod Compatibility Analyzer**, and read-only **Python 1.8.x Migration** (`mcw-cli migrate`).

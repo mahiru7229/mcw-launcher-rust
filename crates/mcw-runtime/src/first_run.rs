@@ -1,4 +1,8 @@
-use crate::{detect_total_memory_mb, JavaDiscovery, JavaInstallation};
+use crate::{
+    detect_total_memory_mb, GpuPreferenceManager, GraphicsDetectionResult, JavaDiscovery,
+    JavaInstallation,
+};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -9,6 +13,19 @@ pub struct FirstRunRecommendation {
     pub recommended_max_memory_mb: u32,
     pub java_installations: Vec<JavaInstallation>,
     pub recommended_java: Option<JavaInstallation>,
+    pub gpu_detection: GraphicsDetectionResult,
+}
+
+impl FirstRunRecommendation {
+    pub fn java_majors(&self) -> Vec<u32> {
+        let mut set = BTreeSet::new();
+        for j in &self.java_installations {
+            if j.major > 0 {
+                set.insert(j.major);
+            }
+        }
+        set.into_iter().collect()
+    }
 }
 
 /// Detect currently available physical system RAM in megabytes (MB).
@@ -89,6 +106,7 @@ impl FirstRunRecommendationService {
         let recommended_min_memory_mb = Self::recommended_min_memory_mb(recommended_max_memory_mb);
         let java_installations = JavaDiscovery::discover(Some(managed_runtimes_root));
         let recommended_java = Self::select_preferred_java(&java_installations);
+        let gpu_detection = GpuPreferenceManager::detect();
 
         FirstRunRecommendation {
             total_memory_mb,
@@ -97,6 +115,7 @@ impl FirstRunRecommendationService {
             recommended_max_memory_mb,
             java_installations,
             recommended_java,
+            gpu_detection,
         }
     }
 

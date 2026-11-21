@@ -58,12 +58,17 @@ impl McwApp {
         }
         if self.background.is_active() {
             self.background
-                .paint(ctx, self.prefs.background_dim, self.palette.canvas);
+                .paint(ctx, self.prefs.background_dim, Color32::BLACK);
         } else {
+            let bg_col = if self.theme_mode == ThemeMode::Dark {
+                Color32::BLACK
+            } else {
+                self.palette.canvas
+            };
             ctx.layer_painter(egui::LayerId::background()).rect_filled(
                 ctx.screen_rect(),
                 0.0,
-                self.palette.canvas,
+                bg_col,
             );
         }
     }

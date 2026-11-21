@@ -1,6 +1,6 @@
 mod controllers;
 mod controllers_pages;
-mod platform;
+pub(crate) mod platform;
 mod views;
 
 use self::platform::default_user_downloads_dir;
@@ -302,6 +302,8 @@ pub struct McwApp {
     browser_datapack_world: String,
     browser_global_mode: bool,
     browser_mc_version_filter: String,
+    browser_page: u32,
+    browser_total_hits: u32,
 
     // v0.12 / v0.13.1 Pages & Instance Servers tab state
     selected_servers: Vec<SavedServer>,
@@ -350,11 +352,19 @@ pub struct McwApp {
     version_picker_selected_id: String,
     version_picker_global_mode: bool,
     version_picker_content_kind: Option<ContentKind>,
-    version_picker_create_new: bool,
-    version_picker_target_instance_id: String,
-    version_picker_new_inst_name: String,
-    version_picker_new_inst_loader: String,
-    version_picker_datapack_world: String,
+
+    // Step 2 Install Target OS Window (opened when clicking Install in global Version Picker)
+    install_target_open: bool,
+    install_target_title: String,
+    install_target_icon: Option<String>,
+    install_target_choice: Option<ModVersionChoice>,
+    install_target_content_kind: Option<ContentKind>,
+    install_target_create_new: bool,
+    install_target_instance_id: String,
+    install_target_new_name: String,
+    install_target_new_mc_version: String,
+    install_target_new_loader: String,
+    install_target_datapack_world: String,
 
     // OptiFine JAR path input inside Instance Settings tab
     optifine_jar_input: String,
@@ -379,6 +389,7 @@ pub struct McwApp {
     last_update_check: Option<UpdateCheckResult>,
     show_update_dialog: bool,
     show_first_run_wizard: bool,
+    first_run_page: usize,
     first_run_scanning: bool,
     first_run_rec: Option<FirstRunRecommendation>,
     first_run_min_ram: u32,
@@ -386,6 +397,11 @@ pub struct McwApp {
     first_run_language: String,
     first_run_auto_updates: bool,
     first_run_discord_rpc: bool,
+    first_run_download_concurrency: u32,
+    first_run_java_path: String,
+    first_run_prefer_dedicated_gpu: bool,
+    first_run_offline_username: String,
+    first_run_offline_msg: Option<(String, bool)>,
     storage_scanning: bool,
     storage_cleaning: bool,
     storage_summary: Option<StorageSummary>,
@@ -402,12 +418,17 @@ pub struct McwApp {
     account_integrity_ok: bool,
     cf_api_key_input: String,
     cf_api_key_revealed: bool,
+    initial_window_size: [f32; 2],
     last_window_size: [f32; 2],
 
-    // Stage 5: Java Diagnostics, LAN Agent Log dialog, Sidebar Context Menu,
-    // Optional modpack files, Shared Content Store deduplication & OptiFine tracking
+    // Stage 5 / v0.13.2: Java Diagnostics OS Window & Latest Adoptium Release
     java_diagnostics: Vec<JavaDiagnostic>,
     java_scanning: bool,
+    show_java_manager_window: bool,
+    latest_java_major: Option<u32>,
+    latest_java_checking: bool,
+    latest_java_error: Option<String>,
+    java_install_selected_major: u32,
     show_lan_agent_log_window: bool,
     lan_agent_log_instance_id: String,
     lan_agent_log_text: String,
@@ -438,17 +459,19 @@ pub struct McwApp {
 }
 
 impl McwApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, paths: LauncherPaths) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        paths: LauncherPaths,
+        init_size: [f32; 2],
+    ) -> Self {
         configure_fonts(&cc.egui_ctx);
         let prefs = LauncherPrefs::load(&paths);
         mcw_net::set_global_bandwidth_limit_mbps(prefs.download_limit_mbps);
         let cf_api_key_input =
             load_custom_curseforge_api_key(&paths.config_root).unwrap_or_default();
         let account_integrity_ok = AccountStore::new(&paths).verify_integrity();
-        let last_window_size = [
-            prefs.window_width.clamp(840.0, 3840.0),
-            prefs.window_height.clamp(560.0, 2160.0),
-        ];
+        let initial_window_size = init_size;
+        let last_window_size = init_size;
         let theme_catalog = ThemeCatalog::load(&paths.theme_root);
         let motion_mode = MotionMode::parse(&prefs.motion_mode);
         let custom_accent_input = prefs.custom_accent_hex.clone();
@@ -465,6 +488,11 @@ impl McwApp {
         let first_run_language = prefs.normalized_locale();
         let first_run_auto_updates = prefs.auto_check_updates;
         let first_run_discord_rpc = prefs.discord_rpc_enabled;
+        let first_run_min_ram = prefs.default_min_memory;
+        let first_run_max_ram = prefs.default_max_memory;
+        let first_run_download_concurrency = prefs.download_concurrency;
+        let first_run_java_path = prefs.default_java_path.clone();
+        let first_run_prefer_dedicated_gpu = prefs.prefer_dedicated_gpu;
         let discord_rpc =
             DiscordRpcService::new(prefs.discord_rpc_enabled, prefs.discord_client_id.clone());
 
@@ -598,6 +626,8 @@ impl McwApp {
             browser_datapack_world: String::new(),
             browser_global_mode: true,
             browser_mc_version_filter: "all".to_string(),
+            browser_page: 0,
+            browser_total_hits: 0,
             selected_servers: Vec::new(),
             servers_cache: HashMap::new(),
             loading_servers: HashSet::new(),
@@ -633,11 +663,17 @@ impl McwApp {
             version_picker_selected_id: String::new(),
             version_picker_global_mode: false,
             version_picker_content_kind: None,
-            version_picker_create_new: false,
-            version_picker_target_instance_id: String::new(),
-            version_picker_new_inst_name: String::new(),
-            version_picker_new_inst_loader: "fabric".to_string(),
-            version_picker_datapack_world: String::new(),
+            install_target_open: false,
+            install_target_title: String::new(),
+            install_target_icon: None,
+            install_target_choice: None,
+            install_target_content_kind: None,
+            install_target_create_new: false,
+            install_target_instance_id: String::new(),
+            install_target_new_name: String::new(),
+            install_target_new_mc_version: String::new(),
+            install_target_new_loader: "fabric".to_string(),
+            install_target_datapack_world: String::new(),
             optifine_jar_input: String::new(),
             mod_update_candidates: Vec::new(),
             checking_mod_updates: false,
@@ -656,13 +692,19 @@ impl McwApp {
             last_update_check: None,
             show_update_dialog: false,
             show_first_run_wizard: false,
+            first_run_page: 0,
             first_run_scanning: false,
             first_run_rec: None,
-            first_run_min_ram: 1024,
-            first_run_max_ram: 2048,
+            first_run_min_ram,
+            first_run_max_ram,
             first_run_language,
             first_run_auto_updates,
             first_run_discord_rpc,
+            first_run_download_concurrency,
+            first_run_java_path,
+            first_run_prefer_dedicated_gpu,
+            first_run_offline_username: String::new(),
+            first_run_offline_msg: None,
             storage_scanning: false,
             storage_cleaning: false,
             storage_summary: None,
@@ -677,9 +719,15 @@ impl McwApp {
             account_integrity_ok,
             cf_api_key_input,
             cf_api_key_revealed: false,
+            initial_window_size,
             last_window_size,
             java_diagnostics: Vec::new(),
             java_scanning: false,
+            show_java_manager_window: false,
+            latest_java_major: None,
+            latest_java_checking: false,
+            latest_java_error: None,
+            java_install_selected_major: 21,
             show_lan_agent_log_window: false,
             lan_agent_log_instance_id: String::new(),
             lan_agent_log_text: String::new(),
@@ -745,6 +793,7 @@ impl McwApp {
 impl Drop for McwApp {
     fn drop(&mut self) {
         if self.prefs.remember_window_size
+            && self.prefs.window_size_customized
             && self.last_window_size[0] >= 840.0
             && self.last_window_size[1] >= 560.0
         {
@@ -762,6 +811,11 @@ impl eframe::App for McwApp {
             let size = rect.size();
             if size.x >= 840.0 && size.y >= 560.0 {
                 self.last_window_size = [size.x, size.y];
+                if (size.x - self.initial_window_size[0]).abs() > 8.0
+                    || (size.y - self.initial_window_size[1]).abs() > 8.0
+                {
+                    self.prefs.window_size_customized = true;
+                }
             }
         }
         self.poll_events(ctx);

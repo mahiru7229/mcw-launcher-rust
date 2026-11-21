@@ -32,14 +32,21 @@ impl McwApp {
         let mut reset_defaults = false;
         let mut reload_langs = false;
         let mut scan_java = false;
+        let mut open_java_manager = false;
+        let mut check_latest_java = false;
         let mut discord_changed = false;
         let mut open_first_run = false;
         let trigger_storage_scan = (self.launcher_settings_tab == LauncherSettingsTab::Storage
             || !self.settings_search.trim().is_empty())
             && self.storage_summary.is_none()
             && !self.storage_scanning;
+        let trigger_latest_java_check = (self.launcher_settings_tab
+            == LauncherSettingsTab::Runtime
+            || !self.settings_search.trim().is_empty())
+            && self.latest_java_major.is_none()
+            && !self.latest_java_checking
+            && self.latest_java_error.is_none();
         let mut install_java_major: Option<u32> = None;
-        let mut uninstall_java_exe: Option<PathBuf> = None;
         let win_title = self.t("launcher_settings.page.title").to_string();
         let nav_tabs = [
             (
@@ -231,7 +238,8 @@ impl McwApp {
                                                     None,
                                                     &mut prefs_dirty,
                                                     &mut scan_java,
-                                                    &mut uninstall_java_exe,
+                                                    &mut open_java_manager,
+                                                    &mut check_latest_java,
                                                     &mut install_java_major,
                                                 );
                                             }
@@ -282,7 +290,8 @@ impl McwApp {
                                             q,
                                             &mut prefs_dirty,
                                             &mut scan_java,
-                                            &mut uninstall_java_exe,
+                                            &mut open_java_manager,
+                                            &mut check_latest_java,
                                             &mut install_java_major,
                                         );
                                         matched += self.render_settings_appearance_tab(
@@ -342,8 +351,11 @@ impl McwApp {
                 false,
             ));
         }
-        if let Some(exe) = uninstall_java_exe {
-            self.uninstall_managed_java(exe, ctx);
+        if open_java_manager {
+            self.open_java_manager_window(ctx);
+        }
+        if check_latest_java || trigger_latest_java_check {
+            self.start_check_latest_java_release(ctx);
         }
         if discord_changed {
             self.discord_rpc.configure(
@@ -999,13 +1011,15 @@ impl McwApp {
         matched
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_settings_runtime_tab(
         &mut self,
         ui: &mut egui::Ui,
         search_q: Option<&str>,
         prefs_dirty: &mut bool,
         scan_java: &mut bool,
-        uninstall_java_exe: &mut Option<PathBuf>,
+        open_java_manager: &mut bool,
+        check_latest_java: &mut bool,
         install_java_major: &mut Option<u32>,
     ) -> usize {
         let p = self.palette;
@@ -1018,7 +1032,7 @@ impl McwApp {
         }
         let mut matched = 0usize;
 
-        // Card 1: Java runtimes
+        // Card 1: Compact Java Runtimes Summary + Java Runtimes OS Window + Latest JDK
         let java_title = self.t("launcher_settings.java.title").to_string();
         let java_desc = self.t("launcher_settings.java.description").to_string();
         let scan_lbl = self.t("Scan Java installations").to_string();
@@ -1029,7 +1043,7 @@ impl McwApp {
                 &java_title,
                 &java_desc,
                 &scan_lbl,
-                "java runtimes scan temurin jdk 8 17 21 25 uninstall open folder",
+                "java runtimes manage scan temurin jdk latest 8 17 21 25 uninstall",
             ],
         ) {
             matched += 1;
@@ -1046,100 +1060,151 @@ impl McwApp {
                     ui.label(RichText::new(&java_title).strong());
                     ui.label(RichText::new(&java_desc).size(11.5).color(p.text_muted));
                     ui.add_space(6.0);
+
                     if self.java_scanning {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             ui.label(RichText::new(self.t("java.scan.progress")).color(p.accent));
                         });
-                    } else if !self.java_diagnostics.is_empty() {
-                        for diag in &self.java_diagnostics {
-                            let vendor = if diag.vendor.is_empty() {
-                                "Java".to_string()
-                            } else {
-                                diag.vendor.clone()
-                            };
-                            let arch = if diag.architecture.is_empty() {
-                                format!("{}-bit", diag.bitness)
-                            } else {
-                                format!("{} ({}-bit)", diag.architecture, diag.bitness)
-                            };
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "• Java {} ({}) · {} · {} · [{}] - {}",
-                                        diag.major_version,
-                                        diag.version_string,
-                                        vendor,
-                                        arch,
-                                        diag.source,
-                                        diag.executable.display()
-                                    ))
-                                    .monospace()
-                                    .size(11.0)
-                                    .color(if diag.valid {
-                                        p.text_muted
-                                    } else {
-                                        p.warning
-                                    }),
-                                );
-                                if ui.small_button("Open Folder").clicked() {
-                                    let root =
-                                        JavaDiagnosticsManager::java_root_dir(&diag.executable);
-                                    open_external(&root.display().to_string());
-                                }
-                                if diag.is_managed
-                                    && ui
-                                        .small_button(RichText::new("Uninstall").color(p.danger))
-                                        .clicked()
-                                {
-                                    *uninstall_java_exe = Some(diag.executable.clone());
-                                }
-                            });
-                        }
-                    } else if self.java_installations.is_empty() {
-                        ui.label(
-                            RichText::new(self.t("launcher_settings.java.none")).color(p.warning),
-                        );
                     } else {
-                        for j in &self.java_installations {
+                        let total_detected = if !self.java_diagnostics.is_empty() {
+                            self.java_diagnostics.len()
+                        } else {
+                            self.java_installations.len()
+                        };
+                        let managed_count = if !self.java_diagnostics.is_empty() {
+                            self.java_diagnostics.iter().filter(|d| d.is_managed).count()
+                        } else {
+                            self.java_installations
+                                .iter()
+                                .filter(|j| j.path.starts_with(&self.paths.runtimes_root))
+                                .count()
+                        };
+                        let mut majors = std::collections::BTreeSet::new();
+                        if !self.java_diagnostics.is_empty() {
+                            for d in &self.java_diagnostics {
+                                if d.major_version > 0 {
+                                    majors.insert(d.major_version);
+                                }
+                            }
+                        } else {
+                            for j in &self.java_installations {
+                                if j.major > 0 {
+                                    majors.insert(j.major);
+                                }
+                            }
+                        }
+
+                        if total_detected == 0 {
+                            ui.label(
+                                RichText::new(self.t("launcher_settings.java.none"))
+                                    .color(p.warning),
+                            );
+                        } else {
+                            let majors_str = if majors.is_empty() {
+                                "unknown".to_string()
+                            } else {
+                                majors
+                                    .iter()
+                                    .map(|m| format!("Java {m}"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            };
                             ui.label(
                                 RichText::new(format!(
-                                    "• Java {} ({}) - {}",
-                                    j.major,
-                                    j.version_string,
-                                    j.path.display()
+                                    "Detected {total_detected} runtime(s) ({managed_count} managed) - Available: {majors_str}"
                                 ))
                                 .monospace()
-                                .size(11.0)
+                                .size(11.5)
                                 .color(p.text_muted),
                             );
                         }
                     }
-                    let recovery_cnt = JavaRecoveryDiagnostics::snapshot().len();
-                    if recovery_cnt > 0 {
+
+                    if self.latest_java_checking {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new(self.t("launcher_settings.java.latest_checking"))
+                                    .size(11.5)
+                                    .color(p.accent),
+                            );
+                        });
+                    } else if let Some(latest_major) = self.latest_java_major {
+                        let txt = self
+                            .lang
+                            .tr_fmt(
+                                "launcher_settings.java.latest_version",
+                                &[("major", &latest_major.to_string())],
+                            )
+                            .replace(['\u{2014}', '\u{2013}'], "-");
+                        ui.label(RichText::new(txt).size(11.5).color(p.text_muted));
+                    } else if let Some(ref err) = self.latest_java_error {
                         ui.label(
                             RichText::new(format!(
-                                "Java auto-selection events recorded this session: {recovery_cnt}"
+                                "{} ({err})",
+                                self.t("launcher_settings.java.latest_unavailable")
                             ))
-                            .size(10.5)
-                            .color(p.text_muted),
+                            .size(11.0)
+                            .color(p.warning),
                         );
                     }
-                    ui.add_space(6.0);
+
+                    ui.add_space(8.0);
                     ui.horizontal_wrapped(|ui| {
-                        if ui.button(&scan_lbl).clicked() {
-                            *scan_java = true;
+                        let mgr_btn = Button::new(
+                            RichText::new("Manage Java Runtimes...")
+                                .color(p.accent_text)
+                                .strong(),
+                        )
+                        .fill(p.accent);
+                        if ui.add(mgr_btn).clicked() {
+                            *open_java_manager = true;
                         }
-                        for major in [8u32, 17, 21, 25] {
-                            let busy = self.installing_java_majors.contains(&major);
+
+                        if let Some(latest_major) = self.latest_java_major {
+                            let busy = self.installing_java_majors.contains(&latest_major);
+                            let managed_exists = self
+                                .java_diagnostics
+                                .iter()
+                                .any(|d| d.is_managed && d.major_version == latest_major)
+                                || self
+                                    .java_installations
+                                    .iter()
+                                    .any(|j| {
+                                        j.major == latest_major
+                                            && j.path.starts_with(&self.paths.runtimes_root)
+                                    });
                             let lbl = if busy {
-                                format!("Installing Java {major}...")
+                                format!("Installing Java {latest_major}...")
+                            } else if managed_exists {
+                                self.lang.tr_fmt(
+                                    "launcher_settings.java.latest_reinstall",
+                                    &[("major", &latest_major.to_string())],
+                                )
                             } else {
-                                format!("Install Temurin Java {major}")
+                                self.lang.tr_fmt(
+                                    "launcher_settings.java.latest_install",
+                                    &[("major", &latest_major.to_string())],
+                                )
                             };
                             if ui.add_enabled(!busy, Button::new(lbl)).clicked() {
-                                *install_java_major = Some(major);
+                                *install_java_major = Some(latest_major);
                             }
+                        } else {
+                            let checking = self.latest_java_checking;
+                            let lbl = if checking {
+                                "Checking latest JDK...".to_string()
+                            } else {
+                                "Check Latest JDK".to_string()
+                            };
+                            if ui.add_enabled(!checking, Button::new(lbl)).clicked() {
+                                *check_latest_java = true;
+                            }
+                        }
+
+                        if ui.button(&scan_lbl).clicked() {
+                            *scan_java = true;
                         }
                     });
                 });

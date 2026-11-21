@@ -79,9 +79,20 @@ impl Default for CurseForgeSearchParams {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CurseForgePagination {
+    pub index: u32,
+    pub page_size: u32,
+    pub result_count: u32,
+    pub total_count: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurseForgeSearchResult {
     pub data: Vec<CurseForgeMod>,
+    #[serde(default)]
+    pub pagination: Option<CurseForgePagination>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

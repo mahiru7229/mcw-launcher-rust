@@ -1,15 +1,13 @@
-//! Launcher background picture (user image or procedurally generated pixel landscape).
+//! Launcher background picture (pure black by default, or user PNG/JPEG/WebP image).
 //!
-//! The picture is painted once per frame on the window's background layer; floating panels
-//! (translucent `ThemePalette::glass`) are drawn above it. User image decoding & resizing run
-//! asynchronously off the GUI thread so switching pictures never stalls rendering.
+//! When enabled with a user image, decoding & resizing run asynchronously off the GUI thread
+//! so switching pictures never stalls rendering. By default (no custom picture), the launcher
+//! paints a clean pure-black (`#000000`) backdrop.
 
 use eframe::egui::{self, Color32, ColorImage, Context, Rect, TextureHandle, TextureOptions, Vec2};
 use std::path::{Path, PathBuf};
 
 const MAX_BACKGROUND_EDGE: u32 = 2560;
-const DEFAULT_W: usize = 480;
-const DEFAULT_H: usize = 270;
 
 pub struct BackgroundManager {
     texture: Option<TextureHandle>,
@@ -24,44 +22,32 @@ impl BackgroundManager {
             texture: None,
             loaded_key: None,
             loading_key: None,
-            size: Vec2::new(DEFAULT_W as f32, DEFAULT_H as f32),
+            size: Vec2::new(1.0, 1.0),
         }
     }
 
-    /// Ensures bundled/disabled state synchronously and returns `Some((key, path))` when a
-    /// user-chosen image still needs asynchronous decoding off the GUI thread.
+    /// Clears textures when disabled/default (pure black) and returns `Some((key, path))`
+    /// when a user-chosen image needs asynchronous decoding off the GUI thread.
     pub fn ensure_or_request(
         &mut self,
-        ctx: &Context,
+        _ctx: &Context,
         enabled: bool,
         user_path: &str,
     ) -> Option<(String, PathBuf)> {
-        if !enabled {
-            self.loaded_key = Some("off".to_string());
+        let trimmed = user_path.trim();
+        if !enabled || trimmed.is_empty() {
+            self.loaded_key = Some(if enabled {
+                "default_black".to_string()
+            } else {
+                "off".to_string()
+            });
             self.loading_key = None;
             self.texture = None;
             return None;
         }
-        let trimmed = user_path.trim();
         let key = format!("on|{trimmed}");
         if self.loaded_key.as_deref() == Some(key.as_str()) {
             return None;
-        }
-
-        if trimmed.is_empty() {
-            let image = generate_default_landscape();
-            self.size = Vec2::new(image.size[0] as f32, image.size[1] as f32);
-            self.texture = Some(ctx.load_texture("mcw_background", image, TextureOptions::NEAREST));
-            self.loaded_key = Some(key);
-            self.loading_key = None;
-            return None;
-        }
-
-        // Paint bundled landscape as an immediate fallback until async user image decode completes.
-        if self.texture.is_none() {
-            let image = generate_default_landscape();
-            self.size = Vec2::new(image.size[0] as f32, image.size[1] as f32);
-            self.texture = Some(ctx.load_texture("mcw_background", image, TextureOptions::NEAREST));
         }
 
         if self.loading_key.as_deref() == Some(key.as_str()) {
@@ -72,7 +58,7 @@ impl BackgroundManager {
     }
 
     /// Applies the asynchronously decoded user background image on the UI thread.
-    /// Returns `Some(err)` if decoding failed (the default landscape remains visible).
+    /// Returns `Some(err)` if decoding failed (falls back to pure black).
     pub fn apply_loaded_user_image(
         &mut self,
         ctx: &Context,
@@ -84,8 +70,11 @@ impl BackgroundManager {
         if self.loading_key.as_deref() == Some(key.as_str()) {
             self.loading_key = None;
         }
-        let current_key = if expected_enabled {
-            format!("on|{}", expected_user_path.trim())
+        let trimmed = expected_user_path.trim();
+        let current_key = if expected_enabled && !trimmed.is_empty() {
+            format!("on|{trimmed}")
+        } else if expected_enabled {
+            "default_black".to_string()
         } else {
             "off".to_string()
         };
@@ -101,10 +90,7 @@ impl BackgroundManager {
                 None
             }
             Err(err) => {
-                let fallback = generate_default_landscape();
-                self.size = Vec2::new(fallback.size[0] as f32, fallback.size[1] as f32);
-                self.texture =
-                    Some(ctx.load_texture("mcw_background", fallback, TextureOptions::NEAREST));
+                self.texture = None;
                 Some(err)
             }
         }
@@ -114,7 +100,7 @@ impl BackgroundManager {
         self.texture.is_some()
     }
 
-    /// Paints the picture (cover-fit) and a dimming wash of `tint` with alpha `dim` (0..1).
+    /// Paints the user picture (cover-fit) and a dimming wash of `tint` with alpha `dim` (0..1).
     pub fn paint(&self, ctx: &Context, dim: f32, tint: Color32) {
         let Some(tex) = &self.texture else {
             return;
@@ -177,110 +163,6 @@ pub fn decode_user_image(path: &Path) -> Result<ColorImage, String> {
     Ok(ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
 }
 
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)).round() as u8
-}
-
-fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
-    [
-        lerp_u8(a[0], b[0], t),
-        lerp_u8(a[1], b[1], t),
-        lerp_u8(a[2], b[2], t),
-    ]
-}
-
-/// Deterministic pixel-art dusk: gradient sky, stars, a low sun and layered silhouettes.
-pub fn generate_default_landscape() -> ColorImage {
-    let (w, h) = (DEFAULT_W, DEFAULT_H);
-    let mut px = vec![Color32::BLACK; w * h];
-    let horizon = (h as f32 * 0.66) as usize;
-
-    let top = [0x12, 0x0A, 0x2E];
-    let mid = [0x5B, 0x2A, 0x7A];
-    let low = [0xE8, 0x7A, 0x5C];
-    for y in 0..h {
-        let t = (y as f32 / horizon as f32).min(1.0);
-        let c = if t < 0.6 {
-            lerp_rgb(top, mid, t / 0.6)
-        } else {
-            lerp_rgb(mid, low, (t - 0.6) / 0.4)
-        };
-        for x in 0..w {
-            px[y * w + x] = Color32::from_rgb(c[0], c[1], c[2]);
-        }
-    }
-
-    // Stars (fixed LCG so the picture is identical every run).
-    let mut seed: u32 = 0x1234_5678;
-    let mut next = || {
-        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        seed
-    };
-    for _ in 0..140 {
-        let x = (next() >> 8) as usize % w;
-        let y = (next() >> 8) as usize % (horizon * 6 / 10);
-        let b = 150 + (next() >> 24) as u8 % 100;
-        px[y * w + x] = Color32::from_rgb(b, b, 255);
-    }
-
-    // Low sun disc.
-    let (cx, cy, r) = (w as f32 * 0.68, horizon as f32 - 6.0, 15.0_f32);
-    for y in 0..horizon {
-        for x in 0..w {
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            if dx * dx + dy * dy <= r * r {
-                px[y * w + x] = Color32::from_rgb(0xFF, 0xD8, 0x8A);
-            }
-        }
-    }
-
-    // Layered silhouettes: far hills, near hills, blocky trees.
-    let layers: [([u8; 3], f32, f32, f32); 3] = [
-        ([0x4A, 0x1F, 0x5E], 0.0, 14.0, 0.021),
-        ([0x2B, 0x12, 0x45], 9.0, 20.0, 0.034),
-        ([0x16, 0x0A, 0x2A], 22.0, 16.0, 0.052),
-    ];
-    for (color, base, amp, freq) in layers {
-        for x in 0..w {
-            // Blocky 4px columns for the pixel look.
-            let bx = (x / 4 * 4) as f32;
-            let wave = (bx * freq).sin() * 0.6 + (bx * freq * 2.3 + 1.7).sin() * 0.4;
-            let top_y = (horizon as f32 + base - amp * (0.5 + 0.5 * wave)) as usize;
-            for y in top_y.min(h - 1)..h {
-                px[y * w + x] = Color32::from_rgb(color[0], color[1], color[2]);
-            }
-        }
-    }
-    let tree = Color32::from_rgb(0x0C, 0x06, 0x1A);
-    let mut x = 6;
-    while x + 12 < w {
-        let trunk_x = x + 5;
-        let gh = horizon + 24;
-        let height = 14 + (next() >> 20) as usize % 18;
-        for y in gh.saturating_sub(height)..(gh + 2).min(h) {
-            for dx in 0..2 {
-                px[y * w + trunk_x + dx] = tree;
-            }
-        }
-        for row in 0..3usize {
-            let ty = gh.saturating_sub(height) + row * 4;
-            let half = 4 + row * 2;
-            for yy in ty..(ty + 4).min(h) {
-                for xx in trunk_x.saturating_sub(half)..(trunk_x + 2 + half).min(w) {
-                    px[yy * w + xx] = tree;
-                }
-            }
-        }
-        x += 18 + (next() >> 22) as usize % 40;
-    }
-
-    ColorImage {
-        size: [w, h],
-        pixels: px,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,11 +180,10 @@ mod tests {
     }
 
     #[test]
-    fn default_landscape_is_deterministic_and_full_size() {
-        let a = generate_default_landscape();
-        let b = generate_default_landscape();
-        assert_eq!(a.size, [DEFAULT_W, DEFAULT_H]);
-        assert_eq!(a.pixels, b.pixels);
-        assert!(a.pixels.iter().all(|c| c.a() == 255));
+    fn default_background_without_user_image_is_inactive_for_pure_black() {
+        let mut mgr = BackgroundManager::new();
+        let ctx = egui::Context::default();
+        assert!(mgr.ensure_or_request(&ctx, true, "").is_none());
+        assert!(!mgr.is_active());
     }
 }

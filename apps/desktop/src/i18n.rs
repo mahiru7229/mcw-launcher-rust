@@ -255,10 +255,14 @@ pub struct LauncherPrefs {
     pub minimize_on_launch: bool,
     #[serde(default = "default_true")]
     pub remember_window_size: bool,
+    #[serde(default)]
+    pub window_size_customized: bool,
     #[serde(default = "default_window_width")]
     pub window_width: f32,
     #[serde(default = "default_window_height")]
     pub window_height: f32,
+    #[serde(default)]
+    pub default_java_path: String,
     #[serde(default = "default_policy_block")]
     pub modrinth_failure_policy: String,
     #[serde(default = "default_policy_block")]
@@ -336,11 +340,11 @@ fn default_motion_mode() -> String {
 }
 
 fn default_window_width() -> f32 {
-    1080.0
+    0.0
 }
 
 fn default_window_height() -> f32 {
-    680.0
+    0.0
 }
 
 impl Default for LauncherPrefs {
@@ -372,8 +376,10 @@ impl Default for LauncherPrefs {
             prefer_dedicated_gpu: false,
             minimize_on_launch: false,
             remember_window_size: true,
+            window_size_customized: false,
             window_width: default_window_width(),
             window_height: default_window_height(),
+            default_java_path: String::new(),
             modrinth_failure_policy: default_policy_block(),
             curseforge_failure_policy: default_policy_block(),
             forge_preflight_failure_policy: default_policy_warn(),

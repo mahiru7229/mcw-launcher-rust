@@ -115,17 +115,29 @@ impl AtLauncherClient {
     }
 
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<AtLauncherPack>> {
+        let (page, _) = self.search_paged(query, 0, limit).await?;
+        Ok(page)
+    }
+
+    pub async fn search_paged(
+        &self,
+        query: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<AtLauncherPack>, u32)> {
         let q = query.trim().to_ascii_lowercase();
         let packs = self.list_packs().await?;
-        Ok(packs
+        let matched: Vec<AtLauncherPack> = packs
             .into_iter()
             .filter(|p| {
                 q.is_empty()
                     || p.name.to_ascii_lowercase().contains(&q)
                     || p.description.to_ascii_lowercase().contains(&q)
             })
-            .take(limit)
-            .collect())
+            .collect();
+        let total = matched.len() as u32;
+        let page = matched.into_iter().skip(offset).take(limit).collect();
+        Ok((page, total))
     }
 
     /// Inspect optional client mods defined in ATLauncher `Configs.json` for a pack version.

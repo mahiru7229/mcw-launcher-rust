@@ -2,6 +2,22 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [0.13.2-beta.1] - 2026-11-21
+
+### Added
+- **Content Browser Pagination (`Previous` / `Next`)**: Added full page controls (`Page X / Y (N results)`, `PageSize = 20`) inside the global and per-instance **Content Browser** across **Modrinth**, **CurseForge** (`CurseForgePagination`), **FTB**, and **ATLauncher** (`search_paged`), resetting to Page 1 whenever query/sort/loader/MC-version filters change.
+- **Dedicated Step-2 `Install Destination` OS Window (`mcw_vp_install_target`)**: Clicking `Install` or `Install Selected Version` in global **Mod & Modpacks** Version Picker now opens a clean second OS window allowing users to choose an **Existing Instance** (strictly filtered by **exact matching Minecraft version** + **exact matching mod loader**, with Data Pack world selection) or **Create New Instance** (MC version & loader `ComboBox`), with `Back` support to return to Version Picker.
+- **Dedicated `Java Runtimes` OS Window (`mcw_vp_java_manager`) & Dynamic Latest JDK Lookup**: Replaced inline stacked buttons and overflowing Java paths in *Launcher Settings -> Runtime* with a compact summary card (`Manage Java Runtimes...`, dynamic `Install latest JDK (Java {major})` queried from Adoptium `available_releases`, and `Scan Java installations`) and a dedicated scrollable OS window with version dropdown, Latest JDK button, truncated paths with hover tooltips, `Open Folder`, and `Uninstall`.
+- **Native Dedicated GPU Detection (`GpuPreferenceManager::detect()`)**: Added Windows (`Win32_VideoController`) and Linux (`lspci`) dedicated vs. integrated adapter detection inside `FirstRunRecommendation`.
+
+### Changed
+- **Responsive Content Browser Header Pill Bar**: Split Title + `Close` (Row 1) from the left-to-right Category Pill Bar (`Mods`, `Modpacks`, `Resource packs`, `Shader packs`, `Data packs` on Row 2) so tabs never squeeze or wrap awkwardly onto a second line.
+- **Smart Default Window Size**: Fresh launches automatically size to `1600x900` on `>= 1920x1080` displays and `1280x720` on `>= 1366x768` displays (DPI-clamped on high-DPI), tracking explicit user resizes via `window_size_customized` so prior auto-saved `1080x680` defaults upgrade cleanly.
+- **Pure Black Default Background (`#000000`)**: Removed the procedural Horizon pixel-landscape fallback; Dark mode now uses pure `#000000` black by default when no custom user wallpaper is configured.
+- **Python-Parity 6-Step First-Run Setup Wizard**: Rebuilt First-Run Setup (`Welcome` -> `Account` -> `Java` -> `Memory` -> `Graphics` -> `Finish`) matching MCW Launcher Python's `first_run_setup_dialog.py` workflow, i18n keys, account creation/OAuth helpers, Java auto-selection, RAM slider, GPU preference toggle, and extended configuration summary.
+
+---
+
 ## [0.13.1-beta.1] - 2026-11-21
 
 ### Added
