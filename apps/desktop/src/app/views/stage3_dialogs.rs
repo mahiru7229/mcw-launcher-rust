@@ -982,131 +982,132 @@ impl McwApp {
             .values()
             .any(|s| matches!(s, LaunchState::Running { .. }));
 
-        let vp_id = egui::ViewportId::from_hash_of("mcw_vp_update_dialog");
         let title = format!("{} - v{}", self.t("update.dialog.title"), release.version);
-        let builder = centered_viewport_builder(ctx, title, [560.0, 440.0], [440.0, 340.0]);
+        let notice = self.notice_banner.clone();
 
-        ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| {
-                i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)
-            }) {
-                open = false;
-            }
-            egui::TopBottomPanel::bottom("update_dialog_footer")
-                .frame(
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .inner_margin(egui::Margin::same(10)),
-                )
-                .show(vp_ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        let upd_btn = Button::new(
-                            RichText::new(if self.update_downloading {
-                                "Downloading..."
-                            } else {
-                                self.t("update.dialog.update_now")
-                            })
-                            .color(p.accent_text)
-                            .strong(),
-                        )
-                        .fill(p.accent);
-                        let can_install = !self.update_downloading
-                            && !any_running
-                            && release.download_url.is_some();
-                        if ui.add_enabled(can_install, upd_btn).clicked() {
-                            trigger_install = Some(release.clone());
-                        }
-                        if !release.html_url.is_empty()
-                            && ui.button(self.t("update.dialog.open_release")).clicked()
-                        {
-                            open_external(&release.html_url);
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button(self.t("update.dialog.later")).clicked() {
-                                open = false;
+        let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
+            ctx,
+            "mcw_modal_update_dialog",
+            &title,
+            [580.0, 460.0],
+            [440.0, 340.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                egui::TopBottomPanel::bottom("update_dialog_footer")
+                    .frame(
+                        Frame::new()
+                            .fill(p.surface)
+                            .stroke(Stroke::new(1.0_f32, p.border))
+                            .inner_margin(egui::Margin::same(10)),
+                    )
+                    .show_inside(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            let upd_btn = Button::new(
+                                RichText::new(if self.update_downloading {
+                                    "Downloading..."
+                                } else {
+                                    self.t("update.dialog.update_now")
+                                })
+                                .color(p.accent_text)
+                                .strong(),
+                            )
+                            .fill(p.accent);
+                            let can_install = !self.update_downloading
+                                && !any_running
+                                && release.download_url.is_some();
+                            if ui.add_enabled(can_install, upd_btn).clicked() {
+                                trigger_install = Some(release.clone());
                             }
+                            if !release.html_url.is_empty()
+                                && ui.button(self.t("update.dialog.open_release")).clicked()
+                            {
+                                open_external(&release.html_url);
+                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.button(self.t("update.dialog.later")).clicked() {
+                                    open = false;
+                                }
+                            });
                         });
                     });
-                });
 
-            egui::CentralPanel::default()
-                .frame(
-                    Frame::new()
-                        .fill(p.canvas)
-                        .inner_margin(egui::Margin::same(14)),
-                )
-                .show(vp_ctx, |ui| {
+                ui.label(
+                    RichText::new(format!("MCW Launcher v{} is available", release.version))
+                        .strong()
+                        .size(16.0)
+                        .color(p.text),
+                );
+                ui.label(
+                    RichText::new(format!(
+                        "Current: v{}  ->  New: v{} ({})",
+                        check.current_version, release.version, release.source
+                    ))
+                    .monospace()
+                    .size(11.5)
+                    .color(p.accent),
+                );
+                if let Some(ref asset) = release.asset_name {
+                    let size_str = release
+                        .asset_size
+                        .map(format_bytes)
+                        .unwrap_or_else(|| "unknown size".to_string());
                     ui.label(
-                        RichText::new(format!("MCW Launcher v{} is available", release.version))
-                            .strong()
-                            .size(16.0)
-                            .color(p.text),
+                        RichText::new(format!("Package: {asset} · {size_str}"))
+                            .size(11.5)
+                            .color(p.text_muted),
                     );
+                }
+                if any_running {
+                    ui.add_space(4.0);
                     ui.label(
-                        RichText::new(format!(
-                            "Current: v{}  ->  New: v{} ({})",
-                            check.current_version, release.version, release.source
-                        ))
-                        .monospace()
-                        .size(11.5)
-                        .color(p.accent),
+                        RichText::new(
+                            "Close running Minecraft instance(s) before installing this update.",
+                        )
+                        .color(p.warning),
                     );
-                    if let Some(ref asset) = release.asset_name {
-                        let size_str = release
-                            .asset_size
-                            .map(format_bytes)
-                            .unwrap_or_else(|| "unknown size".to_string());
-                        ui.label(
-                            RichText::new(format!("Package: {asset} · {size_str}"))
-                                .size(11.5)
-                                .color(p.text_muted),
-                        );
-                    }
-                    if any_running {
-                        ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(
-                                "Close running Minecraft instance(s) before installing this update.",
-                            )
-                            .color(p.warning),
-                        );
-                    }
-                    if release.download_url.is_none() {
-                        ui.add_space(4.0);
-                        ui.label(
+                }
+                if release.download_url.is_none() {
+                    ui.add_space(4.0);
+                    ui.label(
                             RichText::new(
                                 "This release does not contain a direct downloadable package; use 'Open release page'.",
                             )
                             .color(p.warning),
                         );
-                    }
+                }
 
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(self.t("update.dialog.release_notes")).strong());
-                    ui.add_space(4.0);
+                ui.add_space(8.0);
+                ui.label(RichText::new(self.t("update.dialog.release_notes")).strong());
+                ui.add_space(4.0);
 
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(12))
-                        .inner_margin(egui::Margin::same(12))
-                        .show(ui, |ui| {
-                            ScrollArea::vertical()
-                                .id_salt("update_release_notes_scroll")
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    let notes = if release.notes.trim().is_empty() {
-                                        self.t("update.dialog.no_release_notes").to_string()
-                                    } else {
-                                        release.notes.clone()
-                                    };
-                                    ui.label(RichText::new(notes).size(12.0));
-                                });
-                        });
-                });
-        });
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0_f32, p.border))
+                    .corner_radius(CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ScrollArea::vertical()
+                            .id_salt("update_release_notes_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                let notes = if release.notes.trim().is_empty() {
+                                    self.t("update.dialog.no_release_notes").to_string()
+                                } else {
+                                    release.notes.clone()
+                                };
+                                ui.label(RichText::new(notes).size(12.0));
+                            });
+                    });
+            },
+        );
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
 
         self.show_update_dialog = open;
         if let Some(rel) = trigger_install {
@@ -1159,10 +1160,6 @@ impl McwApp {
         let back_lbl = clean_dash(self.t("first_run.back").to_string());
         let skip_lbl = clean_dash(self.t("first_run.skip").to_string());
 
-        let vp_id = egui::ViewportId::from_hash_of("mcw_vp_first_run_setup");
-        let builder =
-            centered_viewport_builder(ctx, first_run_title, [760.0, 560.0], [600.0, 460.0]);
-
         let available_langs: Vec<(String, String)> = self
             .lang
             .available_languages()
@@ -1170,86 +1167,74 @@ impl McwApp {
             .map(|(loc, name)| (loc.to_string(), name.to_string()))
             .collect();
 
-        ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| {
-                i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)
-            }) {
-                open = false;
-            }
-            egui::TopBottomPanel::bottom("first_run_footer")
-                .frame(
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .inner_margin(egui::Margin::same(10)),
-                )
-                .show(vp_ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button(&skip_lbl).clicked() {
-                            use_defaults_clicked = true;
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if page >= 5 {
-                                let finish_btn = Button::new(
-                                    RichText::new(&finish_lbl)
-                                        .color(p.accent_text)
-                                        .strong(),
-                                )
-                                .fill(p.accent);
-                                if ui.add(finish_btn).clicked() {
-                                    finish_clicked = true;
-                                }
-                            } else {
-                                let next_btn = Button::new(
-                                    RichText::new(&next_lbl)
-                                        .color(p.accent_text)
-                                        .strong(),
-                                )
-                                .fill(p.accent);
-                                if ui.add(next_btn).clicked() {
-                                    next_clicked = true;
-                                }
+        let notice = self.notice_banner.clone();
+        let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
+            ctx,
+            "mcw_modal_first_run_setup",
+            &first_run_title,
+            [780.0, 580.0],
+            [600.0, 440.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                egui::TopBottomPanel::bottom("first_run_footer")
+                    .frame(
+                        Frame::new()
+                            .fill(p.surface)
+                            .stroke(Stroke::new(1.0_f32, p.border))
+                            .inner_margin(egui::Margin::same(10)),
+                    )
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button(&skip_lbl).clicked() {
+                                use_defaults_clicked = true;
                             }
-                            if ui.add_enabled(page > 0, Button::new(&back_lbl)).clicked() {
-                                back_clicked = true;
-                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if page >= 5 {
+                                    let finish_btn = Button::new(
+                                        RichText::new(&finish_lbl).color(p.accent_text).strong(),
+                                    )
+                                    .fill(p.accent);
+                                    if ui.add(finish_btn).clicked() {
+                                        finish_clicked = true;
+                                    }
+                                } else {
+                                    let next_btn = Button::new(
+                                        RichText::new(&next_lbl).color(p.accent_text).strong(),
+                                    )
+                                    .fill(p.accent);
+                                    if ui.add(next_btn).clicked() {
+                                        next_clicked = true;
+                                    }
+                                }
+                                if ui.add_enabled(page > 0, Button::new(&back_lbl)).clicked() {
+                                    back_clicked = true;
+                                }
+                            });
                         });
+                    });
+
+                // Step Header + Progress
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&step_title).strong().size(18.0).color(p.text));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(&step_counter)
+                                .monospace()
+                                .size(11.5)
+                                .color(p.text_muted),
+                        );
                     });
                 });
+                ui.add_space(6.0);
+                ui.add(
+                    egui::ProgressBar::new((page + 1) as f32 / 6.0)
+                        .desired_height(6.0)
+                        .fill(p.accent),
+                );
+                ui.add_space(12.0);
 
-            egui::CentralPanel::default()
-                .frame(
-                    Frame::new()
-                        .fill(p.canvas)
-                        .inner_margin(egui::Margin::same(16)),
-                )
-                .show(vp_ctx, |ui| {
-                    // Step Header + Progress
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(&step_title)
-                                .strong()
-                                .size(18.0)
-                                .color(p.text),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(&step_counter)
-                                    .monospace()
-                                    .size(11.5)
-                                    .color(p.text_muted),
-                            );
-                        });
-                    });
-                    ui.add_space(6.0);
-                    ui.add(
-                        egui::ProgressBar::new((page + 1) as f32 / 6.0)
-                            .desired_height(6.0)
-                            .fill(p.accent),
-                    );
-                    ui.add_space(12.0);
-
-                    ScrollArea::vertical()
+                ScrollArea::vertical()
                         .id_salt("first_run_body_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -1546,7 +1531,8 @@ impl McwApp {
                                                     .desired_width(220.0),
                                                 );
                                                 let enter = te.lost_focus()
-                                                    && vp_ctx
+                                                    && ui
+                                                        .ctx()
                                                         .input(|i| i.key_pressed(egui::Key::Enter));
                                                 if ui.button("Add Offline").clicked() || enter {
                                                     create_offline_clicked = true;
@@ -1646,11 +1632,11 @@ impl McwApp {
                                                                     .color(p.accent),
                                                             );
                                                             if ui.button("Copy Code").clicked() {
-                                                                vp_ctx
+                                                                ui.ctx()
                                                                     .copy_text(dc.user_code.clone());
                                                             }
                                                             if ui.button("Copy URL").clicked() {
-                                                                vp_ctx.copy_text(
+                                                                ui.ctx().copy_text(
                                                                     dc.verification_uri.clone(),
                                                                 );
                                                             }
@@ -2085,8 +2071,14 @@ impl McwApp {
                                 }
                             }
                         });
-                });
-        });
+            },
+        );
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
 
         if let Some(loc) = lang_changed {
             self.lang.set_language(&loc);

@@ -261,8 +261,10 @@ pub struct LauncherPrefs {
     pub default_fullscreen: bool,
     #[serde(default = "default_notification_timeout")]
     pub notification_timeout_secs: u32,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_check_updates: bool,
+    #[serde(default)]
+    pub auto_update_v110_migrated: bool,
     #[serde(default = "default_update_channel")]
     pub update_channel: String,
     #[serde(default)]
@@ -410,7 +412,8 @@ impl Default for LauncherPrefs {
             default_height: default_height(),
             default_fullscreen: false,
             notification_timeout_secs: default_notification_timeout(),
-            auto_check_updates: false,
+            auto_check_updates: true,
+            auto_update_v110_migrated: true,
             update_channel: default_update_channel(),
             first_run_completed: false,
             discord_rpc_enabled: true,
@@ -444,10 +447,19 @@ impl Default for LauncherPrefs {
 impl LauncherPrefs {
     pub fn load(paths: &LauncherPaths) -> Self {
         let path = paths.config_root.join("launcher_settings.json");
-        fs::read_to_string(&path)
+        if let Some(mut loaded) = fs::read_to_string(&path)
             .ok()
             .and_then(|raw| serde_json::from_str::<Self>(&raw).ok())
-            .unwrap_or_default()
+        {
+            if !loaded.auto_update_v110_migrated {
+                loaded.auto_check_updates = true;
+                loaded.auto_update_v110_migrated = true;
+                loaded.save(paths);
+            }
+            loaded
+        } else {
+            Self::default()
+        }
     }
 
     pub fn save(&self, paths: &LauncherPaths) {
@@ -491,5 +503,32 @@ mod tests {
         assert_eq!(vi_tot, en_tot);
         assert!(vi_tr < vi_tot);
         assert!(vi_pct < 100);
+    }
+
+    #[test]
+    fn defaults_and_migrates_auto_check_updates_for_v110() {
+        let tmp = tempdir().unwrap();
+        let paths = LauncherPaths::portable(tmp.path());
+        paths.initialize().unwrap();
+
+        let fresh = LauncherPrefs::default();
+        assert!(fresh.auto_check_updates);
+        assert!(fresh.auto_update_v110_migrated);
+
+        // Simulate existing v1.0.0 user config with `auto_check_updates: false` and no migration flag.
+        let legacy_path = paths.config_root.join("launcher_settings.json");
+        fs::write(&legacy_path, r#"{"auto_check_updates": false}"#).unwrap();
+
+        let migrated = LauncherPrefs::load(&paths);
+        assert!(migrated.auto_check_updates);
+        assert!(migrated.auto_update_v110_migrated);
+
+        // Subsequent explicit opt-out by user stays respected.
+        let mut opted_out = migrated;
+        opted_out.auto_check_updates = false;
+        opted_out.save(&paths);
+        let reloaded = LauncherPrefs::load(&paths);
+        assert!(!reloaded.auto_check_updates);
+        assert!(reloaded.auto_update_v110_migrated);
     }
 }

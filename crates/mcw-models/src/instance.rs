@@ -118,6 +118,15 @@ pub struct InstanceSettings {
     pub curseforge_failure_policy: String,
     #[serde(default)]
     pub forge_preflight_always_allow: bool,
+    #[serde(default)]
+    pub disable_mod_repair_and_updates: Option<bool>,
+}
+
+impl InstanceSettings {
+    pub fn is_mod_repair_and_update_disabled(&self, is_modpack_origin: bool) -> bool {
+        self.disable_mod_repair_and_updates
+            .unwrap_or(is_modpack_origin)
+    }
 }
 
 fn default_inherit() -> String {
@@ -165,6 +174,7 @@ impl Default for InstanceSettings {
             modrinth_failure_policy: default_inherit(),
             curseforge_failure_policy: default_inherit(),
             forge_preflight_always_allow: false,
+            disable_mod_repair_and_updates: None,
         }
     }
 }

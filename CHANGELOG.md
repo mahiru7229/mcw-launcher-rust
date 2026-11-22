@@ -2,6 +2,22 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.1.0] - 2026-11-22
+
+### Added
+- **In-App Centered Modal System (`render_in_app_modal`)**: Converted all 25 non-log popups (including `First-Run Setup`, `Create Instance`, `Select Version`, `Install Destination`, `Accounts`, `Export Modpack`, `Modpack Update`, `Repair Center`, `Java Runtimes`, `Content Library`, `Python Import`, `About`, `Update Dialog`, `All Active Tasks`) into In-App Centered Modals with backdrop dim and in-modal notice banners. Only `Global Logs` and `LAN Agent Log` remain OS viewports.
+- **Inline Single-Category Per-Instance Browsing**: `+ Add Mod`, `+ Add Resource Pack`, `+ Add Shader Pack`, and Data Pack browsing now open locked single-category browsers directly inside the matching instance tab with `← Back to Installed`.
+- **Modpack Protection (`disable_mod_repair_and_updates`)**: Verified online modpacks and imported `.mcwpack` instances default to hiding per-mod update checks, `Lock`, and dependency/compatibility repair banners inside `Mods`, configurable in `.mcwpack` Export and *Instance Settings*.
+- **4-Provider In-Place Modpack Updater & Pre-Update Backup Prompt**: Added origin tracking & in-place `ModpackUpdateService` support for **CurseForge**, **FTB**, and **ATLauncher** alongside **Modrinth**, replacing `Check Mod Updates` with `Check Modpack Update` on official packs and prompting **`Yes (Launcher Backup)`** / **`I know what I'm doing`** / **`Cancel`** before updating.
+- **Duplicate Mod Prompt & Auto-Suffix `(2)`**: Added 3-option confirmation (`Overwrite Existing` / `Keep Both` / `Cancel`) when adding duplicate mods via local `.jar` import or remote install, plus `InstanceStore::resolve_unique_instance_name` across modpack installers.
+- **Python Launcher Root Auto-Detection (`resolve_python_launcher_root`)**: Selecting a parent folder in the Python Importer automatically locates the nested Python launcher root and updates the path field.
+
+### Changed
+- **Independent Rust Edition (`v1.1.0`)**: Updated project rules so MCW Launcher: Rust Edition evolves independently from MCW Launcher Python (retaining read-only Python migration tooling).
+- **Responsive Bounds & UI Polish**: Set clamped `1024x640` minimum main-window size; fixed right-edge clipping in *Select Version* and *Accounts*; removed redundant `Choose Instance & Install...` CTA; simplified *Create Instance -> Modpacks* to a single `Browse Modpacks...` button; replaced fake path hints with neutral hints; enforced full main-window Back/Forward navigation (`<` / `>`) disabled while modals are open; hid `Mods` & `Shaders` tabs on Vanilla instances; displayed `(count)` only on the active instance tab; bounded remote thumbnails with a 64-entry LRU + idle cleanup (`~45-70 MB` idle / `~85-110 MB` active browsing RAM); enabled `auto_check_updates = true` by default with one-time `v1.1.0` migration; extended and polished the startup splash screen (`2.40s` with pulsing glow rings, staggered title reveal, and click/key skip).
+
+---
+
 ## [1.0.0] - 2026-11-22
 
 ### Added

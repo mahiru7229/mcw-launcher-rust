@@ -18,61 +18,48 @@ impl McwApp {
 
         let repair_lbl = self.t("workspace.action.repair").to_string();
         let close_lbl = self.t("common.close").to_string();
+        let notice = self.notice_banner.clone();
 
-        let vp_id = egui::ViewportId::from_hash_of("mcw_vp_repair_center");
-        let builder = centered_viewport_builder(
+        let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
-            format!("Repair Center & Health - {}", inst.name),
-            [640.0, 500.0],
+            "mcw_modal_repair_center",
+            &format!("Repair Center & Health - {}", inst.name),
+            [680.0, 520.0],
             [480.0, 360.0],
-        );
-
-        ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| {
-                i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)
-            }) {
-                open = false;
-            }
-            egui::TopBottomPanel::bottom("repair_center_footer")
-                .frame(
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .inner_margin(egui::Margin::same(10)),
-                )
-                .show(vp_ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        let repair_btn = Button::new(
-                            RichText::new(&repair_lbl)
-                                .color(p.accent_text)
-                                .strong(),
-                        )
-                        .fill(p.accent);
-                        if ui.add_enabled(!busy, repair_btn).clicked() {
-                            repair_clicked = true;
-                        }
-                        if ui.button(self.t("common.refresh")).clicked() {
-                            rescan_clicked = true;
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button(&close_lbl).clicked() {
-                                open = false;
+            p,
+            notice.as_ref(),
+            |ui| {
+                egui::TopBottomPanel::bottom("repair_center_footer")
+                    .frame(
+                        Frame::new()
+                            .fill(p.surface)
+                            .stroke(Stroke::new(1.0_f32, p.border))
+                            .inner_margin(egui::Margin::same(10)),
+                    )
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let repair_btn = Button::new(
+                                RichText::new(&repair_lbl).color(p.accent_text).strong(),
+                            )
+                            .fill(p.accent);
+                            if ui.add_enabled(!busy, repair_btn).clicked() {
+                                repair_clicked = true;
                             }
+                            if ui.button(self.t("common.refresh")).clicked() {
+                                rescan_clicked = true;
+                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.button(&close_lbl).clicked() {
+                                    open = false;
+                                }
+                            });
                         });
                     });
-                });
 
-            egui::CentralPanel::default()
-                .frame(
-                    Frame::new()
-                        .fill(p.canvas)
-                        .inner_margin(egui::Margin::same(14)),
-                )
-                .show(vp_ctx, |ui| {
-                    ScrollArea::vertical()
-                        .id_salt("repair_center_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
+                ScrollArea::vertical()
+                    .id_salt("repair_center_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
                             ui.set_width(ui.available_width());
 
                             if let Some(ref rep) = self.repair_center_report {
@@ -213,8 +200,14 @@ impl McwApp {
                                 );
                             }
                         });
-                });
-        });
+            },
+        );
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
 
         self.show_repair_center_window = open;
         if rescan_clicked {
@@ -374,113 +367,113 @@ impl McwApp {
             p.warning
         };
 
-        let vp_id = egui::ViewportId::from_hash_of("mcw_vp_about");
-        let builder = centered_viewport_builder(
+        let notice = self.notice_banner.clone();
+        let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
+            "mcw_modal_about",
             "About - MCW Launcher: Rust Edition",
-            [500.0, 380.0],
+            [520.0, 390.0],
             [400.0, 300.0],
-        );
-
-        ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| {
-                i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)
-            }) {
-                open = false;
-            }
-            egui::CentralPanel::default()
-                .frame(
-                    Frame::new()
-                        .fill(p.canvas)
-                        .inner_margin(egui::Margin::same(16)),
-                )
-                .show(vp_ctx, |ui| {
-                    ui.label(
-                        RichText::new("MCW Launcher: Rust Edition")
-                            .strong()
-                            .size(18.0)
-                            .color(p.text),
-                    );
-                    ui.label(
-                        RichText::new(format!("Version v{}", mcw_models::APP_VERSION))
-                            .monospace()
-                            .size(12.5)
-                            .color(p.accent),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
+            p,
+            notice.as_ref(),
+            |ui| {
+                ui.label(
+                    RichText::new("MCW Launcher: Rust Edition")
+                        .strong()
+                        .size(18.0)
+                        .color(p.text),
+                );
+                ui.label(
+                    RichText::new(format!("Version v{}", mcw_models::APP_VERSION))
+                        .monospace()
+                        .size(12.5)
+                        .color(p.accent),
+                );
+                ui.add_space(6.0);
+                ui.add(
+                    egui::Label::new(
                         RichText::new(
                             "Native Rust Minecraft launcher engineered for high speed, low memory usage, and clean architecture.",
                         )
                         .size(12.0)
                         .color(p.text_muted),
-                    );
-                    ui.add_space(10.0);
+                    )
+                    .wrap(),
+                );
+                ui.add_space(10.0);
 
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(12))
-                        .inner_margin(egui::Margin::same(12))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            egui::Grid::new("about_info_grid")
-                                .num_columns(2)
-                                .spacing([16.0, 5.0])
-                                .show(ui, |ui| {
-                                    ui.label(RichText::new("Developer:").color(p.text_muted));
-                                    ui.label(mcw_models::DEVELOPER_NAME);
-                                    ui.end_row();
-                                    ui.label(RichText::new("System RAM:").color(p.text_muted));
-                                    ui.label(format!("{} MB", self.pc_ram_mb));
-                                    ui.end_row();
-                                    ui.label(RichText::new("Detected Java:").color(p.text_muted));
-                                    ui.label(format!("{} runtime(s)", self.java_installations.len()));
-                                    ui.end_row();
-                                    ui.label(
-                                        RichText::new("Account Security:").color(p.text_muted),
-                                    );
-                                    ui.label(RichText::new(integrity_text).color(integrity_col));
-                                    ui.end_row();
-                                    ui.label(RichText::new("Updater Status:").color(p.text_muted));
-                                    ui.label("Disabled (Rust Edition)");
-                                    ui.end_row();
-                                    ui.label(RichText::new("License:").color(p.text_muted));
-                                    ui.label("MIT License");
-                                    ui.end_row();
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0_f32, p.border))
+                    .corner_radius(CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        egui::Grid::new("about_info_grid")
+                            .num_columns(2)
+                            .spacing([16.0, 5.0])
+                            .show(ui, |ui| {
+                                ui.label(RichText::new("Developer:").color(p.text_muted));
+                                ui.label(mcw_models::DEVELOPER_NAME);
+                                ui.end_row();
+                                ui.label(RichText::new("System RAM:").color(p.text_muted));
+                                ui.label(format!("{} MB", self.pc_ram_mb));
+                                ui.end_row();
+                                ui.label(RichText::new("Detected Java:").color(p.text_muted));
+                                ui.label(format!("{} runtime(s)", self.java_installations.len()));
+                                ui.end_row();
+                                ui.label(RichText::new("Account Security:").color(p.text_muted));
+                                ui.label(RichText::new(integrity_text).color(integrity_col));
+                                ui.end_row();
+                                ui.label(RichText::new("Updater Status:").color(p.text_muted));
+                                ui.label(if mcw_updater::UPDATES_ENABLED {
+                                    "Enabled (Cloudflare Edge CDN + GitHub)"
+                                } else {
+                                    "Disabled"
                                 });
-                        });
+                                ui.end_row();
+                                ui.label(RichText::new("License:").color(p.text_muted));
+                                ui.label("MIT License");
+                                ui.end_row();
+                            });
+                    });
 
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        let gh_btn = Button::new(
-                            RichText::new("Open GitHub Repository")
-                                .color(p.accent_text)
-                                .strong(),
-                        )
-                        .fill(p.accent);
-                        if ui.add(gh_btn).clicked() {
-                            open_external(&repo_url);
-                        }
-                        if ui.button("Open Data Folder").clicked() {
-                            open_external(&self.paths.project_root.display().to_string());
-                        }
-                        let mut report_clicked = false;
-                        if ui.button("Report Issue...").clicked() {
-                            report_clicked = true;
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button(self.t("common.close")).clicked() {
-                                open = false;
-                            }
-                        });
-                        if report_clicked {
+                ui.add_space(12.0);
+                ui.horizontal_wrapped(|ui| {
+                    let gh_btn = Button::new(
+                        RichText::new("Open GitHub Repository")
+                            .color(p.accent_text)
+                            .strong(),
+                    )
+                    .fill(p.accent);
+                    if ui.add(gh_btn).clicked() {
+                        open_external(&repo_url);
+                    }
+                    if ui.button("Open Data Folder").clicked() {
+                        open_external(&self.paths.project_root.display().to_string());
+                    }
+                    let mut report_clicked = false;
+                    if ui.button("Report Issue...").clicked() {
+                        report_clicked = true;
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button(self.t("common.close")).clicked() {
                             open = false;
-                            self.open_issue_report_window(ctx);
                         }
                     });
+                    if report_clicked {
+                        open = false;
+                        self.open_issue_report_window(ctx);
+                    }
                 });
-        });
+            },
+        );
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
 
         self.show_about_window = open;
     }

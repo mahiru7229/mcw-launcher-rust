@@ -57,29 +57,29 @@ pub(crate) struct MrpackFile {
 }
 
 #[derive(Debug, Deserialize)]
-struct CurseForgeManifest {
-    name: String,
-    minecraft: CfMinecraftSpec,
+pub(crate) struct CurseForgeManifest {
+    pub(crate) name: String,
+    pub(crate) minecraft: CfMinecraftSpec,
     #[serde(default)]
-    overrides: Option<String>,
+    pub(crate) overrides: Option<String>,
     #[serde(default)]
-    files: Vec<CfManifestFile>,
+    pub(crate) files: Vec<CfManifestFile>,
 }
 
 #[derive(Debug, Deserialize)]
-struct CfMinecraftSpec {
-    version: String,
+pub(crate) struct CfMinecraftSpec {
+    pub(crate) version: String,
     #[serde(rename = "modLoaders", default)]
-    mod_loaders: Vec<CfModLoader>,
+    pub(crate) mod_loaders: Vec<CfModLoader>,
     #[serde(rename = "modLoader", default)]
-    mod_loader: Option<CfModLoader>,
+    pub(crate) mod_loader: Option<CfModLoader>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct CfModLoader {
-    id: String,
+pub(crate) struct CfModLoader {
+    pub(crate) id: String,
     #[serde(default)]
-    primary: bool,
+    pub(crate) primary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,13 +118,13 @@ impl ModpackInstallOptions {
 }
 
 #[derive(Debug, Deserialize)]
-struct CfManifestFile {
+pub(crate) struct CfManifestFile {
     #[serde(rename = "projectID")]
-    project_id: u64,
+    pub(crate) project_id: u64,
     #[serde(rename = "fileID")]
-    file_id: u64,
+    pub(crate) file_id: u64,
     #[serde(default = "default_true")]
-    required: bool,
+    pub(crate) required: bool,
 }
 
 fn default_true() -> bool {
@@ -145,6 +145,7 @@ pub enum ModpackExportMode {
 pub struct ModpackExportOptions {
     pub mode: ModpackExportMode,
     pub include_saves: bool,
+    pub disable_mod_repair_and_updates: bool,
 }
 
 impl Default for ModpackExportOptions {
@@ -152,6 +153,7 @@ impl Default for ModpackExportOptions {
         Self {
             mode: ModpackExportMode::Mrpack,
             include_saves: false,
+            disable_mod_repair_and_updates: true,
         }
     }
 }
@@ -333,24 +335,46 @@ impl ModpackInstaller {
             .filter(|s| !s.is_empty())
             .unwrap_or(&inst_meta.name);
         let store = InstanceStore::new(paths);
-        let mut target_name = base_name.to_string();
-        let mut idx = 2usize;
-        while store.load_instance(&target_name).is_ok() {
-            target_name = format!("{base_name} ({idx})");
-            idx += 1;
-        }
+        let target_name = store
+            .resolve_unique_instance_name(base_name)
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+
+        let disable_flag = pkg_val
+            .get("disable_mod_repair_and_updates")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                pkg_settings
+                    .as_ref()
+                    .and_then(|s| s.disable_mod_repair_and_updates)
+            })
+            .unwrap_or(true);
 
         let loader = normalize_modloader(
             &inst_meta.mod_loader.name,
             &inst_meta.mod_loader.version,
             &inst_meta.version_id,
         );
-        let (inst, _) = store
+        let (inst, mut inst_settings) = store
             .create_instance(&target_name, &inst_meta.version_id, loader.clone())
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
-        if let Some(settings) = pkg_settings {
+        if let Some(mut settings) = pkg_settings {
+            settings.disable_mod_repair_and_updates = Some(disable_flag);
             let _ = store.save_settings(&inst.instance_id, &settings);
+        } else {
+            inst_settings.disable_mod_repair_and_updates = Some(disable_flag);
+            let _ = store.save_settings(&inst.instance_id, &inst_settings);
         }
+
+        let _ = atomic_write_json(
+            &paths
+                .instance_dir(&inst.instance_id)
+                .join(".mcw")
+                .join("mcwpack.json"),
+            &serde_json::json!({
+                "source": "mcwpack",
+                "disable_mod_repair_and_updates": disable_flag,
+            }),
+        );
 
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
         if let Some(ref cb) = on_progress {
@@ -394,14 +418,20 @@ impl ModpackInstaller {
             .cloned()
             .unwrap_or_else(|| "1.21.4".to_string());
         let loader = parse_mrpack_loader(&index.dependencies, &game_version);
-        let target_name = name_override
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(&index.name);
+        let base_name = name_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(index.name.trim());
 
         let store = InstanceStore::new(paths);
-        let (inst, _) = store
-            .create_instance(target_name, &game_version, loader.clone())
+        let target_name = store
+            .resolve_unique_instance_name(base_name)
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        let (inst, mut inst_settings) = store
+            .create_instance(&target_name, &game_version, loader.clone())
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        inst_settings.disable_mod_repair_and_updates = Some(true);
+        let _ = store.save_settings(&inst.instance_id, &inst_settings);
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
 
         let mut requests = Vec::new();
@@ -505,14 +535,20 @@ impl ModpackInstaller {
             }
         }
         let loader = parse_cf_loader(&cf_loaders, &game_version);
-        let target_name = name_override
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(&manifest.name);
+        let base_name = name_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(manifest.name.trim());
 
         let store = InstanceStore::new(paths);
-        let (inst, _) = store
-            .create_instance(target_name, &game_version, loader.clone())
+        let target_name = store
+            .resolve_unique_instance_name(base_name)
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        let (inst, mut inst_settings) = store
+            .create_instance(&target_name, &game_version, loader.clone())
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        inst_settings.disable_mod_repair_and_updates = Some(true);
+        let _ = store.save_settings(&inst.instance_id, &inst_settings);
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
         let mods_dir = mc_dir.join("mods");
         fs::create_dir_all(&mods_dir)?;
@@ -573,8 +609,10 @@ impl ModpackInstaller {
 
         let mut requests = Vec::new();
         let mut manual_downloads = Vec::new();
+        let mut managed_files = Vec::new();
         for cf_file in resolved {
             let project_ref = mod_urls.get(&cf_file.mod_id).map(String::as_str);
+            managed_files.push(format!("mods/{}", cf_file.file_name));
             match cf_file.require_download_url(project_ref) {
                 Ok(url) => {
                     let dest = mods_dir.join(&cf_file.file_name);
@@ -624,15 +662,22 @@ impl ModpackInstaller {
         );
         let extracted_overrides = extract_overrides(archive_path, &[&override_prefix], &mc_dir)?;
         extract_embedded_instance_icon(archive_path, &store, &inst.instance_id);
-        let _ = atomic_write_json(
-            &paths
-                .instance_dir(&inst.instance_id)
-                .join(".mcw")
-                .join("curseforge-pack.json"),
-            &serde_json::json!({
-                "source": "curseforge",
-                "packName": target_name,
-            }),
+        let _ = crate::pack_registry::CurseForgePackRegistry::save(
+            &paths.instance_dir(&inst.instance_id),
+            &crate::pack_registry::CurseForgePackRecord {
+                source: "curseforge".to_string(),
+                mod_id: 0,
+                slug: String::new(),
+                pack_name: target_name,
+                file_id: 0,
+                file_name: archive_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string(),
+                managed_files,
+                updated_at: String::new(),
+            },
         );
 
         // Persist pending manual downloads inside the instance folder so the user can resume later.
@@ -1016,13 +1061,17 @@ impl ModpackInstaller {
                 }
             }
             ModpackExportMode::Portable { full } => {
+                let mut export_settings = settings;
+                export_settings.disable_mod_repair_and_updates =
+                    Some(options.disable_mod_repair_and_updates);
                 let pkg_meta = serde_json::json!({
                     "format": "mcwpack",
                     "version": 2,
                     "portable_mode": if full { "full" } else { "smart" },
                     "include_saves": options.include_saves,
+                    "disable_mod_repair_and_updates": options.disable_mod_repair_and_updates,
                     "instance": inst,
-                    "settings": settings,
+                    "settings": export_settings,
                 });
                 zip.start_file("mcw_package.json", zopts)
                     .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
@@ -1167,7 +1216,7 @@ pub(crate) fn parse_mrpack_loader(deps: &HashMap<String, String>, game_version: 
     ModLoader::vanilla()
 }
 
-fn parse_cf_loader(loaders: &[CfModLoader], game_version: &str) -> ModLoader {
+pub(crate) fn parse_cf_loader(loaders: &[CfModLoader], game_version: &str) -> ModLoader {
     let chosen = loaders
         .iter()
         .find(|l| l.primary)
@@ -1536,6 +1585,7 @@ mod tests {
             &ModpackExportOptions {
                 mode: ModpackExportMode::Portable { full: false },
                 include_saves: false,
+                disable_mod_repair_and_updates: true,
             },
         )
         .unwrap();

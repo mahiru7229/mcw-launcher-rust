@@ -27,16 +27,18 @@ fn main() -> eframe::Result {
     let _ = paths.initialize();
     let prefs = i18n::LauncherPrefs::load(&paths);
     let screen_default = app::platform::default_window_size_for_screen();
+    let min_w = 1024.0_f32.min(screen_default[0]);
+    let min_h = 640.0_f32.min(screen_default[1]);
     const CURRENT_WINDOW_SIZE_SCHEMA: u32 = 2;
     let init_size = if prefs.window_size_schema_version >= CURRENT_WINDOW_SIZE_SCHEMA
         && prefs.remember_window_size
         && prefs.window_size_customized
-        && prefs.window_width >= 840.0
-        && prefs.window_height >= 560.0
+        && prefs.window_width >= min_w
+        && prefs.window_height >= min_h
     {
         [
-            prefs.window_width.clamp(840.0, 3840.0),
-            prefs.window_height.clamp(560.0, 2160.0),
+            prefs.window_width.clamp(min_w, 3840.0),
+            prefs.window_height.clamp(min_h, 2160.0),
         ]
     } else {
         screen_default
@@ -45,7 +47,7 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("MCW Launcher: Rust Edition")
         .with_inner_size(init_size)
-        .with_min_inner_size([840.0, 560.0]);
+        .with_min_inner_size([min_w, min_h]);
     if let Some(icon) = load_window_icon() {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }

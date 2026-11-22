@@ -423,7 +423,7 @@ impl McwApp {
                                     ui,
                                     p,
                                     label,
-                                    "Open Content Browser OS window",
+                                    "Open in Mod & Modpacks",
                                     "Browse",
                                 )
                                 .clicked()

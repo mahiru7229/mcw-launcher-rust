@@ -41,14 +41,15 @@ use mcw_mods::{
 };
 use mcw_net::{ConnectivityMonitor, ConnectivityStatus, DownloadClient, TaskControl};
 use mcw_providers::{
-    detect_export_origin, detect_installed_pack, load_curseforge_api_key,
-    load_custom_curseforge_api_key, save_custom_curseforge_api_key, ApiCache, AtLauncherClient,
-    AtLauncherPack, CurseForgeClient, CurseForgeMod, CurseForgeSearchParams, FtbClient,
-    FtbPackSummary, InstanceExportOrigin, ManualDownloadItem, ModProvenanceRegistry,
-    ModUpdateCandidate, ModUpdateManager, ModpackExportMode, ModpackExportOptions,
-    ModpackInstallOptions, ModpackInstaller, ModpackOptionalFile, ModpackProgressCallback,
-    ModpackUpdateCheck, ModpackUpdateService, ModrinthClient, ModrinthPackRegistry,
-    ModrinthSearchHit, ModrinthSearchParams, TrackedModEntry,
+    detect_export_origin, detect_installed_pack, is_verified_or_imported_modpack,
+    load_curseforge_api_key, load_custom_curseforge_api_key, save_custom_curseforge_api_key,
+    ApiCache, AtLauncherClient, AtLauncherPack, CurseForgeClient, CurseForgeMod,
+    CurseForgePackRegistry, CurseForgeSearchParams, FtbClient, FtbPackSummary,
+    InstanceExportOrigin, ManualDownloadItem, ModProvenanceRegistry, ModUpdateCandidate,
+    ModUpdateManager, ModpackExportMode, ModpackExportOptions, ModpackInstallOptions,
+    ModpackInstaller, ModpackOptionalFile, ModpackProgressCallback, ModpackUpdateCheck,
+    ModpackUpdateService, ModrinthClient, ModrinthPackRegistry, ModrinthSearchHit,
+    ModrinthSearchParams, TrackedModEntry,
 };
 use mcw_runtime::{
     detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
@@ -88,6 +89,31 @@ pub(crate) struct NavLocation {
     pub(crate) page: AppPage,
     pub(crate) instance_id: Option<String>,
     pub(crate) tab: DetailTab,
+    pub(crate) browser_category: BrowserCategory,
+    pub(crate) inline_browser: Option<BrowserCategory>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum DuplicateModSource {
+    Remote {
+        choice: Box<ModVersionChoice>,
+        provider: BrowserProvider,
+        project_id: Option<String>,
+        project_name: Option<String>,
+    },
+    LocalFile {
+        source_path: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingDuplicateModPrompt {
+    pub(crate) instance_id: String,
+    pub(crate) instance_name: String,
+    pub(crate) incoming_file_name: String,
+    pub(crate) existing_file_name: String,
+    pub(crate) match_reason: String,
+    pub(crate) source: DuplicateModSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +285,7 @@ pub struct McwApp {
     export_mode: ModpackExportMode,
     export_portable_full: bool,
     export_include_saves: bool,
+    export_disable_repair_and_updates: bool,
 
     // Manual Downloads dedicated per-instance windows (CurseForge opt-out mods)
     pending_manual_counts: HashMap<String, usize>,
@@ -335,6 +362,7 @@ pub struct McwApp {
     // Async icon thumbnail texture cache for Mods, Packs, and Modpacks
     thumb_textures: HashMap<String, egui::TextureHandle>,
     loading_thumbs: HashSet<String>,
+    thumb_lru_order: Vec<String>,
 
     // Local instance icon texture cache (keyed by "<instance_id>|<icon>")
     instance_icon_textures: HashMap<String, Option<egui::TextureHandle>>,
@@ -528,6 +556,10 @@ pub struct McwApp {
     install_target_enable_lan_agent: bool,
     startup_splash_started_at: Instant,
     startup_splash_done: bool,
+    instance_inline_browser: Option<BrowserCategory>,
+    pending_duplicate_mod_prompts: Vec<PendingDuplicateModPrompt>,
+    modpack_update_confirm_candidate: Option<mcw_providers::ModpackUpdateCandidate>,
+    pending_backup_before_modpack_update: Option<(String, mcw_providers::ModpackUpdateCandidate)>,
 }
 
 impl McwApp {
@@ -672,6 +704,7 @@ impl McwApp {
             export_mode: ModpackExportMode::Mrpack,
             export_portable_full: false,
             export_include_saves: false,
+            export_disable_repair_and_updates: true,
             pending_manual_counts: HashMap::new(),
             open_manual_modals: Vec::new(),
             manual_downloads_cache: HashMap::new(),
@@ -732,6 +765,11 @@ impl McwApp {
             logs_page_filter: String::new(),
             thumb_textures: HashMap::new(),
             loading_thumbs: HashSet::new(),
+            thumb_lru_order: Vec::new(),
+            instance_inline_browser: None,
+            pending_duplicate_mod_prompts: Vec::new(),
+            modpack_update_confirm_candidate: None,
+            pending_backup_before_modpack_update: None,
             instance_icon_textures: HashMap::new(),
             pc_ram_mb: detect_total_memory_mb(),
             launch_task_ids: HashMap::new(),
@@ -920,6 +958,8 @@ impl McwApp {
             page: app.active_page,
             instance_id: app.selected_instance_id.clone(),
             tab: app.active_tab,
+            browser_category: app.browser_category,
+            inline_browser: app.instance_inline_browser,
         });
         app.reload_accounts();
         app.reload_java();
@@ -950,6 +990,40 @@ impl Drop for McwApp {
             self.save_prefs();
         }
         self.discord_rpc.shutdown();
+    }
+}
+
+impl McwApp {
+    pub(crate) fn has_open_in_app_modal(&self) -> bool {
+        self.show_launcher_settings
+            || self.show_quick_search
+            || self.show_create_modal
+            || self.show_export_modal
+            || self.show_account_modal
+            || self.show_rename_modal
+            || self.show_group_tags_modal
+            || self.show_clone_modal
+            || self.show_delete_modal
+            || self.pending_restore_backup_id.is_some()
+            || self.pending_delete_world.is_some()
+            || self.version_picker_open
+            || self.install_target_open
+            || self.modpack_dialog.open
+            || !self.open_manual_modals.is_empty()
+            || (self.show_all_tasks_modal && self.active_tasks.len() > 2)
+            || !self.pending_duplicate_mod_prompts.is_empty()
+            || self.show_update_dialog
+            || self.show_first_run_wizard
+            || self.show_repair_center_window
+            || self.show_about_window
+            || self.show_java_manager_window
+            || self.show_content_library_window
+            || self.show_modpack_update_window
+            || self.preflight_confirm_instance_id.is_some()
+            || self.show_issue_report_window
+            || self.show_theme_issues_window
+            || self.show_unsaved_changes_window
+            || self.show_python_import_window
     }
 }
 
@@ -1031,10 +1105,12 @@ impl eframe::App for McwApp {
                 self.quick_search_focus_pending = true;
             }
         }
-        if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)) {
-            self.navigate_back(ctx);
-        } else if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight)) {
-            self.navigate_forward(ctx);
+        if !self.has_open_in_app_modal() {
+            if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)) {
+                self.navigate_back(ctx);
+            } else if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight)) {
+                self.navigate_forward(ctx);
+            }
         }
         if !self.show_launcher_settings {
             self.settings_open_since = None;

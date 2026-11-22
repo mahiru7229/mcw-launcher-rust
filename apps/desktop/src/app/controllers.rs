@@ -45,7 +45,7 @@ impl McwApp {
         }
     }
 
-    pub(crate) fn open_manual_downloads_for(&mut self, instance_id: &str, ctx: &egui::Context) {
+    pub(crate) fn open_manual_downloads_for(&mut self, instance_id: &str, _ctx: &egui::Context) {
         let pending = ModpackInstaller::load_pending_manual_downloads(&self.paths, instance_id);
         if pending.is_empty() {
             self.pending_manual_counts.remove(instance_id);
@@ -59,10 +59,7 @@ impl McwApp {
             .insert(instance_id.to_string(), pending);
         self.manual_scan_status.remove(instance_id);
         self.last_manual_scan_at = None;
-        if self.open_manual_modals.iter().any(|id| id == instance_id) {
-            let vp_id = egui::ViewportId::from_hash_of(("mcw_vp_manual_downloads", instance_id));
-            focus_viewport(ctx, vp_id, None);
-        } else {
+        if !self.open_manual_modals.iter().any(|id| id == instance_id) {
             self.open_manual_modals.push(instance_id.to_string());
         }
     }
@@ -168,6 +165,17 @@ impl McwApp {
                 self.selected_settings = None;
             }
         }
+        if let Some(inst) = self.instances.iter().find(|i| &i.instance_id == id) {
+            if inst.mod_loader.is_vanilla()
+                && matches!(self.active_tab, DetailTab::Mods | DetailTab::Shaders)
+            {
+                self.active_tab = DetailTab::Worlds;
+            }
+            self.edit_runtime_version = inst.version_id.clone();
+            self.edit_runtime_loader = inst.mod_loader.name.to_ascii_lowercase();
+            self.edit_group_input = inst.group.clone();
+            self.edit_tags_input = inst.tags.join(", ");
+        }
         self.selected_mods = self.mods_cache.get(id).cloned().unwrap_or_default();
         self.selected_backups = self.backups_cache.get(id).cloned().unwrap_or_default();
         self.selected_worlds = self.worlds_cache.get(id).cloned().unwrap_or_default();
@@ -179,12 +187,6 @@ impl McwApp {
             .and_then(|k| self.content_packs_cache.get(&(id.clone(), k)))
             .cloned()
             .unwrap_or_default();
-        if let Some(inst) = self.instances.iter().find(|i| &i.instance_id == id) {
-            self.edit_runtime_version = inst.version_id.clone();
-            self.edit_runtime_loader = inst.mod_loader.name.to_ascii_lowercase();
-            self.edit_group_input = inst.group.clone();
-            self.edit_tags_input = inst.tags.join(", ");
-        }
         if let Some(ref s) = self.selected_settings {
             self.edit_jvm_args_text = s.jvm_arguments.join("\n");
             self.edit_game_args_text = s.game_arguments.join("\n");
@@ -201,6 +203,16 @@ impl McwApp {
         let Some(id) = self.selected_instance_id.clone() else {
             return;
         };
+        if self
+            .instances
+            .iter()
+            .find(|i| i.instance_id == id)
+            .map(|i| i.mod_loader.is_vanilla())
+            .unwrap_or(false)
+            && matches!(self.active_tab, DetailTab::Mods | DetailTab::Shaders)
+        {
+            self.active_tab = DetailTab::Worlds;
+        }
         match self.active_tab {
             DetailTab::Mods => self.load_mods_async(&id, ctx, false),
             DetailTab::Servers => self.load_servers_async(&id, ctx, false),
@@ -998,10 +1010,15 @@ impl McwApp {
 
     pub(crate) fn ensure_thumbnail(&mut self, url: &str, ctx: &egui::Context) {
         let u = url.trim();
-        if u.is_empty()
-            || self.thumb_textures.contains_key(u)
-            || !self.loading_thumbs.insert(u.to_string())
-        {
+        if u.is_empty() {
+            return;
+        }
+        if self.thumb_textures.contains_key(u) {
+            self.thumb_lru_order.retain(|k| k != u);
+            self.thumb_lru_order.push(u.to_string());
+            return;
+        }
+        if !self.loading_thumbs.insert(u.to_string()) {
             return;
         }
         let url_owned = u.to_string();
@@ -1068,20 +1085,26 @@ impl McwApp {
         );
     }
 
+    pub(crate) fn clear_remote_thumbs_if_idle(&mut self) {
+        if self.active_page != AppPage::Modpacks
+            && self.instance_inline_browser.is_none()
+            && !self.modpack_dialog.open
+            && !self.version_picker_open
+            && !self.install_target_open
+        {
+            self.thumb_textures.clear();
+            self.thumb_lru_order.clear();
+            self.loading_thumbs.clear();
+        }
+    }
+
     fn setup_version_picker_target_defaults(
         &mut self,
         _title: &str,
         content_kind: Option<ContentKind>,
         global_mode: bool,
-        ctx: &egui::Context,
+        _ctx: &egui::Context,
     ) {
-        if self.version_picker_open {
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_version_picker"),
-                None,
-            );
-        }
         self.version_picker_global_mode = global_mode;
         self.version_picker_content_kind = content_kind;
     }
@@ -1124,14 +1147,6 @@ impl McwApp {
         choice: ModVersionChoice,
         ctx: &egui::Context,
     ) {
-        if self.install_target_open {
-            let title = format!("Install Destination - {}", self.version_picker_title);
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_install_target"),
-                Some(&title),
-            );
-        }
         let kind = self.version_picker_content_kind;
         let compat = self.exact_compatible_instances_for_choice(&choice, kind);
         let preferred_id = self
@@ -1777,13 +1792,119 @@ impl McwApp {
         self.start_direct_mod_file_install_for(choice, inst, ctx);
     }
 
+    pub(crate) fn is_instance_modpack_protected(&self, inst: &Instance) -> bool {
+        let is_modpack = is_verified_or_imported_modpack(
+            &self.paths.instance_dir(&inst.instance_id),
+            &inst.icon_origin,
+        );
+        let settings = self
+            .selected_settings
+            .as_ref()
+            .filter(|_| self.selected_instance_id.as_deref() == Some(inst.instance_id.as_str()))
+            .or_else(|| self.settings_cache.get(&inst.instance_id));
+        match settings {
+            Some(s) => s.is_mod_repair_and_update_disabled(is_modpack),
+            None => is_modpack,
+        }
+    }
+
+    pub(crate) fn find_duplicate_mod_in_instance(
+        &self,
+        inst_id: &str,
+        incoming_file_name: &str,
+        project_id: Option<&str>,
+        project_title: Option<&str>,
+    ) -> Option<(String, String)> {
+        let mods_dir = self.paths.minecraft_dir(inst_id).join("mods");
+        let existing_files: Vec<String> = std::fs::read_dir(&mods_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|n| {
+                let l = n.to_ascii_lowercase();
+                l.ends_with(".jar") || l.ends_with(".jar.disabled")
+            })
+            .collect();
+
+        let strip_disabled = |name: &str| -> String {
+            let lower = name.to_ascii_lowercase();
+            lower
+                .strip_suffix(".disabled")
+                .unwrap_or(&lower)
+                .to_string()
+        };
+        let incoming_base = strip_disabled(incoming_file_name);
+        if let Some(exact) = existing_files
+            .iter()
+            .find(|f| strip_disabled(f) == incoming_base)
+        {
+            return Some((
+                exact.clone(),
+                "A mod with the same file name is already in this instance.".to_string(),
+            ));
+        }
+
+        let inst_dir = self.paths.instance_dir(inst_id);
+        let prov = ModProvenanceRegistry::load(&inst_dir);
+        if let Some(pid) = project_id.filter(|s| !s.trim().is_empty()) {
+            for entry in prov.mods.values() {
+                if entry.project_id == pid {
+                    let target = strip_disabled(&entry.file_name);
+                    if let Some(on_disk) =
+                        existing_files.iter().find(|f| strip_disabled(f) == target)
+                    {
+                        return Some((
+                            on_disk.clone(),
+                            format!("This mod project ('{}') is already installed.", entry.title),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if let Some(title) = project_title
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && t.len() >= 3)
+        {
+            for entry in prov.mods.values() {
+                if entry.title.eq_ignore_ascii_case(title) {
+                    let target = strip_disabled(&entry.file_name);
+                    if let Some(on_disk) =
+                        existing_files.iter().find(|f| strip_disabled(f) == target)
+                    {
+                        return Some((
+                            on_disk.clone(),
+                            format!("'{}' is already installed.", entry.title),
+                        ));
+                    }
+                }
+            }
+        }
+
+        let incoming_stem = normalize_mod_stem(incoming_file_name);
+        if incoming_stem.len() >= 3 {
+            if let Some(similar) = existing_files
+                .iter()
+                .find(|f| normalize_mod_stem(f) == incoming_stem)
+            {
+                return Some((
+                    similar.clone(),
+                    "Another version of this mod appears to be installed.".to_string(),
+                ));
+            }
+        }
+        None
+    }
+
     pub(crate) fn start_direct_mod_file_install_for(
         &mut self,
         choice: ModVersionChoice,
         inst: Instance,
         ctx: &egui::Context,
     ) {
-        let Some(url) = choice.download_url else {
+        if choice.download_url.is_none() {
             self.notice_banner = Some((
                 format!(
                     "'{}' has third-party distribution disabled by its author on CurseForge.",
@@ -1792,23 +1913,94 @@ impl McwApp {
                 true,
             ));
             return;
+        }
+        let picker_key = self.version_picker_key.clone();
+        let picker_title = self.version_picker_title.clone();
+        let (provider, project_id) = if let Some(slug) = picker_key.strip_prefix("mr:") {
+            (BrowserProvider::Modrinth, Some(slug.to_string()))
+        } else if let Some(mid) = picker_key.strip_prefix("cf:") {
+            (BrowserProvider::CurseForge, Some(mid.to_string()))
+        } else {
+            (self.browser_provider, None)
+        };
+        let proj_name = (!picker_title.trim().is_empty()).then_some(picker_title.clone());
+
+        if let Some((existing_file, reason)) = self.find_duplicate_mod_in_instance(
+            &inst.instance_id,
+            &choice.file_name,
+            project_id.as_deref(),
+            proj_name.as_deref(),
+        ) {
+            self.pending_duplicate_mod_prompts
+                .push(PendingDuplicateModPrompt {
+                    instance_id: inst.instance_id,
+                    instance_name: inst.name,
+                    incoming_file_name: choice.file_name.clone(),
+                    existing_file_name: existing_file,
+                    match_reason: reason,
+                    source: DuplicateModSource::Remote {
+                        choice: Box::new(choice),
+                        provider,
+                        project_id,
+                        project_name: proj_name,
+                    },
+                });
+            return;
+        }
+
+        let target_file = choice.file_name.clone();
+        self.execute_remote_mod_file_install(
+            inst,
+            choice,
+            target_file,
+            None,
+            provider,
+            project_id,
+            proj_name,
+            ctx,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_remote_mod_file_install(
+        &mut self,
+        inst: Instance,
+        choice: ModVersionChoice,
+        dest_file_name: String,
+        remove_existing_file: Option<String>,
+        provider: BrowserProvider,
+        project_id: Option<String>,
+        project_name: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        let Some(url) = choice.download_url else {
+            self.notice_banner = Some((
+                format!(
+                    "'{}' has third-party distribution disabled by its author on CurseForge.",
+                    dest_file_name
+                ),
+                true,
+            ));
+            return;
         };
         let (task_id, task_ctrl) = self.begin_task_with_control(
-            format!("Mod: {}", choice.file_name),
+            format!("Mod: {dest_file_name}"),
             format!("Downloading into {}...", inst.name),
         );
         let inst_dir = self.paths.instance_dir(&inst.instance_id);
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
-        let dest = mods_dir.join(&choice.file_name);
-        let picker_key = self.version_picker_key.clone();
-        let picker_title = self.version_picker_title.clone();
+        let dest = mods_dir.join(&dest_file_name);
         let cf_api_key = self.resolved_cf_api_key();
         let cache_path = self.paths.cache_root.join("providers.sqlite");
+        let picker_title = project_name.unwrap_or_else(|| choice.title.clone());
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
             let res = async {
+                if let Some(old_name) = remove_existing_file {
+                    remove_mod_file_and_twins(&mods_dir, &old_name);
+                }
                 let downloader = DownloadClient::new()
                     .map_err(|e| e.to_string())?
                     .with_task_control(task_ctrl);
@@ -1820,53 +2012,61 @@ impl McwApp {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                if let Some(slug) = picker_key.strip_prefix("mr:") {
-                    let _ = ModProvenanceRegistry::record_install(
-                        &inst_dir,
-                        TrackedModEntry {
-                            project_id: slug.to_string(),
-                            provider: "modrinth".to_string(),
-                            title: picker_title,
-                            file_name: choice.file_name.clone(),
-                            version_id: choice.id.clone(),
-                            version_number: choice.version_number.clone(),
-                            locked: false,
-                            managed_by: None,
-                        },
-                    );
-                } else if let Some(mid_str) = picker_key.strip_prefix("cf:") {
-                    let _ = ModProvenanceRegistry::record_install(
-                        &inst_dir,
-                        TrackedModEntry {
-                            project_id: mid_str.to_string(),
-                            provider: "curseforge".to_string(),
-                            title: picker_title,
-                            file_name: choice.file_name.clone(),
-                            version_id: choice.id.clone(),
-                            version_number: choice.version_number.clone(),
-                            locked: false,
-                            managed_by: None,
-                        },
-                    );
-                    if let (Ok(mod_id), Ok(file_id)) =
-                        (mid_str.parse::<u64>(), choice.id.parse::<u64>())
-                    {
-                        let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                        if let Ok(cf) = CurseForgeClient::new(cf_api_key, cache) {
-                            let _ = cf
-                                .install_required_dependencies_for_file(
-                                    mod_id,
-                                    file_id,
-                                    &inst.version_id,
-                                    &inst.mod_loader.name,
-                                    &mods_dir,
-                                    &downloader,
-                                )
-                                .await;
+                match provider {
+                    BrowserProvider::Modrinth => {
+                        if let Some(slug) = project_id {
+                            let _ = ModProvenanceRegistry::record_install(
+                                &inst_dir,
+                                TrackedModEntry {
+                                    project_id: slug,
+                                    provider: "modrinth".to_string(),
+                                    title: picker_title,
+                                    file_name: dest_file_name.clone(),
+                                    version_id: choice.id.clone(),
+                                    version_number: choice.version_number.clone(),
+                                    locked: false,
+                                    managed_by: None,
+                                },
+                            );
                         }
                     }
+                    BrowserProvider::CurseForge => {
+                        if let Some(mid_str) = project_id {
+                            let _ = ModProvenanceRegistry::record_install(
+                                &inst_dir,
+                                TrackedModEntry {
+                                    project_id: mid_str.clone(),
+                                    provider: "curseforge".to_string(),
+                                    title: picker_title,
+                                    file_name: dest_file_name.clone(),
+                                    version_id: choice.id.clone(),
+                                    version_number: choice.version_number.clone(),
+                                    locked: false,
+                                    managed_by: None,
+                                },
+                            );
+                            if let (Ok(mod_id), Ok(file_id)) =
+                                (mid_str.parse::<u64>(), choice.id.parse::<u64>())
+                            {
+                                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                                if let Ok(cf) = CurseForgeClient::new(cf_api_key, cache) {
+                                    let _ = cf
+                                        .install_required_dependencies_for_file(
+                                            mod_id,
+                                            file_id,
+                                            &inst.version_id,
+                                            &inst.mod_loader.name,
+                                            &mods_dir,
+                                            &downloader,
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                Ok::<String, String>(choice.file_name)
+                Ok::<String, String>(dest_file_name)
             }
             .await;
             let _ = tx.send(AppEvent::DirectModFileInstalled {
@@ -1876,6 +2076,111 @@ impl McwApp {
             });
             ctx.request_repaint();
         });
+    }
+
+    pub(crate) fn confirm_duplicate_mod_action(&mut self, action: u8, ctx: &egui::Context) {
+        if self.pending_duplicate_mod_prompts.is_empty() {
+            return;
+        }
+        let prompt = self.pending_duplicate_mod_prompts.remove(0);
+        if action == 0 {
+            self.notice_banner = Some((
+                format!(
+                    "Cancelled adding duplicate mod '{}'.",
+                    prompt.incoming_file_name
+                ),
+                false,
+            ));
+            return;
+        }
+        let mods_dir = self.paths.minecraft_dir(&prompt.instance_id).join("mods");
+        let _ = std::fs::create_dir_all(&mods_dir);
+
+        match prompt.source {
+            DuplicateModSource::LocalFile { source_path } => {
+                let target_name = if action == 1 {
+                    remove_mod_file_and_twins(&mods_dir, &prompt.existing_file_name);
+                    prompt.incoming_file_name.clone()
+                } else {
+                    resolve_unique_mod_filename(&mods_dir, &prompt.incoming_file_name)
+                };
+                match std::fs::copy(&source_path, mods_dir.join(&target_name)) {
+                    Ok(_) => {
+                        self.mods_cache.remove(&prompt.instance_id);
+                        self.load_mods_async(&prompt.instance_id, ctx, true);
+                        let msg = if action == 1 {
+                            format!(
+                                "Replaced '{}' with '{}' in '{}'.",
+                                prompt.existing_file_name, target_name, prompt.instance_name
+                            )
+                        } else {
+                            format!(
+                                "Added duplicate mod as '{}' in '{}'.",
+                                target_name, prompt.instance_name
+                            )
+                        };
+                        self.push_global_log(msg.clone());
+                        self.notice_banner = Some((msg, false));
+                    }
+                    Err(err) => {
+                        self.notice_banner =
+                            Some((format!("Failed to import mod file: {err}"), true));
+                    }
+                }
+            }
+            DuplicateModSource::Remote {
+                choice,
+                provider,
+                project_id,
+                project_name,
+            } => {
+                let inst = self
+                    .instances
+                    .iter()
+                    .find(|i| i.instance_id == prompt.instance_id)
+                    .cloned()
+                    .or_else(|| {
+                        InstanceStore::new(&self.paths)
+                            .load_instance(&prompt.instance_id)
+                            .ok()
+                    });
+                let Some(inst) = inst else {
+                    self.notice_banner = Some((
+                        format!(
+                            "Target instance '{}' no longer exists.",
+                            prompt.instance_name
+                        ),
+                        true,
+                    ));
+                    return;
+                };
+                if action == 1 {
+                    self.execute_remote_mod_file_install(
+                        inst,
+                        *choice,
+                        prompt.incoming_file_name,
+                        Some(prompt.existing_file_name),
+                        provider,
+                        project_id,
+                        project_name,
+                        ctx,
+                    );
+                } else {
+                    let unique_name =
+                        resolve_unique_mod_filename(&mods_dir, &prompt.incoming_file_name);
+                    self.execute_remote_mod_file_install(
+                        inst,
+                        *choice,
+                        unique_name,
+                        None,
+                        provider,
+                        project_id,
+                        project_name,
+                        ctx,
+                    );
+                }
+            }
+        }
     }
 
     pub(crate) fn start_check_mod_updates(&mut self, ctx: &egui::Context) {
@@ -2033,7 +2338,11 @@ impl McwApp {
         let Some(inst) = self.selected_instance().cloned() else {
             return;
         };
-        if self.backup_busy || self.is_instance_busy(&inst.instance_id) {
+        self.start_backup_create_for(inst.instance_id, ctx);
+    }
+
+    pub(crate) fn start_backup_create_for(&mut self, instance_id: String, ctx: &egui::Context) {
+        if self.backup_busy || self.is_instance_busy(&instance_id) {
             return;
         }
         self.backup_busy = true;
@@ -2043,10 +2352,10 @@ impl McwApp {
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
-            let id = inst.instance_id.clone();
+            let id = instance_id.clone();
             let res = tokio::task::spawn_blocking(move || {
                 BackupManager::new(&paths)
-                    .create_backup(&inst.instance_id, note)
+                    .create_backup(&instance_id, note)
                     .map_err(|e| e.to_string())
             })
             .await
@@ -2372,7 +2681,18 @@ impl McwApp {
                     self.loading_thumbs.remove(&url);
                     let img = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
                     let handle = ctx.load_texture(url.clone(), img, egui::TextureOptions::LINEAR);
+                    self.thumb_lru_order.retain(|k| k != &url);
+                    self.thumb_lru_order.push(url.clone());
                     self.thumb_textures.insert(url, handle);
+                    const MAX_THUMB_TEXTURES: usize = 64;
+                    while self.thumb_textures.len() > MAX_THUMB_TEXTURES {
+                        if let Some(oldest) = self.thumb_lru_order.first().cloned() {
+                            self.thumb_lru_order.remove(0);
+                            self.thumb_textures.remove(&oldest);
+                        } else {
+                            break;
+                        }
+                    }
                 }
                 AppEvent::ModVersionsLoaded {
                     target_key,
@@ -2743,6 +3063,15 @@ impl McwApp {
                     result,
                 } => {
                     self.backup_busy = false;
+                    let pending_update = if self
+                        .pending_backup_before_modpack_update
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == &instance_id)
+                    {
+                        self.pending_backup_before_modpack_update.take()
+                    } else {
+                        None
+                    };
                     match result {
                         Ok(info) => {
                             self.backup_note_input.clear();
@@ -2760,9 +3089,18 @@ impl McwApp {
                                 ),
                                 false,
                             ));
+                            if let Some((inst_id, candidate)) = pending_update {
+                                self.start_modpack_update_apply(inst_id, candidate, ctx);
+                            }
                         }
                         Err(err) => {
-                            self.notice_banner = Some((format!("Backup failed: {err}"), true));
+                            let suffix = if pending_update.is_some() {
+                                " (modpack update cancelled)."
+                            } else {
+                                ""
+                            };
+                            self.notice_banner =
+                                Some((format!("Backup failed: {err}{suffix}"), true));
                         }
                     }
                 }
@@ -3298,6 +3636,8 @@ impl McwApp {
                         match result {
                             Ok(insp) => {
                                 self.python_import_error = None;
+                                self.python_import_path_input =
+                                    insp.source_root.display().to_string();
                                 self.python_import_selected = insp
                                     .instances
                                     .iter()
@@ -3411,13 +3751,6 @@ impl McwApp {
             self.ensure_thumbnail(url, ctx);
         }
 
-        if self.modpack_dialog.open {
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_modpack_install"),
-                None,
-            );
-        }
         self.modpack_dialog = ModpackInstallDialogState {
             open: true,
             request_id: req_id,
@@ -3834,7 +4167,7 @@ impl McwApp {
                             .download_file(&req)
                             .await
                             .map_err(|e| e.to_string())?;
-                        ModpackInstaller::install_from_archive_with_options(
+                        let rep = ModpackInstaller::install_from_archive_with_options(
                             &paths,
                             &archive_path,
                             Some(&instance_name),
@@ -3844,7 +4177,16 @@ impl McwApp {
                             Some(cb.clone()),
                         )
                         .await
-                        .map_err(|e| e.to_string())?
+                        .map_err(|e| e.to_string())?;
+                        let file_id = ver.id.parse::<u64>().unwrap_or(0);
+                        let _ = CurseForgePackRegistry::set_origin_metadata(
+                            &paths.instance_dir(&rep.instance_id),
+                            mod_id,
+                            &slug,
+                            file_id,
+                            &ver.label,
+                        );
+                        rep
                     }
                     ModpackInstallProvider::Ftb { pack_id } => {
                         let client = FtbClient::new(cache).map_err(|e| e.to_string())?;
@@ -4115,27 +4457,12 @@ impl McwApp {
         });
     }
 
-    pub(crate) fn open_accounts_window(&mut self, ctx: &egui::Context) {
-        if self.show_account_modal {
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_accounts"),
-                Some("Accounts - MCW Launcher"),
-            );
-        }
+    pub(crate) fn open_accounts_window(&mut self, _ctx: &egui::Context) {
         self.show_account_modal = true;
     }
 
-    pub(crate) fn open_export_modpack_window(&mut self, ctx: &egui::Context) {
-        if let Some(inst) = self.selected_instance() {
-            if self.show_export_modal {
-                let title = self.t("modpack_package.export.title").to_string();
-                focus_viewport(
-                    ctx,
-                    egui::ViewportId::from_hash_of("mcw_vp_export_modpack"),
-                    Some(&format!("{title} - {}", inst.name)),
-                );
-            }
+    pub(crate) fn open_export_modpack_window(&mut self, _ctx: &egui::Context) {
+        if self.selected_instance().is_some() {
             self.show_export_modal = true;
         }
     }
@@ -4152,26 +4479,11 @@ impl McwApp {
         self.show_global_logs_window = true;
     }
 
-    pub(crate) fn open_about_window(&mut self, ctx: &egui::Context) {
-        if self.show_about_window {
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_about"),
-                Some("About - MCW Launcher: Rust Edition"),
-            );
-        }
+    pub(crate) fn open_about_window(&mut self, _ctx: &egui::Context) {
         self.show_about_window = true;
     }
 
     pub(crate) fn open_first_run_wizard(&mut self, ctx: &egui::Context) {
-        if self.show_first_run_wizard {
-            let title = format!("{} - MCW Launcher", self.t("first_run.title"));
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_first_run_setup"),
-                Some(&title),
-            );
-        }
         self.show_first_run_wizard = true;
         self.first_run_page = 0;
         self.first_run_language = self.lang.current_locale().to_string();
@@ -4187,13 +4499,6 @@ impl McwApp {
     }
 
     pub(crate) fn open_java_manager_window(&mut self, ctx: &egui::Context) {
-        if self.show_java_manager_window {
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_java_manager"),
-                Some("Java Runtimes - MCW Launcher"),
-            );
-        }
         self.show_java_manager_window = true;
         if self.java_diagnostics.is_empty() && !self.java_scanning {
             self.start_java_diagnostics_scan(ctx);
@@ -4360,13 +4665,6 @@ impl McwApp {
             .find(|i| i.instance_id == instance_id)
             .cloned()
         {
-            if self.show_repair_center_window {
-                focus_viewport(
-                    ctx,
-                    egui::ViewportId::from_hash_of("mcw_vp_repair_center"),
-                    Some(&format!("Repair Center & Health - {}", inst.name)),
-                );
-            }
             self.repair_center_report = Some(InstanceHealthManager::scan(&self.paths, &inst));
             if !inst.mod_loader.is_vanilla() && !self.mods_cache.contains_key(instance_id) {
                 self.load_mods_async(instance_id, ctx, false);
@@ -4387,7 +4685,14 @@ impl McwApp {
         if std::fs::create_dir_all(&mods_dir).is_err() {
             return 0;
         }
+        let inst_name = self
+            .instances
+            .iter()
+            .find(|i| i.instance_id == inst_id)
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| inst_id.to_string());
         let mut copied = 0usize;
+        let mut queued = 0usize;
         for src in files {
             if !src.is_file() {
                 continue;
@@ -4397,6 +4702,23 @@ impl McwApp {
             };
             let lower = name.to_ascii_lowercase();
             if !(lower.ends_with(".jar") || lower.ends_with(".jar.disabled")) {
+                continue;
+            }
+            if let Some((existing_file, reason)) =
+                self.find_duplicate_mod_in_instance(inst_id, name, None, None)
+            {
+                self.pending_duplicate_mod_prompts
+                    .push(PendingDuplicateModPrompt {
+                        instance_id: inst_id.to_string(),
+                        instance_name: inst_name.clone(),
+                        incoming_file_name: name.to_string(),
+                        existing_file_name: existing_file,
+                        match_reason: reason,
+                        source: DuplicateModSource::LocalFile {
+                            source_path: src.clone(),
+                        },
+                    });
+                queued += 1;
                 continue;
             }
             if std::fs::copy(src, mods_dir.join(name)).is_ok() {
@@ -4410,6 +4732,11 @@ impl McwApp {
                 "Imported {copied} local mod JAR(s) into '{inst_id}'."
             ));
             self.notice_banner = Some((format!("Imported {copied} mod file(s)."), false));
+        } else if queued > 0 {
+            self.notice_banner = Some((
+                format!("{queued} duplicate mod file(s) awaiting confirmation."),
+                false,
+            ));
         }
         copied
     }
@@ -4845,13 +5172,6 @@ impl McwApp {
     }
 
     pub(crate) fn open_content_library_window(&mut self, ctx: &egui::Context) {
-        if self.show_content_library_window {
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_content_library"),
-                Some("Installed Content Library - MCW Launcher"),
-            );
-        }
         self.show_content_library_window = true;
         self.start_content_library_scan(ctx);
     }
@@ -4886,11 +5206,6 @@ impl McwApp {
 
     pub(crate) fn open_modpack_update_window(&mut self, instance_id: String, ctx: &egui::Context) {
         if self.show_modpack_update_window && self.modpack_update_instance_id == instance_id {
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_modpack_update"),
-                None,
-            );
             return;
         }
         self.show_modpack_update_window = true;
@@ -4898,18 +5213,21 @@ impl McwApp {
         self.modpack_update_check = None;
         self.modpack_update_selected_version.clear();
         self.modpack_update_error = None;
+        self.modpack_update_confirm_candidate = None;
         self.start_modpack_update_check(instance_id, ctx);
     }
 
     pub(crate) fn start_modpack_update_check(&mut self, instance_id: String, ctx: &egui::Context) {
         self.modpack_update_loading = true;
         self.modpack_update_error = None;
+        self.modpack_update_confirm_candidate = None;
         let paths = self.paths.clone();
         let cache_path = self
             .paths
             .cache_root
             .join("providers")
             .join("api_cache.sqlite");
+        let cf_key = self.resolved_cf_api_key();
         let include_beta = self.modpack_update_include_beta;
         let include_alpha = self.modpack_update_include_alpha;
         let tx = self.tx.clone();
@@ -4918,12 +5236,18 @@ impl McwApp {
         self.runtime.spawn(async move {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
+                let mr = ModrinthClient::new(cache.clone()).map_err(|e| e.to_string())?;
+                let cf = CurseForgeClient::new(cf_key, cache.clone()).ok();
+                let ftb = FtbClient::new(cache.clone()).ok();
+                let atl = AtLauncherClient::new(cache).ok();
                 let inst_dir = paths.instance_dir(&instance_id);
-                ModpackUpdateService::check_modrinth_updates(
+                ModpackUpdateService::check_updates(
                     &instance_id,
                     &inst_dir,
                     &mr,
+                    cf.as_ref(),
+                    ftb.as_ref(),
+                    atl.as_ref(),
                     include_beta,
                     include_alpha,
                 )
@@ -4951,6 +5275,12 @@ impl McwApp {
             format!("Updating to {}...", candidate.version_number),
         );
         let paths = self.paths.clone();
+        let cache_path = self
+            .paths
+            .cache_root
+            .join("providers")
+            .join("api_cache.sqlite");
+        let cf_key = self.resolved_cf_api_key();
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
@@ -4968,11 +5298,18 @@ impl McwApp {
             });
             let res = async {
                 let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
-                ModpackUpdateService::apply_modrinth_update(
+                let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                let cf = CurseForgeClient::new(cf_key, cache.clone()).ok();
+                let ftb = FtbClient::new(cache.clone()).ok();
+                let atl = AtLauncherClient::new(cache).ok();
+                ModpackUpdateService::apply_update(
                     &paths,
                     &instance_id,
                     &candidate,
                     &downloader,
+                    cf.as_ref(),
+                    ftb.as_ref(),
+                    atl.as_ref(),
                     Some(cb),
                 )
                 .await
@@ -5048,14 +5385,7 @@ impl McwApp {
         self.issue_report_markdown = IssueReportBuilder::build_markdown(&input);
     }
 
-    pub(crate) fn open_issue_report_window(&mut self, ctx: &egui::Context) {
-        if self.show_issue_report_window {
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_issue_report"),
-                Some("Report an Issue - MCW Launcher"),
-            );
-        }
+    pub(crate) fn open_issue_report_window(&mut self, _ctx: &egui::Context) {
         self.show_issue_report_window = true;
         self.rebuild_issue_report_markdown();
     }
@@ -5071,7 +5401,9 @@ impl McwApp {
             return;
         }
         self.active_tab = tab;
+        self.instance_inline_browser = None;
         self.ensure_active_tab_loaded(ctx);
+        self.clear_remote_thumbs_if_idle();
         self.record_nav_location();
     }
 
@@ -5087,8 +5419,10 @@ impl McwApp {
             return;
         }
         self.selected_instance_id = Some(instance_id);
+        self.instance_inline_browser = None;
         self.sync_selected_from_cache();
         self.ensure_active_tab_loaded(ctx);
+        self.clear_remote_thumbs_if_idle();
         self.record_nav_location();
     }
 
@@ -5138,29 +5472,24 @@ impl McwApp {
         let mut changed = false;
         if let Some(tab) = self.pending_tab_switch.take() {
             self.active_tab = tab;
+            self.instance_inline_browser = None;
             self.ensure_active_tab_loaded(ctx);
             changed = true;
         }
         if let Some(inst_id) = self.pending_instance_switch.take() {
             self.selected_instance_id = Some(inst_id);
+            self.instance_inline_browser = None;
             self.sync_selected_from_cache();
             self.ensure_active_tab_loaded(ctx);
             changed = true;
         }
         if changed {
+            self.clear_remote_thumbs_if_idle();
             self.record_nav_location();
         }
     }
 
-    pub(crate) fn open_python_import_window(&mut self, ctx: &egui::Context) {
-        if self.show_python_import_window {
-            let title = self.t("python_import.title").to_string();
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_python_import"),
-                Some(&title),
-            );
-        }
+    pub(crate) fn open_python_import_window(&mut self, _ctx: &egui::Context) {
         self.show_python_import_window = true;
     }
 
@@ -5351,6 +5680,117 @@ pub(crate) fn apply_lan_agent_option(settings: &mut InstanceSettings, enable: bo
     }
 }
 
+pub(crate) fn remove_mod_file_and_twins(mods_dir: &std::path::Path, file_name: &str) {
+    let lower = file_name.to_ascii_lowercase();
+    let base = if lower.ends_with(".disabled") {
+        &file_name[..file_name.len() - ".disabled".len()]
+    } else {
+        file_name
+    };
+    let enabled = mods_dir.join(base);
+    let disabled = mods_dir.join(format!("{base}.disabled"));
+    let exact = mods_dir.join(file_name);
+    let _ = std::fs::remove_file(exact);
+    let _ = std::fs::remove_file(enabled);
+    let _ = std::fs::remove_file(disabled);
+}
+
+fn split_mod_jar_ext(file_name: &str) -> (&str, &str) {
+    let lower = file_name.to_ascii_lowercase();
+    if lower.ends_with(".jar.disabled") {
+        (
+            &file_name[..file_name.len() - ".jar.disabled".len()],
+            ".jar.disabled",
+        )
+    } else if lower.ends_with(".jar") {
+        (&file_name[..file_name.len() - ".jar".len()], ".jar")
+    } else {
+        (file_name, "")
+    }
+}
+
+fn strip_numeric_dup_suffix(stem: &str) -> &str {
+    let trimmed = stem.trim_end();
+    if let Some(without_paren) = trimmed.strip_suffix(')') {
+        if let Some(open_idx) = without_paren.rfind(" (") {
+            let digits = &without_paren[open_idx + 2..];
+            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                return &without_paren[..open_idx];
+            }
+        }
+    }
+    trimmed
+}
+
+pub(crate) fn normalize_mod_stem(file_name: &str) -> String {
+    let (stem_raw, _) = split_mod_jar_ext(file_name);
+    let stem = strip_numeric_dup_suffix(stem_raw);
+    let mut parts: Vec<String> = Vec::new();
+    for raw_tok in stem.split(['-', '_', '+', ' ']) {
+        let tok = raw_tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        let lower = tok.to_ascii_lowercase();
+        let ver_body = lower
+            .strip_prefix("mc")
+            .or_else(|| lower.strip_prefix('v'))
+            .or_else(|| lower.strip_prefix('r'))
+            .unwrap_or(&lower);
+        let looks_like_version = ver_body.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && (lower != ver_body
+                || ver_body.contains('.')
+                || ver_body.chars().all(|c| c.is_ascii_digit()));
+        if looks_like_version {
+            break;
+        }
+        parts.push(lower);
+    }
+    while parts.len() > 1
+        && matches!(
+            parts.last().map(String::as_str),
+            Some("fabric" | "forge" | "neoforge" | "quilt")
+        )
+    {
+        parts.pop();
+    }
+    if parts.is_empty() {
+        stem.to_ascii_lowercase()
+    } else {
+        parts.join("-")
+    }
+}
+
+pub(crate) fn resolve_unique_mod_filename(
+    mods_dir: &std::path::Path,
+    incoming_file_name: &str,
+) -> String {
+    let (stem_raw, ext) = split_mod_jar_ext(incoming_file_name);
+    let base_stem = strip_numeric_dup_suffix(stem_raw);
+    let mut idx = 1usize;
+    loop {
+        let candidate_stem = if idx == 1 {
+            base_stem.to_string()
+        } else {
+            format!("{base_stem} ({idx})")
+        };
+        let jar_name = if ext == ".jar.disabled" {
+            format!("{candidate_stem}.jar")
+        } else {
+            format!("{candidate_stem}{ext}")
+        };
+        let disabled_name = if ext == ".jar.disabled" || ext == ".jar" {
+            format!("{candidate_stem}.jar.disabled")
+        } else {
+            format!("{candidate_stem}{ext}.disabled")
+        };
+        if !mods_dir.join(&jar_name).exists() && !mods_dir.join(&disabled_name).exists() {
+            return format!("{candidate_stem}{ext}");
+        }
+        idx += 1;
+    }
+}
+
 pub(crate) fn is_account_or_token_error(err: &str) -> bool {
     let low = err.to_ascii_lowercase();
     [
@@ -5378,7 +5818,38 @@ pub(crate) fn is_account_or_token_error(err: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::InstanceSettings;
-    use super::{apply_lan_agent_option, is_account_or_token_error};
+    use super::{
+        apply_lan_agent_option, is_account_or_token_error, normalize_mod_stem,
+        resolve_unique_mod_filename,
+    };
+
+    #[test]
+    fn duplicate_mod_helpers_normalize_stems_and_append_suffix() {
+        assert_eq!(
+            normalize_mod_stem("sodium-fabric-0.5.8+mc1.20.4.jar"),
+            "sodium"
+        );
+        assert_eq!(
+            normalize_mod_stem("sodium-fabric-0.5.11+mc1.20.4 (2).jar.disabled"),
+            "sodium"
+        );
+        assert_eq!(
+            normalize_mod_stem("3dskinlayers-fabric-1.6.2-mc1.20.4.jar"),
+            "3dskinlayers"
+        );
+        assert_eq!(
+            normalize_mod_stem("fabric-api-0.92.0+1.20.1.jar"),
+            "fabric-api"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sodium-0.5.8.jar"), b"1").unwrap();
+        std::fs::write(dir.path().join("sodium-0.5.8 (2).jar.disabled"), b"2").unwrap();
+        assert_eq!(
+            resolve_unique_mod_filename(dir.path(), "sodium-0.5.8.jar"),
+            "sodium-0.5.8 (3).jar"
+        );
+    }
 
     #[test]
     fn apply_lan_agent_option_enables_manual_offline_lan() {

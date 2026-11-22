@@ -75,6 +75,37 @@ impl<'a> InstanceStore<'a> {
         Ok(trimmed.to_string())
     }
 
+    pub fn resolve_unique_instance_name(&self, requested_name: &str) -> Result<String> {
+        let trimmed = requested_name.trim();
+        let fallback_source = if trimmed.is_empty() {
+            "Instance"
+        } else {
+            trimmed
+        };
+        let base = Self::validate_instance_name(fallback_source)?;
+        if !self.paths.instance_dir(&base).exists() {
+            return Ok(base);
+        }
+        for idx in 2usize.. {
+            let suffix = format!(" ({idx})");
+            let max_base_chars = MAX_INSTANCE_NAME_LEN.saturating_sub(suffix.chars().count());
+            let mut truncated_base: String = base.chars().take(max_base_chars).collect();
+            while truncated_base.ends_with('.') || truncated_base.ends_with(' ') {
+                truncated_base.pop();
+            }
+            let prefix = if truncated_base.is_empty() {
+                "Instance"
+            } else {
+                truncated_base.as_str()
+            };
+            let candidate = format!("{prefix}{suffix}");
+            if !self.paths.instance_dir(&candidate).exists() {
+                return Ok(candidate);
+            }
+        }
+        Ok(base)
+    }
+
     pub fn list_instances(&self) -> Result<Vec<Instance>> {
         if !self.paths.instances_root.is_dir() {
             return Ok(Vec::new());

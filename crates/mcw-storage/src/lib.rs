@@ -24,8 +24,9 @@ pub use health::{
 pub use instance_store::{InstanceRepository, InstanceStore};
 pub use migration::{
     inspect_python_launcher, migrate_from_python_1_8, migrate_from_python_launcher,
-    ConflictStrategy, DiscoveredPythonInstance, ImportedGlobalSettings, MigrationReport,
-    PythonLayoutKind, PythonMigrationInspection, PythonMigrationOptions, PythonMigrationResult,
+    resolve_python_launcher_root, ConflictStrategy, DiscoveredPythonInstance,
+    ImportedGlobalSettings, MigrationReport, PythonLayoutKind, PythonMigrationInspection,
+    PythonMigrationOptions, PythonMigrationResult,
 };
 pub use paths::LauncherPaths;
 pub use run_lock::{InstanceRunLock, LockState, RunningInstanceInfo};

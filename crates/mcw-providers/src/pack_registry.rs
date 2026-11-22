@@ -263,6 +263,85 @@ impl ModrinthPackRegistry {
     }
 }
 
+fn default_curseforge() -> String {
+    "curseforge".to_string()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CurseForgePackRecord {
+    #[serde(default = "default_curseforge")]
+    pub source: String,
+    #[serde(rename = "modId", default)]
+    pub mod_id: u64,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(rename = "packName", default)]
+    pub pack_name: String,
+    #[serde(rename = "fileId", default)]
+    pub file_id: u64,
+    #[serde(rename = "fileName", default)]
+    pub file_name: String,
+    #[serde(rename = "managedFiles", default)]
+    pub managed_files: Vec<String>,
+    #[serde(rename = "updatedAt", default)]
+    pub updated_at: String,
+}
+
+pub struct CurseForgePackRegistry;
+
+impl CurseForgePackRegistry {
+    pub fn registry_path(instance_dir: &Path) -> PathBuf {
+        instance_dir.join(".mcw").join("curseforge-pack.json")
+    }
+
+    pub fn load(instance_dir: &Path) -> Option<CurseForgePackRecord> {
+        let path = Self::registry_path(instance_dir);
+        let raw = fs::read_to_string(path).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    pub fn save(instance_dir: &Path, record: &CurseForgePackRecord) -> crate::Result<()> {
+        let mut normalized = record.clone();
+        normalized.source = "curseforge".to_string();
+        normalized.updated_at = unix_timestamp_string();
+        let mut clean_files = Vec::new();
+        for f in &normalized.managed_files {
+            let rel = safe_relative_posix(f, f);
+            if !rel.is_empty() && !clean_files.iter().any(|x| x == &rel) {
+                clean_files.push(rel);
+            }
+        }
+        clean_files.sort_by_key(|a| a.to_ascii_lowercase());
+        normalized.managed_files = clean_files;
+        atomic_write_json(&Self::registry_path(instance_dir), &normalized)
+            .map_err(|e| crate::ProviderError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(())
+    }
+
+    pub fn set_origin_metadata(
+        instance_dir: &Path,
+        mod_id: u64,
+        slug: &str,
+        file_id: u64,
+        file_name: &str,
+    ) -> crate::Result<()> {
+        let mut rec = Self::load(instance_dir).unwrap_or_default();
+        if mod_id > 0 {
+            rec.mod_id = mod_id;
+        }
+        if !slug.trim().is_empty() {
+            rec.slug = slug.trim().to_string();
+        }
+        if file_id > 0 {
+            rec.file_id = file_id;
+        }
+        if !file_name.trim().is_empty() {
+            rec.file_name = file_name.trim().to_string();
+        }
+        Self::save(instance_dir, &rec)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InstalledPackOrigin {
     pub provider: String,
@@ -273,6 +352,50 @@ pub struct InstalledPackOrigin {
 }
 
 pub fn detect_installed_pack(instance_dir: &Path) -> Option<InstalledPackOrigin> {
+    if let Some(mr) = ModrinthPackRegistry::load(instance_dir) {
+        if !mr.project_id.trim().is_empty() || !mr.project_slug.trim().is_empty() {
+            return Some(InstalledPackOrigin {
+                provider: "Modrinth".to_string(),
+                pack_id: if !mr.project_id.trim().is_empty() {
+                    mr.project_id.clone()
+                } else {
+                    mr.project_slug.clone()
+                },
+                pack_name: if mr.pack_name.is_empty() {
+                    mr.project_slug.clone()
+                } else {
+                    mr.pack_name.clone()
+                },
+                version_name: if mr.version_number.is_empty() {
+                    mr.version_id.clone()
+                } else {
+                    mr.version_number.clone()
+                },
+                managed_files_count: mr.managed_files.len(),
+            });
+        }
+    }
+    if let Some(cf) = CurseForgePackRegistry::load(instance_dir) {
+        if cf.mod_id > 0 {
+            return Some(InstalledPackOrigin {
+                provider: "CurseForge".to_string(),
+                pack_id: cf.mod_id.to_string(),
+                pack_name: if cf.pack_name.is_empty() {
+                    format!("CurseForge #{}", cf.mod_id)
+                } else {
+                    cf.pack_name.clone()
+                },
+                version_name: if !cf.file_name.is_empty() {
+                    cf.file_name.clone()
+                } else if cf.file_id > 0 {
+                    format!("File #{}", cf.file_id)
+                } else {
+                    "Unknown".to_string()
+                },
+                managed_files_count: cf.managed_files.len(),
+            });
+        }
+    }
     if let Some(ftb) = FtbPackRegistry::load(instance_dir) {
         return Some(InstalledPackOrigin {
             provider: "FTB".to_string(),
@@ -308,6 +431,13 @@ pub fn detect_installed_pack(instance_dir: &Path) -> Option<InstalledPackOrigin>
         });
     }
     None
+}
+
+/// Returns true for any instance installed from an online modpack provider or imported from a `.mcwpack`/archive.
+pub fn is_verified_or_imported_modpack(instance_dir: &Path, icon_source: &str) -> bool {
+    let mcw_dir = instance_dir.join(".mcw");
+    mcw_dir.join("mcwpack.json").is_file()
+        || detect_export_origin(instance_dir, icon_source) != InstanceExportOrigin::Custom
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -506,5 +636,15 @@ mod tests {
             detect_export_origin(&custom, "modpack:atlauncher"),
             InstanceExportOrigin::OtherProvider
         );
+
+        assert!(!is_verified_or_imported_modpack(&custom, ""));
+        assert!(is_verified_or_imported_modpack(&mr, ""));
+        assert!(is_verified_or_imported_modpack(&cf, ""));
+
+        CurseForgePackRegistry::set_origin_metadata(&cf, 12345, "demo-cf", 67890, "demo-1.0.zip")
+            .unwrap();
+        let cf_origin = detect_installed_pack(&cf).unwrap();
+        assert_eq!(cf_origin.provider, "CurseForge");
+        assert_eq!(cf_origin.pack_id, "12345");
     }
 }

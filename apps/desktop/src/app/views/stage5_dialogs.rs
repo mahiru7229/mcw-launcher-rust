@@ -175,20 +175,10 @@ impl McwApp {
         let mut install_major: Option<u32> = None;
         let mut uninstall_exe: Option<PathBuf> = None;
 
-        let vp_id = egui::ViewportId::from_hash_of("mcw_vp_java_manager");
-        let builder = centered_viewport_builder(
-            ctx,
-            "Java Runtimes - MCW Launcher",
-            [780.0, 520.0],
-            [600.0, 400.0],
-        );
-
-        let java_title = self.t("launcher_settings.java.title").to_string();
         let java_desc = self.t("launcher_settings.java.description").to_string();
         let scan_lbl = self.t("launcher_settings.java.scan").to_string();
         let none_lbl = self.t("launcher_settings.java.none").to_string();
         let install_hint = self.t("launcher_settings.java.install_hint").to_string();
-
         let mut install_choices = vec![8u32, 17, 21, 25];
         if let Some(latest) = self.latest_java_major {
             if !install_choices.contains(&latest) {
@@ -200,207 +190,169 @@ impl McwApp {
             self.java_install_selected_major = *install_choices.last().unwrap_or(&21);
         }
 
-        ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx
-                .input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
-            {
-                open = false;
-            }
-            egui::CentralPanel::default()
-                .frame(
-                    Frame::new()
-                        .fill(p.canvas)
-                        .inner_margin(egui::Margin::same(14)),
-                )
-                .show(vp_ctx, |ui| {
-                    // Header
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new(&java_title)
-                                    .size(18.0)
-                                    .strong()
-                                    .color(p.text),
+        let notice = self.notice_banner.clone();
+        let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
+            ctx,
+            "mcw_modal_java_manager",
+            "Java Runtimes",
+            [780.0, 540.0],
+            [600.0, 400.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                // Subtitle + Top Action Card
+                ui.label(RichText::new(&java_desc).size(11.5).color(p.text_muted));
+                ui.add_space(8.0);
+
+                // Top Action Card: Temurin installer + dynamic Latest JDK + Scan
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0_f32, p.border))
+                    .corner_radius(CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("Install Temurin JDK:").strong());
+                            let sel_lbl = self.lang.tr_fmt(
+                                "launcher_settings.java.version",
+                                &[("major", &self.java_install_selected_major.to_string())],
                             );
-                            ui.label(
-                                RichText::new(&java_desc)
-                                    .size(11.5)
-                                    .color(p.text_muted),
-                            );
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    Button::new(self.t("common.close"))
-                                        .corner_radius(CornerRadius::same(8)),
+                            let cw = auto_combo_width(ui, &sel_lbl, 110.0, 160.0);
+                            egui::ComboBox::from_id_salt("jm_major_select_combo")
+                                .selected_text(&sel_lbl)
+                                .width(cw)
+                                .show_ui(ui, |ui| {
+                                    for &m in &install_choices {
+                                        let txt = self.lang.tr_fmt(
+                                            "launcher_settings.java.version",
+                                            &[("major", &m.to_string())],
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.java_install_selected_major,
+                                            m,
+                                            txt,
+                                        );
+                                    }
+                                });
+
+                            let sel_major = self.java_install_selected_major;
+                            let sel_busy = self.installing_java_majors.contains(&sel_major);
+                            let sel_managed = self
+                                .java_diagnostics
+                                .iter()
+                                .any(|d| d.is_managed && d.major_version == sel_major)
+                                || self.java_installations.iter().any(|j| {
+                                    j.major == sel_major && j.path.starts_with(&runtimes_root)
+                                });
+                            let sel_btn_lbl = if sel_busy {
+                                format!("Installing Java {sel_major}...")
+                            } else if sel_managed {
+                                self.lang.tr_fmt(
+                                    "launcher_settings.java.reinstall",
+                                    &[("major", &sel_major.to_string())],
                                 )
+                            } else {
+                                self.lang.tr_fmt(
+                                    "launcher_settings.java.install",
+                                    &[("major", &sel_major.to_string())],
+                                )
+                            };
+                            if ui
+                                .add_enabled(!sel_busy, Button::new(sel_btn_lbl))
                                 .clicked()
                             {
-                                open = false;
+                                install_major = Some(sel_major);
                             }
-                        });
-                    });
 
-                    ui.add_space(8.0);
-
-                    // Top Action Card: Temurin installer + dynamic Latest JDK + Scan
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(12))
-                        .inner_margin(egui::Margin::same(12))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(RichText::new("Install Temurin JDK:").strong());
-                                let sel_lbl = self.lang.tr_fmt(
-                                    "launcher_settings.java.version",
-                                    &[("major", &self.java_install_selected_major.to_string())],
-                                );
-                                let cw = auto_combo_width(ui, &sel_lbl, 110.0, 160.0);
-                                egui::ComboBox::from_id_salt("jm_major_select_combo")
-                                    .selected_text(&sel_lbl)
-                                    .width(cw)
-                                    .show_ui(ui, |ui| {
-                                        for &m in &install_choices {
-                                            let txt = self.lang.tr_fmt(
-                                                "launcher_settings.java.version",
-                                                &[("major", &m.to_string())],
-                                            );
-                                            ui.selectable_value(
-                                                &mut self.java_install_selected_major,
-                                                m,
-                                                txt,
-                                            );
-                                        }
-                                    });
-
-                                let sel_major = self.java_install_selected_major;
-                                let sel_busy = self.installing_java_majors.contains(&sel_major);
-                                let sel_managed = self
+                            if let Some(latest_major) = self.latest_java_major {
+                                let l_busy = self.installing_java_majors.contains(&latest_major);
+                                let l_managed = self
                                     .java_diagnostics
                                     .iter()
-                                    .any(|d| d.is_managed && d.major_version == sel_major)
-                                    || self
-                                        .java_installations
-                                        .iter()
-                                        .any(|j| {
-                                            j.major == sel_major
-                                                && j.path.starts_with(&runtimes_root)
-                                        });
-                                let sel_btn_lbl = if sel_busy {
-                                    format!("Installing Java {sel_major}...")
-                                } else if sel_managed {
-                                    self.lang.tr_fmt(
-                                        "launcher_settings.java.reinstall",
-                                        &[("major", &sel_major.to_string())],
-                                    )
-                                } else {
-                                    self.lang.tr_fmt(
-                                        "launcher_settings.java.install",
-                                        &[("major", &sel_major.to_string())],
-                                    )
-                                };
-                                if ui.add_enabled(!sel_busy, Button::new(sel_btn_lbl)).clicked() {
-                                    install_major = Some(sel_major);
-                                }
-
-                                if let Some(latest_major) = self.latest_java_major {
-                                    let l_busy =
-                                        self.installing_java_majors.contains(&latest_major);
-                                    let l_managed = self.java_diagnostics.iter().any(|d| {
-                                        d.is_managed && d.major_version == latest_major
-                                    }) || self.java_installations.iter().any(|j| {
+                                    .any(|d| d.is_managed && d.major_version == latest_major)
+                                    || self.java_installations.iter().any(|j| {
                                         j.major == latest_major
                                             && j.path.starts_with(&runtimes_root)
                                     });
-                                    let l_lbl = if l_busy {
-                                        format!("Installing Java {latest_major}...")
-                                    } else if l_managed {
-                                        self.lang.tr_fmt(
-                                            "launcher_settings.java.latest_reinstall",
-                                            &[("major", &latest_major.to_string())],
-                                        )
-                                    } else {
-                                        self.lang.tr_fmt(
-                                            "launcher_settings.java.latest_install",
-                                            &[("major", &latest_major.to_string())],
-                                        )
-                                    };
-                                    let l_btn = Button::new(
-                                        RichText::new(l_lbl)
-                                            .color(p.accent_text)
-                                            .strong(),
-                                    )
-                                    .fill(p.accent);
-                                    if ui.add_enabled(!l_busy, l_btn).clicked() {
-                                        install_major = Some(latest_major);
-                                    }
-                                } else {
-                                    let checking = self.latest_java_checking;
-                                    let lbl = if checking {
-                                        "Checking latest JDK...".to_string()
-                                    } else {
-                                        "Check Latest JDK".to_string()
-                                    };
-                                    if ui.add_enabled(!checking, Button::new(lbl)).clicked() {
-                                        check_latest = true;
-                                    }
-                                }
-
-                                if ui.button(&scan_lbl).clicked() {
-                                    scan_java = true;
-                                }
-                            });
-
-                            ui.add_space(6.0);
-                            if self.latest_java_checking {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label(
-                                        RichText::new(
-                                            self.t("launcher_settings.java.latest_checking"),
-                                        )
-                                        .size(11.0)
-                                        .color(p.accent),
-                                    );
-                                });
-                            } else if let Some(latest_major) = self.latest_java_major {
-                                let hint = self
-                                    .lang
-                                    .tr_fmt(
-                                        "launcher_settings.java.latest_hint",
+                                let l_lbl = if l_busy {
+                                    format!("Installing Java {latest_major}...")
+                                } else if l_managed {
+                                    self.lang.tr_fmt(
+                                        "launcher_settings.java.latest_reinstall",
                                         &[("major", &latest_major.to_string())],
                                     )
-                                    .replace(['\u{2014}', '\u{2013}'], "-");
-                                ui.label(RichText::new(hint).size(11.0).color(p.text_muted));
-                            } else if let Some(ref err) = self.latest_java_error {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "{} ({err})",
-                                            self.t("launcher_settings.java.latest_unavailable")
-                                        ))
-                                        .size(11.0)
-                                        .color(p.warning),
-                                    );
-                                    if ui.small_button("Refresh").clicked() {
-                                        check_latest = true;
-                                    }
-                                });
+                                } else {
+                                    self.lang.tr_fmt(
+                                        "launcher_settings.java.latest_install",
+                                        &[("major", &latest_major.to_string())],
+                                    )
+                                };
+                                let l_btn =
+                                    Button::new(RichText::new(l_lbl).color(p.accent_text).strong())
+                                        .fill(p.accent);
+                                if ui.add_enabled(!l_busy, l_btn).clicked() {
+                                    install_major = Some(latest_major);
+                                }
                             } else {
-                                ui.label(
-                                    RichText::new(&install_hint)
-                                        .size(11.0)
-                                        .color(p.text_muted),
-                                );
+                                let checking = self.latest_java_checking;
+                                let lbl = if checking {
+                                    "Checking latest JDK...".to_string()
+                                } else {
+                                    "Check Latest JDK".to_string()
+                                };
+                                if ui.add_enabled(!checking, Button::new(lbl)).clicked() {
+                                    check_latest = true;
+                                }
+                            }
+
+                            if ui.button(&scan_lbl).clicked() {
+                                scan_java = true;
                             }
                         });
 
-                    ui.add_space(10.0);
+                        ui.add_space(6.0);
+                        if self.latest_java_checking {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(
+                                    RichText::new(self.t("launcher_settings.java.latest_checking"))
+                                        .size(11.0)
+                                        .color(p.accent),
+                                );
+                            });
+                        } else if let Some(latest_major) = self.latest_java_major {
+                            let hint = self
+                                .lang
+                                .tr_fmt(
+                                    "launcher_settings.java.latest_hint",
+                                    &[("major", &latest_major.to_string())],
+                                )
+                                .replace(['\u{2014}', '\u{2013}'], "-");
+                            ui.label(RichText::new(hint).size(11.0).color(p.text_muted));
+                        } else if let Some(ref err) = self.latest_java_error {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} ({err})",
+                                        self.t("launcher_settings.java.latest_unavailable")
+                                    ))
+                                    .size(11.0)
+                                    .color(p.warning),
+                                );
+                                if ui.small_button("Refresh").clicked() {
+                                    check_latest = true;
+                                }
+                            });
+                        } else {
+                            ui.label(RichText::new(&install_hint).size(11.0).color(p.text_muted));
+                        }
+                    });
 
-                    // Detected Runtimes ScrollArea (clean per-runtime cards, zero overlapping buttons)
-                    ScrollArea::vertical()
+                ui.add_space(10.0);
+
+                // Detected Runtimes ScrollArea (clean per-runtime cards, zero overlapping buttons)
+                ScrollArea::vertical()
                         .id_salt("java_manager_list_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -586,8 +538,14 @@ impl McwApp {
                                 );
                             }
                         });
-                });
-        });
+            },
+        );
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
 
         self.show_java_manager_window = open;
         if scan_java {

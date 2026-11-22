@@ -464,7 +464,7 @@ impl CurseForgeClient {
             .with_size(file.file_length);
         downloader.download_file(&req).await?;
 
-        ModpackInstaller::install_from_archive_with_progress(
+        let rep = ModpackInstaller::install_from_archive_with_progress(
             paths,
             &archive_path,
             instance_name_override,
@@ -472,7 +472,15 @@ impl CurseForgeClient {
             Some(self),
             on_progress,
         )
-        .await
+        .await?;
+        let _ = crate::pack_registry::CurseForgePackRegistry::set_origin_metadata(
+            &paths.instance_dir(&rep.instance_id),
+            mod_id,
+            slug.unwrap_or(""),
+            file.id,
+            &file.file_name,
+        );
+        Ok(rep)
     }
 
     pub async fn search(&self, params: &CurseForgeSearchParams) -> Result<CurseForgeSearchResult> {

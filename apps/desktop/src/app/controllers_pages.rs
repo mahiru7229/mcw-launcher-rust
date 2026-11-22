@@ -1,17 +1,8 @@
 //! Page & Content Browser controllers separated from legacy `controllers.rs` (SOLID SRP).
 
-use super::platform::focus_viewport;
 use super::*;
 
 pub(crate) const BROWSER_PAGE_SIZE: u32 = 20;
-
-pub(crate) fn content_browser_window_title(global_mode: bool, category: BrowserCategory) -> String {
-    if global_mode {
-        "Mod & Modpacks - MCW Content Browser".to_string()
-    } else {
-        format!("{} - MCW Content Browser", category.label())
-    }
-}
 
 impl McwApp {
     pub(crate) fn load_servers_async(
@@ -88,18 +79,36 @@ impl McwApp {
         global_mode: bool,
         ctx: &egui::Context,
     ) {
+        let global_mode = global_mode || category == BrowserCategory::Modpacks;
         let was_open = if global_mode {
             self.active_page == AppPage::Modpacks
         } else {
-            self.show_content_browser
+            self.active_page == AppPage::Home && self.instance_inline_browser.is_some()
         };
         let prev_global = self.browser_global_mode;
         let prev_provider = self.browser_provider;
+        self.show_content_browser = false;
         if global_mode {
-            self.show_content_browser = false;
+            self.instance_inline_browser = None;
             self.active_page = AppPage::Modpacks;
         } else {
-            self.show_content_browser = true;
+            self.active_page = AppPage::Home;
+            self.active_tab = match category {
+                BrowserCategory::Mods => DetailTab::Mods,
+                BrowserCategory::ResourcePacks => DetailTab::ResourcePacks,
+                BrowserCategory::ShaderPacks => DetailTab::Shaders,
+                BrowserCategory::DataPacks => DetailTab::Worlds,
+                BrowserCategory::Modpacks => DetailTab::Mods,
+            };
+            if self
+                .selected_instance()
+                .map(|i| i.mod_loader.is_vanilla())
+                .unwrap_or(false)
+                && matches!(self.active_tab, DetailTab::Mods | DetailTab::Shaders)
+            {
+                self.active_tab = DetailTab::Worlds;
+            }
+            self.instance_inline_browser = Some(category);
         }
         self.browser_global_mode = global_mode;
         let category_changed = self.browser_category != category;
@@ -146,14 +155,7 @@ impl McwApp {
             }
         }
 
-        if was_open && !global_mode {
-            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_content_browser");
-            let title =
-                content_browser_window_title(self.browser_global_mode, self.browser_category);
-            focus_viewport(ctx, vp_id, Some(&title));
-        } else if global_mode {
-            self.record_nav_location();
-        }
+        self.record_nav_location();
 
         let scope_key = if self.browser_global_mode {
             format!("global:{}", self.browser_mc_version_filter)
@@ -377,6 +379,8 @@ impl McwApp {
             page: self.active_page,
             instance_id: self.selected_instance_id.clone(),
             tab: self.active_tab,
+            browser_category: self.browser_category,
+            inline_browser: self.instance_inline_browser,
         }
     }
 
@@ -400,7 +404,10 @@ impl McwApp {
         match page {
             AppPage::Home => {
                 self.active_page = AppPage::Home;
+                self.instance_inline_browser = None;
+                self.browser_global_mode = false;
                 self.ensure_active_tab_loaded(ctx);
+                self.clear_remote_thumbs_if_idle();
                 self.record_nav_location();
             }
             AppPage::Modpacks => {
@@ -413,13 +420,19 @@ impl McwApp {
             }
             AppPage::Versions => {
                 self.active_page = AppPage::Versions;
+                self.instance_inline_browser = None;
+                self.browser_global_mode = false;
                 if self.cached_versions.is_empty() {
                     self.load_cached_versions_async(ctx);
                 }
+                self.clear_remote_thumbs_if_idle();
                 self.record_nav_location();
             }
             AppPage::Logs => {
                 self.active_page = AppPage::Logs;
+                self.instance_inline_browser = None;
+                self.browser_global_mode = false;
+                self.clear_remote_thumbs_if_idle();
                 self.record_nav_location();
             }
         }
@@ -456,7 +469,43 @@ impl McwApp {
             }
         }
         self.active_tab = loc.tab;
-        self.navigate_to_page(loc.page, ctx);
+        self.browser_category = loc.browser_category;
+        match loc.page {
+            AppPage::Home => {
+                self.active_page = AppPage::Home;
+                if let Some(cat) = loc.inline_browser {
+                    self.open_content_browser_mode(cat, Some(self.browser_provider), false, ctx);
+                } else {
+                    self.instance_inline_browser = None;
+                    self.browser_global_mode = false;
+                    self.ensure_active_tab_loaded(ctx);
+                    self.clear_remote_thumbs_if_idle();
+                }
+            }
+            AppPage::Modpacks => {
+                self.open_content_browser_mode(
+                    loc.browser_category,
+                    Some(self.browser_provider),
+                    true,
+                    ctx,
+                );
+            }
+            AppPage::Versions => {
+                self.active_page = AppPage::Versions;
+                self.instance_inline_browser = None;
+                self.browser_global_mode = false;
+                if self.cached_versions.is_empty() {
+                    self.load_cached_versions_async(ctx);
+                }
+                self.clear_remote_thumbs_if_idle();
+            }
+            AppPage::Logs => {
+                self.active_page = AppPage::Logs;
+                self.instance_inline_browser = None;
+                self.browser_global_mode = false;
+                self.clear_remote_thumbs_if_idle();
+            }
+        }
         self.nav_suppress_record = false;
     }
 }
@@ -491,6 +540,8 @@ mod nav_history_tests {
             page,
             instance_id: inst.map(str::to_string),
             tab,
+            browser_category: BrowserCategory::Modpacks,
+            inline_browser: None,
         }
     }
 

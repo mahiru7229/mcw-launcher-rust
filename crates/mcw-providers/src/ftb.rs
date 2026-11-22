@@ -263,18 +263,18 @@ impl FtbClient {
         };
 
         let store = InstanceStore::new(paths);
-        let mut candidate_name = pack_name.trim().to_string();
-        if candidate_name.is_empty() {
-            candidate_name = format!("ftb-{pack_id}");
+        let mut base_name = pack_name.trim().to_string();
+        if base_name.is_empty() {
+            base_name = format!("ftb-{pack_id}");
         }
-        let mut idx = 2usize;
-        while store.load_instance(&candidate_name).is_ok() {
-            candidate_name = format!("{} ({idx})", pack_name.trim());
-            idx += 1;
-        }
-        let (inst, _) = store
+        let candidate_name = store
+            .resolve_unique_instance_name(&base_name)
+            .map_err(|e| ProviderError::Io(std::io::Error::other(e.to_string())))?;
+        let (inst, mut inst_settings) = store
             .create_instance(&candidate_name, &game_version, loader.clone())
             .map_err(|e| ProviderError::Io(std::io::Error::other(e.to_string())))?;
+        inst_settings.disable_mod_repair_and_updates = Some(true);
+        let _ = store.save_settings(&inst.instance_id, &inst_settings);
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
         fs::create_dir_all(&mc_dir)?;
 
@@ -390,7 +390,7 @@ impl FtbClient {
         })
     }
 
-    async fn cached_get(&self, url: &str) -> Result<String> {
+    pub(crate) async fn cached_get(&self, url: &str) -> Result<String> {
         let key = format!("ftb:{url}");
         if let Some(ref cache) = self.cache {
             if let Some(hit) = cache.get(&key) {

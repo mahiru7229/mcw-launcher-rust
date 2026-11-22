@@ -1,4 +1,4 @@
-use crate::app::controllers_pages::{content_browser_window_title, BROWSER_PAGE_SIZE};
+use crate::app::controllers_pages::BROWSER_PAGE_SIZE;
 use crate::app::platform::*;
 use crate::app::*;
 use eframe::egui::Margin;
@@ -95,47 +95,64 @@ impl McwApp {
     pub(crate) fn render_modpacks_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.browser_global_mode = true;
         self.show_content_browser = false;
+        let p = self.palette;
+        if let Some((msg, is_err)) = self.notice_banner.clone() {
+            let mut dismiss = false;
+            Frame::new()
+                .fill(if is_err {
+                    with_alpha(p.danger, 26)
+                } else {
+                    with_alpha(p.accent, 22)
+                })
+                .stroke(Stroke::new(
+                    1.0_f32,
+                    if is_err { p.danger } else { p.accent },
+                ))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(&msg).size(12.0).color(if is_err {
+                            p.danger
+                        } else {
+                            p.text
+                        }));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button("Dismiss").clicked() {
+                                dismiss = true;
+                            }
+                        });
+                    });
+                });
+            if dismiss {
+                self.notice_banner = None;
+            }
+            ui.add_space(6.0);
+        }
         let entries = self.prepare_content_browser_state(ctx);
-        let actions = self.render_content_browser_body(ui, ctx, &entries, true);
+        let actions = self.render_content_browser_body(ui, ctx, &entries, false);
         self.apply_content_browser_actions(actions, ctx);
     }
 
-    /// Dedicated centered OS window for per-instance content browsing (+ Add Mod / Resource Pack / etc.).
-    pub(crate) fn render_content_browser_window(&mut self, ctx: &egui::Context) {
-        if !self.show_content_browser || self.browser_global_mode {
-            return;
-        }
-        let p = self.palette;
+    /// Inline single-category browser rendered directly inside the active instance tab.
+    pub(crate) fn render_inline_instance_browser(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+    ) {
+        self.browser_global_mode = false;
+        self.show_content_browser = false;
         let entries = self.prepare_content_browser_state(ctx);
-        let cat = self.browser_category;
-        let mut window_closed = false;
-        let mut actions = ContentBrowserActions::default();
-
-        let vp_id = egui::ViewportId::from_hash_of("mcw_vp_content_browser");
-        let builder = centered_viewport_builder(
-            ctx,
-            content_browser_window_title(self.browser_global_mode, cat),
-            [1020.0, 660.0],
-            [760.0, 480.0],
-        );
-
-        ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-            if vp_ctx.input(|i| i.viewport().close_requested()) {
-                window_closed = true;
-            }
-            if vp_ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                window_closed = true;
-            }
-
-            egui::CentralPanel::default()
-                .frame(Frame::new().fill(p.canvas).inner_margin(Margin::same(16)))
-                .show(vp_ctx, |ui| {
-                    actions = self.render_content_browser_body(ui, vp_ctx, &entries, false);
-                });
-        });
-
-        self.show_content_browser = !(window_closed || actions.close_requested);
+        let actions = self.render_content_browser_body(ui, ctx, &entries, true);
+        let close_inline = actions.close_requested;
         self.apply_content_browser_actions(actions, ctx);
+        if close_inline {
+            self.instance_inline_browser = None;
+            self.clear_remote_thumbs_if_idle();
+            self.ensure_active_tab_loaded(ctx);
+            self.record_nav_location();
+        }
     }
 
     fn render_content_browser_body(
@@ -143,7 +160,7 @@ impl McwApp {
         ui: &mut egui::Ui,
         key_ctx: &egui::Context,
         entries: &[BrowserEntry],
-        inline_page: bool,
+        locked_single_category: bool,
     ) -> ContentBrowserActions {
         let p = self.palette;
         let cat = self.browser_category;
@@ -157,7 +174,8 @@ impl McwApp {
                 .to_string()
         } else if let Some(ref inst) = selected_inst {
             format!(
-                "Target: {} (MC {} - {})",
+                "Installing {} for {} (MC {} - {})",
+                cat.label(),
                 inst.name,
                 inst.version_id,
                 display_loader_name(&inst.mod_loader.name)
@@ -174,14 +192,18 @@ impl McwApp {
         let mut switch_instance: Option<String> = None;
         let mut pending_install: Option<BrowserInstallAction> = None;
 
-        // Row 1: Title + Subtitle (left) and optional Close button (right for OS window)
-        ui.horizontal(|ui| {
+        // Row 1: Title + Subtitle (left) and Back button (right for inline instance tab)
+        ui.horizontal_wrapped(|ui| {
             ui.vertical(|ui| {
                 ui.label(
-                    RichText::new(cat.label())
-                        .size(if inline_page { 26.0 } else { 22.0 })
-                        .strong()
-                        .color(p.text),
+                    RichText::new(if locked_single_category {
+                        format!("Browse {}", cat.label())
+                    } else {
+                        cat.label().to_string()
+                    })
+                    .size(if locked_single_category { 18.0 } else { 26.0 })
+                    .strong()
+                    .color(p.text),
                 );
                 ui.label(
                     RichText::new(&target_subtitle)
@@ -189,10 +211,13 @@ impl McwApp {
                         .color(p.text_muted),
                 );
             });
-            if !inline_page {
+            if locked_single_category {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
-                        .add(Button::new("Close").corner_radius(CornerRadius::same(10)))
+                        .add(
+                            Button::new(RichText::new("← Back to Installed").strong())
+                                .corner_radius(CornerRadius::same(10)),
+                        )
                         .clicked()
                     {
                         close_requested = true;
@@ -203,48 +228,50 @@ impl McwApp {
 
         ui.add_space(6.0);
 
-        // Row 2: Full-width Category Pill Bar (responsive, zero wrapping)
-        Frame::new()
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0_f32, p.border))
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(Margin::symmetric(6, 5))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-                    for c in [
-                        BrowserCategory::Mods,
-                        BrowserCategory::Modpacks,
-                        BrowserCategory::ResourcePacks,
-                        BrowserCategory::ShaderPacks,
-                        BrowserCategory::DataPacks,
-                    ] {
-                        let active = c == cat;
-                        let btn = Button::new(
-                            RichText::new(c.label())
-                                .size(12.0)
-                                .strong()
-                                .color(if active { p.text } else { p.text_muted }),
-                        )
-                        .fill(if active {
-                            with_alpha(p.accent, 64)
-                        } else {
-                            Color32::TRANSPARENT
-                        })
-                        .stroke(if active {
-                            Stroke::new(1.0_f32, p.accent)
-                        } else {
-                            Stroke::NONE
-                        })
-                        .corner_radius(CornerRadius::same(9));
-                        if ui.add(btn).clicked() && !active {
-                            switch_category = Some(c);
+        if !locked_single_category {
+            // Row 2: Full-width Category Pill Bar (global Mod & Modpacks view only)
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(Margin::symmetric(6, 5))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        for c in [
+                            BrowserCategory::Mods,
+                            BrowserCategory::Modpacks,
+                            BrowserCategory::ResourcePacks,
+                            BrowserCategory::ShaderPacks,
+                            BrowserCategory::DataPacks,
+                        ] {
+                            let active = c == cat;
+                            let btn = Button::new(
+                                RichText::new(c.label())
+                                    .size(12.0)
+                                    .strong()
+                                    .color(if active { p.text } else { p.text_muted }),
+                            )
+                            .fill(if active {
+                                with_alpha(p.accent, 64)
+                            } else {
+                                Color32::TRANSPARENT
+                            })
+                            .stroke(if active {
+                                Stroke::new(1.0_f32, p.accent)
+                            } else {
+                                Stroke::NONE
+                            })
+                            .corner_radius(CornerRadius::same(9));
+                            if ui.add(btn).clicked() && !active {
+                                switch_category = Some(c);
+                            }
                         }
-                    }
+                    });
                 });
-            });
 
-        ui.add_space(10.0);
+            ui.add_space(10.0);
+        }
 
         // Filter Bar (ComboBoxes per Rule 6!)
         Frame::new()
@@ -384,6 +411,7 @@ impl McwApp {
                             trigger_search = true;
                         }
                     } else if !self.browser_global_mode
+                        && !locked_single_category
                         && cat != BrowserCategory::Modpacks
                         && !self.instances.is_empty()
                     {
@@ -829,43 +857,15 @@ impl McwApp {
                                         if let Some((msg, col)) = compat_msg {
                                             ui.label(RichText::new(msg).size(11.5).color(col));
                                         }
-                                        ui.add_space(12.0);
-
-                                        let can = self.can_install_browser_entry(
-                                            cat,
-                                            selected_inst.as_ref(),
-                                        );
-                                        let cta_lbl = match (&selected_inst, cat) {
-                                            (_, BrowserCategory::Modpacks) => {
-                                                "Install Modpack...".to_string()
-                                            }
-                                            (_, _) if self.browser_global_mode => {
-                                                "Choose Instance & Install...".to_string()
-                                            }
-                                            (Some(inst), _) => format!("Install in {}", inst.name),
-                                            (None, _) => "Select Instance First".to_string(),
-                                        };
-                                        let cta_btn = Button::new(
-                                            RichText::new(cta_lbl)
-                                                .color(p.accent_text)
-                                                .strong()
-                                                .size(13.0),
-                                        )
-                                        .fill(p.accent)
-                                        .min_size(Vec2::new(ui.available_width(), 36.0))
-                                        .corner_radius(CornerRadius::same(10));
-                                        if ui.add_enabled(can, cta_btn).clicked() {
-                                            pending_install = Some(entry.action.clone());
-                                        }
 
                                         if let Some(ref url) = entry.web_url {
-                                            ui.add_space(6.0);
+                                            ui.add_space(10.0);
                                             if ui
                                                 .add(
                                                     Button::new("Open Page")
                                                         .min_size(Vec2::new(
                                                             ui.available_width(),
-                                                            30.0,
+                                                            32.0,
                                                         ))
                                                         .corner_radius(CornerRadius::same(8)),
                                                 )

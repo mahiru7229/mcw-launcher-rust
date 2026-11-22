@@ -276,8 +276,7 @@ impl McwApp {
         let mut change_icon_clicked = false;
         let mut reset_icon_clicked = false;
         let mut open_content_cat: Option<BrowserCategory> = None;
-        let has_modrinth_pack =
-            ModrinthPackRegistry::load(&self.paths.instance_dir(&inst.instance_id)).is_some();
+        let has_official_modpack = tracked_pack.is_some();
 
         let export_label = self.t("modpack_package.export.title").to_string();
         let clone_lbl = self.t("workspace.action.clone").to_string();
@@ -455,7 +454,7 @@ impl McwApp {
                                 open_repair_center = true;
                                 ui.close_menu();
                             }
-                            if has_modrinth_pack
+                            if has_official_modpack
                                 && ui
                                     .add_enabled(!busy, Button::new("Check Modpack Update..."))
                                     .on_disabled_hover_text("Stop the instance before updating")
@@ -474,13 +473,7 @@ impl McwApp {
                             }
                             ui.separator();
                             if ui.button("Edit Group & Tags...").clicked() {
-                                if self.show_group_tags_modal {
-                                    focus_viewport(
-                                        ctx,
-                                        egui::ViewportId::from_hash_of("mcw_vp_group_tags"),
-                                        Some(&format!("Edit Group & Tags - {}", inst.name)),
-                                    );
-                                } else {
+                                if !self.show_group_tags_modal {
                                     self.edit_group_input = inst.group.clone();
                                     self.edit_tags_input = inst.tags.join(", ");
                                     self.show_group_tags_modal = true;
@@ -504,26 +497,14 @@ impl McwApp {
                                 .on_disabled_hover_text("Stop the instance before renaming")
                                 .clicked()
                             {
-                                if self.show_rename_modal {
-                                    focus_viewport(
-                                        ctx,
-                                        egui::ViewportId::from_hash_of("mcw_vp_rename_instance"),
-                                        Some(&format!("Rename Instance - {}", inst.name)),
-                                    );
-                                } else {
+                                if !self.show_rename_modal {
                                     self.rename_input = inst.name.clone();
                                     self.show_rename_modal = true;
                                 }
                                 ui.close_menu();
                             }
                             if ui.button(&clone_lbl).clicked() {
-                                if self.show_clone_modal {
-                                    focus_viewport(
-                                        ctx,
-                                        egui::ViewportId::from_hash_of("mcw_vp_clone_instance"),
-                                        None,
-                                    );
-                                } else {
+                                if !self.show_clone_modal {
                                     self.clone_name_input = format!("{} (Copy)", inst.name);
                                     self.clone_include_saves = false;
                                     self.show_clone_modal = true;
@@ -540,15 +521,7 @@ impl McwApp {
                                 .on_disabled_hover_text("Stop the instance before deleting")
                                 .clicked()
                             {
-                                if self.show_delete_modal {
-                                    focus_viewport(
-                                        ctx,
-                                        egui::ViewportId::from_hash_of("mcw_vp_delete_instance"),
-                                        Some(&format!("Delete Instance - {}", inst.name)),
-                                    );
-                                } else {
-                                    self.show_delete_modal = true;
-                                }
+                                self.show_delete_modal = true;
                                 ui.close_menu();
                             }
                         },
@@ -647,10 +620,14 @@ impl McwApp {
             .clicked()
             {
                 if settings_active {
-                    self.request_tab_switch(DetailTab::Mods, ctx);
+                    let fallback = if inst.mod_loader.is_vanilla() {
+                        DetailTab::Worlds
+                    } else {
+                        DetailTab::Mods
+                    };
+                    self.request_tab_switch(fallback, ctx);
                 } else {
-                    self.active_tab = DetailTab::Settings;
-                    self.sync_selected_from_cache();
+                    self.request_tab_switch(DetailTab::Settings, ctx);
                 }
             }
         });
@@ -792,33 +769,74 @@ impl McwApp {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(ui.available_height());
 
+                let is_vanilla = inst.mod_loader.is_vanilla();
+                if is_vanilla && matches!(self.active_tab, DetailTab::Mods | DetailTab::Shaders) {
+                    self.active_tab = DetailTab::Worlds;
+                    self.ensure_active_tab_loaded(ctx);
+                }
                 let mut switched_tab: Option<DetailTab> = None;
-                let tabs = [
-                    (
+                let tab_lbl = |base: String, active: bool, count: usize| -> String {
+                    if active {
+                        format!("{base} ({count})")
+                    } else {
+                        base
+                    }
+                };
+                let mut tabs: Vec<(DetailTab, String)> = Vec::new();
+                if !is_vanilla {
+                    tabs.push((
                         DetailTab::Mods,
-                        format!("{} ({})", self.t("Mods"), self.selected_mods.len()),
-                    ),
-                    (
-                        DetailTab::Worlds,
-                        format!("{} ({})", self.t("Worlds"), self.selected_worlds.len()),
-                    ),
-                    (DetailTab::ResourcePacks, "Resource packs".to_string()),
-                    (DetailTab::Shaders, "Shaders".to_string()),
-                    (
-                        DetailTab::Screenshots,
-                        format!(
-                            "{} ({})",
-                            self.t("Screenshots"),
-                            self.selected_screenshots.len()
+                        tab_lbl(
+                            self.t("Mods").to_string(),
+                            self.active_tab == DetailTab::Mods,
+                            self.selected_mods.len(),
                         ),
+                    ));
+                }
+                tabs.push((
+                    DetailTab::Worlds,
+                    tab_lbl(
+                        self.t("Worlds").to_string(),
+                        self.active_tab == DetailTab::Worlds,
+                        self.selected_worlds.len(),
                     ),
-                    (
-                        DetailTab::Backups,
-                        format!("{} ({})", self.t("Backups"), self.selected_backups.len()),
+                ));
+                tabs.push((
+                    DetailTab::ResourcePacks,
+                    tab_lbl(
+                        "Resource packs".to_string(),
+                        self.active_tab == DetailTab::ResourcePacks,
+                        self.selected_content_packs.len(),
                     ),
-                    (DetailTab::Logs, self.t("navigation.logs").to_string()),
-                    (DetailTab::Servers, "Servers & LAN".to_string()),
-                ];
+                ));
+                if !is_vanilla {
+                    tabs.push((
+                        DetailTab::Shaders,
+                        tab_lbl(
+                            "Shaders".to_string(),
+                            self.active_tab == DetailTab::Shaders,
+                            self.selected_content_packs.len(),
+                        ),
+                    ));
+                }
+                tabs.push((
+                    DetailTab::Screenshots,
+                    tab_lbl(
+                        self.t("Screenshots").to_string(),
+                        self.active_tab == DetailTab::Screenshots,
+                        self.selected_screenshots.len(),
+                    ),
+                ));
+                tabs.push((
+                    DetailTab::Backups,
+                    tab_lbl(
+                        self.t("Backups").to_string(),
+                        self.active_tab == DetailTab::Backups,
+                        self.selected_backups.len(),
+                    ),
+                ));
+                tabs.push((DetailTab::Logs, self.t("navigation.logs").to_string()));
+                tabs.push((DetailTab::Servers, "Servers & LAN".to_string()));
 
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);

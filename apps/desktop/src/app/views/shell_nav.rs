@@ -73,13 +73,8 @@ impl McwApp {
         }
     }
 
-    pub(crate) fn open_create_instance_dialog(&mut self, ctx: &egui::Context) {
+    pub(crate) fn open_create_instance_dialog(&mut self, _ctx: &egui::Context) {
         if self.show_create_modal {
-            focus_viewport(
-                ctx,
-                egui::ViewportId::from_hash_of("mcw_vp_create_instance"),
-                Some("Create Instance - MCW Launcher"),
-            );
             return;
         }
         self.create_tab = CreateInstanceTab::Custom;
@@ -235,12 +230,13 @@ impl McwApp {
                     }
 
                     ui.add_space(4.0);
-                    let can_back = self.can_go_back();
+                    let nav_allowed = !self.has_open_in_app_modal();
+                    let can_back = nav_allowed && self.can_go_back();
                     let back_resp = self.nav_arrow_button(ui, can_back, false);
                     if can_back && back_resp.clicked() {
                         go_back = true;
                     }
-                    let can_fwd = self.can_go_forward();
+                    let can_fwd = nav_allowed && self.can_go_forward();
                     let fwd_resp = self.nav_arrow_button(ui, can_fwd, true);
                     if can_fwd && fwd_resp.clicked() {
                         go_forward = true;
@@ -258,10 +254,7 @@ impl McwApp {
                                 for (target, label) in &items {
                                     let active = match target {
                                         NavTarget::Home => self.active_page == AppPage::Home,
-                                        NavTarget::Mods => {
-                                            self.active_page == AppPage::Modpacks
-                                                || self.show_content_browser
-                                        }
+                                        NavTarget::Mods => self.active_page == AppPage::Modpacks,
                                         NavTarget::Versions => {
                                             self.active_page == AppPage::Versions
                                         }
@@ -697,8 +690,8 @@ impl McwApp {
             return;
         }
         let elapsed = self.startup_splash_started_at.elapsed().as_secs_f32();
-        const TOTAL_SECS: f32 = 1.35;
-        const FADE_SECS: f32 = 0.25;
+        const TOTAL_SECS: f32 = 2.40;
+        const FADE_SECS: f32 = 0.35;
         if elapsed >= TOTAL_SECS {
             self.startup_splash_done = true;
             return;
@@ -712,45 +705,74 @@ impl McwApp {
         } else {
             1.0
         };
-        let intro_t = (elapsed / 0.35).clamp(0.0, 1.0);
-        let logo_scale = 0.88 + 0.12 * (1.0 - (1.0 - intro_t).powi(3));
+        let intro_t = (elapsed / 0.45).clamp(0.0, 1.0);
+        let ease_intro = 1.0 - (1.0 - intro_t).powi(3);
+        let logo_scale = 0.84 + 0.16 * ease_intro;
+        let title_alpha = ((elapsed - 0.15) / 0.40).clamp(0.0, 1.0) * alpha;
+        let title_slide_y = (1.0 - ((elapsed - 0.15) / 0.40).clamp(0.0, 1.0)) * 8.0;
+        let sub_alpha = ((elapsed - 0.35) / 0.40).clamp(0.0, 1.0) * alpha;
+        let pulse = (elapsed * 2.4).sin() * 0.5 + 0.5;
 
-        let fade_u8 = |col: Color32, base_a: u8| -> Color32 {
-            let a = ((f32::from(base_a)) * alpha).round().clamp(0.0, 255.0) as u8;
+        let fade_u8 = |col: Color32, base_a: u8, mult: f32| -> Color32 {
+            let a = ((f32::from(base_a)) * mult).round().clamp(0.0, 255.0) as u8;
             Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), a)
         };
 
-        let status_key = if progress < 0.40 {
+        let status_key = if progress < 0.35 {
             "startup.stage.init"
-        } else if progress < 0.85 {
+        } else if progress < 0.82 {
             "startup.stage.loading"
         } else {
             "startup.stage.ready"
         };
         let status_text = self.t(status_key).to_string();
         let screen = ctx.screen_rect();
+        let mut skip_now = false;
+
+        if elapsed >= 0.45
+            && ctx.input(|i| {
+                i.key_pressed(egui::Key::Escape)
+                    || i.key_pressed(egui::Key::Enter)
+                    || i.key_pressed(egui::Key::Space)
+            })
+        {
+            skip_now = true;
+        }
 
         egui::Area::new(Id::new("mcw_startup_splash"))
             .order(Order::Foreground)
             .fixed_pos(screen.min)
             .interactable(true)
             .show(ctx, |ui| {
-                ui.set_min_size(screen.size());
-                ui.set_max_size(screen.size());
-                let bg_col = fade_u8(Color32::from_rgb(7, 9, 14), 255);
+                let (_, bg_resp) = ui.allocate_exact_size(screen.size(), Sense::click());
+                if elapsed >= 0.45 && bg_resp.clicked() {
+                    skip_now = true;
+                }
+                let bg_col = fade_u8(Color32::from_rgb(7, 9, 14), 255, alpha);
                 ui.painter().rect_filled(screen, 0.0, bg_col);
 
                 let center = screen.center();
-                let logo_side = 76.0 * logo_scale;
-                let logo_rect = egui::Rect::from_center_size(
-                    egui::pos2(center.x, center.y - 68.0),
-                    Vec2::splat(logo_side),
+                let logo_center = egui::pos2(center.x, center.y - 72.0);
+                // Ambient pulsing glow rings behind logo
+                let glow_r = 56.0 + pulse * 8.0;
+                ui.painter().circle_filled(
+                    logo_center,
+                    glow_r,
+                    fade_u8(p.accent, (22.0 + pulse * 14.0) as u8, alpha),
                 );
+                ui.painter().circle_stroke(
+                    logo_center,
+                    glow_r + 10.0,
+                    Stroke::new(1.2_f32, fade_u8(p.accent, 65, alpha)),
+                );
+
+                let logo_side = 80.0 * logo_scale;
+                let logo_rect = egui::Rect::from_center_size(logo_center, Vec2::splat(logo_side));
                 ui.painter().rect(
-                    logo_rect.expand(6.0),
+                    logo_rect.expand(7.0),
                     CornerRadius::same(22),
-                    fade_u8(p.surface, 235),
-                    Stroke::new(1.5_f32, fade_u8(p.accent, 210)),
+                    fade_u8(p.surface, 238, alpha),
+                    Stroke::new(1.6_f32, fade_u8(p.accent, 220, alpha)),
                     egui::StrokeKind::Outside,
                 );
                 if let Some(ref tex) = self.app_logo_texture {
@@ -758,29 +780,37 @@ impl McwApp {
                         tex.id(),
                         logo_rect,
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        fade_u8(Color32::WHITE, 255),
+                        fade_u8(Color32::WHITE, 255, alpha),
                     );
                 }
 
                 ui.painter().text(
-                    egui::pos2(center.x, center.y + 4.0),
+                    egui::pos2(center.x, center.y + 4.0 + title_slide_y),
                     egui::Align2::CENTER_CENTER,
                     "MCW Launcher: Rust Edition",
-                    egui::FontId::proportional(24.0),
-                    fade_u8(p.text, 255),
+                    egui::FontId::proportional(25.0),
+                    fade_u8(p.text, 255, title_alpha),
+                );
+
+                ui.painter().text(
+                    egui::pos2(center.x, center.y + 30.0),
+                    egui::Align2::CENTER_CENTER,
+                    "Fast Native Minecraft Workspace",
+                    egui::FontId::proportional(12.5),
+                    fade_u8(p.text_muted, 235, sub_alpha),
                 );
 
                 let ver_text = format!("v{}", mcw_models::APP_VERSION);
                 let pill_w = (ver_text.len() as f32 * 7.5 + 28.0).max(96.0);
                 let pill_rect = egui::Rect::from_center_size(
-                    egui::pos2(center.x, center.y + 34.0),
+                    egui::pos2(center.x, center.y + 56.0),
                     Vec2::new(pill_w, 22.0),
                 );
                 ui.painter().rect(
                     pill_rect,
                     CornerRadius::same(11),
-                    fade_u8(p.surface, 220),
-                    Stroke::new(1.0_f32, fade_u8(p.accent, 140)),
+                    fade_u8(p.surface, 225, sub_alpha),
+                    Stroke::new(1.0_f32, fade_u8(p.accent, 150, sub_alpha)),
                     egui::StrokeKind::Inside,
                 );
                 ui.painter().text(
@@ -788,31 +818,57 @@ impl McwApp {
                     egui::Align2::CENTER_CENTER,
                     ver_text,
                     egui::FontId::monospace(11.5),
-                    fade_u8(p.accent, 255),
+                    fade_u8(p.accent, 255, sub_alpha),
                 );
 
-                let bar_w = (screen.width() * 0.34).clamp(240.0, 360.0);
+                let bar_w = (screen.width() * 0.36).clamp(250.0, 380.0);
                 let bar_rect = egui::Rect::from_center_size(
-                    egui::pos2(center.x, center.y + 66.0),
+                    egui::pos2(center.x, center.y + 88.0),
                     Vec2::new(bar_w, 7.0),
                 );
-                ui.painter()
-                    .rect_filled(bar_rect, CornerRadius::same(4), fade_u8(p.surface, 230));
-                let fill_w = (bar_rect.width() * progress).max(8.0);
+                ui.painter().rect_filled(
+                    bar_rect,
+                    CornerRadius::same(4),
+                    fade_u8(p.surface, 230, alpha),
+                );
+                let fill_w = (bar_rect.width() * progress).max(10.0);
                 let fill_rect =
                     egui::Rect::from_min_size(bar_rect.min, Vec2::new(fill_w, bar_rect.height()));
-                ui.painter()
-                    .rect_filled(fill_rect, CornerRadius::same(4), fade_u8(p.accent, 255));
+                ui.painter().rect_filled(
+                    fill_rect,
+                    CornerRadius::same(4),
+                    fade_u8(p.accent, 255, alpha),
+                );
+                let lead_pos = egui::pos2(fill_rect.right(), fill_rect.center().y);
+                ui.painter().circle_filled(
+                    lead_pos,
+                    5.5,
+                    fade_u8(Color32::WHITE, (130.0 * (1.0 - raw_t * 0.4)) as u8, alpha),
+                );
 
                 ui.painter().text(
-                    egui::pos2(center.x, center.y + 88.0),
+                    egui::pos2(center.x, center.y + 112.0),
                     egui::Align2::CENTER_CENTER,
                     status_text,
                     egui::FontId::proportional(12.5),
-                    fade_u8(p.text_muted, 255),
+                    fade_u8(p.text_muted, 255, sub_alpha),
                 );
+                if elapsed >= 0.80 {
+                    let hint_a = ((elapsed - 0.80) / 0.35).clamp(0.0, 1.0) * alpha;
+                    ui.painter().text(
+                        egui::pos2(center.x, screen.bottom() - 28.0),
+                        egui::Align2::CENTER_CENTER,
+                        "Click anywhere or press Space to continue",
+                        egui::FontId::proportional(11.0),
+                        fade_u8(p.text_muted, 150, hint_a),
+                    );
+                }
             });
 
+        if skip_now {
+            self.startup_splash_done = true;
+            return;
+        }
         ctx.request_repaint();
     }
 }

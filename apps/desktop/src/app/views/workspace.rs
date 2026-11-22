@@ -129,10 +129,16 @@ impl McwApp {
         ctx: &egui::Context,
         inst: &Instance,
     ) {
+        if self.instance_inline_browser == Some(BrowserCategory::Mods) {
+            self.render_inline_instance_browser(ui, ctx);
+            return;
+        }
         let p = self.palette;
         let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
         let inst_dir = self.paths.instance_dir(&inst.instance_id);
         let provenance = ModProvenanceRegistry::load(&inst_dir);
+        let modpack_protected = self.is_instance_modpack_protected(inst);
+        let has_official_pack = detect_installed_pack(&inst_dir).is_some();
         let unlocked_updates = self
             .mod_update_candidates
             .iter()
@@ -156,26 +162,38 @@ impl McwApp {
                 self.open_content_browser(BrowserCategory::Mods, None, ctx);
             }
 
-            let check_lbl = if self.checking_mod_updates {
-                "Checking Updates..."
-            } else {
-                "Check Mod Updates"
-            };
-            if ui
-                .add_enabled(!self.checking_mod_updates, Button::new(check_lbl))
-                .clicked()
-            {
-                self.start_check_mod_updates(ctx);
+            if has_official_pack {
+                let busy = self.is_instance_busy(&inst.instance_id);
+                if ui
+                    .add_enabled(!busy, Button::new("Check Modpack Update"))
+                    .on_disabled_hover_text("Stop the instance before updating")
+                    .clicked()
+                {
+                    self.open_modpack_update_window(inst.instance_id.clone(), ctx);
+                }
             }
-            if unlocked_updates > 0 {
-                let upd_btn = Button::new(
-                    RichText::new(format!("Update Unlocked ({unlocked_updates})"))
-                        .color(p.accent_text)
-                        .strong(),
-                )
-                .fill(p.accent);
-                if ui.add(upd_btn).clicked() {
-                    self.start_apply_mod_updates(ctx);
+            if !modpack_protected {
+                let check_lbl = if self.checking_mod_updates {
+                    "Checking Updates..."
+                } else {
+                    "Check Mod Updates"
+                };
+                if ui
+                    .add_enabled(!self.checking_mod_updates, Button::new(check_lbl))
+                    .clicked()
+                {
+                    self.start_check_mod_updates(ctx);
+                }
+                if unlocked_updates > 0 {
+                    let upd_btn = Button::new(
+                        RichText::new(format!("Update Unlocked ({unlocked_updates})"))
+                            .color(p.accent_text)
+                            .strong(),
+                    )
+                    .fill(p.accent);
+                    if ui.add(upd_btn).clicked() {
+                        self.start_apply_mod_updates(ctx);
+                    }
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -200,43 +218,45 @@ impl McwApp {
             });
         });
         let mut open_compat_repair = false;
-        if let Some(ref compat_rep) = self.mod_compat_report {
-            if !compat_rep.issues.is_empty() {
-                ui.add_space(4.0);
-                let frame_col = if compat_rep.error_count > 0 {
-                    p.danger
-                } else {
-                    p.warning
-                };
-                Frame::new()
-                    .fill(p.elevated)
-                    .stroke(Stroke::new(1.0_f32, frame_col))
-                    .corner_radius(CornerRadius::same(10))
-                    .inner_margin(egui::Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "Compatibility Check: {} error(s), {} warning(s)",
-                                    compat_rep.error_count, compat_rep.warning_count
-                                ))
-                                .strong()
-                                .size(11.5)
-                                .color(frame_col),
-                            );
-                            if ui.button("Open Repair Center...").clicked() {
-                                open_compat_repair = true;
+        if !modpack_protected {
+            if let Some(ref compat_rep) = self.mod_compat_report {
+                if !compat_rep.issues.is_empty() {
+                    ui.add_space(4.0);
+                    let frame_col = if compat_rep.error_count > 0 {
+                        p.danger
+                    } else {
+                        p.warning
+                    };
+                    Frame::new()
+                        .fill(p.elevated)
+                        .stroke(Stroke::new(1.0_f32, frame_col))
+                        .corner_radius(CornerRadius::same(10))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Compatibility Check: {} error(s), {} warning(s)",
+                                        compat_rep.error_count, compat_rep.warning_count
+                                    ))
+                                    .strong()
+                                    .size(11.5)
+                                    .color(frame_col),
+                                );
+                                if ui.button("Open Repair Center...").clicked() {
+                                    open_compat_repair = true;
+                                }
+                            });
+                            for issue in compat_rep.issues.iter().take(2) {
+                                ui.label(
+                                    RichText::new(format!("• {}", issue.message))
+                                        .size(11.0)
+                                        .color(p.text_muted),
+                                );
                             }
                         });
-                        for issue in compat_rep.issues.iter().take(2) {
-                            ui.label(
-                                RichText::new(format!("• {}", issue.message))
-                                    .size(11.0)
-                                    .color(p.text_muted),
-                            );
-                        }
-                    });
+                }
             }
         }
         if open_compat_repair {
@@ -300,24 +320,27 @@ impl McwApp {
                                                     .color(p.warning),
                                             );
                                         }
-                                        let clean_fname = m.file_name.trim_end_matches(".disabled");
-                                        if let Some(cand) =
-                                            self.mod_update_candidates.iter().find(|c| {
-                                                c.current_file_name.trim_end_matches(".disabled")
-                                                    == clean_fname
-                                            })
-                                        {
-                                            if cand.update_available {
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "UPDATE -> {}",
-                                                        cand.latest_version_number
-                                                    ))
-                                                    .strong()
-                                                    .monospace()
-                                                    .size(10.5)
-                                                    .color(p.accent),
-                                                );
+                                        if !modpack_protected {
+                                            let clean_fname =
+                                                m.file_name.trim_end_matches(".disabled");
+                                            if let Some(cand) =
+                                                self.mod_update_candidates.iter().find(|c| {
+                                                    c.current_file_name.trim_end_matches(".disabled")
+                                                        == clean_fname
+                                                })
+                                            {
+                                                if cand.update_available {
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "UPDATE -> {}",
+                                                            cand.latest_version_number
+                                                        ))
+                                                        .strong()
+                                                        .monospace()
+                                                        .size(10.5)
+                                                        .color(p.accent),
+                                                    );
+                                                }
                                             }
                                         }
                                     });
@@ -333,28 +356,32 @@ impl McwApp {
                                     {
                                         delete_action = Some(m.file_name.clone());
                                     }
-                                    let clean_fname = m.file_name.trim_end_matches(".disabled");
-                                    if let Some(tracked) = provenance.mods.values().find(|e| {
-                                        e.file_name.trim_end_matches(".disabled") == clean_fname
-                                    }) {
-                                        let lock_lbl =
-                                            if tracked.locked { "Locked" } else { "Lock" };
-                                        let lock_col = if tracked.locked {
-                                            p.warning
-                                        } else {
-                                            p.text_muted
-                                        };
-                                        if ui
-                                            .button(
-                                                RichText::new(lock_lbl).size(11.0).color(lock_col),
-                                            )
-                                            .on_hover_text(
-                                                "Lock or unlock this mod from automatic updates",
-                                            )
-                                            .clicked()
-                                        {
-                                            lock_toggle_action =
-                                                Some((m.file_name.clone(), !tracked.locked));
+                                    if !modpack_protected {
+                                        let clean_fname = m.file_name.trim_end_matches(".disabled");
+                                        if let Some(tracked) = provenance.mods.values().find(|e| {
+                                            e.file_name.trim_end_matches(".disabled") == clean_fname
+                                        }) {
+                                            let lock_lbl =
+                                                if tracked.locked { "Locked" } else { "Lock" };
+                                            let lock_col = if tracked.locked {
+                                                p.warning
+                                            } else {
+                                                p.text_muted
+                                            };
+                                            if ui
+                                                .button(
+                                                    RichText::new(lock_lbl)
+                                                        .size(11.0)
+                                                        .color(lock_col),
+                                                )
+                                                .on_hover_text(
+                                                    "Lock or unlock this mod from automatic updates",
+                                                )
+                                                .clicked()
+                                            {
+                                                lock_toggle_action =
+                                                    Some((m.file_name.clone(), !tracked.locked));
+                                            }
                                         }
                                     }
                                 });
@@ -426,6 +453,10 @@ impl McwApp {
                 BrowserCategory::DataPacks,
             ),
         };
+        if self.instance_inline_browser == Some(browser_cat) {
+            self.render_inline_instance_browser(ui, ctx);
+            return;
+        }
 
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(section_title).strong().color(p.text));
@@ -1220,6 +1251,25 @@ impl McwApp {
                                 apply_runtime = true;
                             }
                         });
+                        ui.add_space(6.0);
+                        let is_pack_default = is_verified_or_imported_modpack(
+                            &self.paths.instance_dir(&inst.instance_id),
+                            &inst.icon_origin,
+                        );
+                        let mut disable_prot =
+                            settings.is_mod_repair_and_update_disabled(is_pack_default);
+                        if ui
+                            .checkbox(
+                                &mut disable_prot,
+                                "Disable Mod Repair & Mod Updates (Recommended for modpacks)",
+                            )
+                            .on_hover_text(
+                                "Hides individual mod update checks and compatibility repair prompts in the Mods tab to avoid breaking curated modpacks.",
+                            )
+                            .changed()
+                        {
+                            settings.disable_mod_repair_and_updates = Some(disable_prot);
+                        }
 
                         ui.add_space(10.0);
                         ui.separator();
@@ -1383,7 +1433,7 @@ impl McwApp {
                         ui.horizontal_wrapped(|ui| {
                             ui.add(
                                 TextEdit::singleline(&mut self.optifine_jar_input)
-                                    .hint_text("C:\\Users\\...\\Downloads\\OptiFine_1.20.4_HD_U_I7.jar")
+                                    .hint_text("Select or paste path to OptiFine .jar...")
                                     .desired_width(300.0),
                             );
                             if ui.button(&browse_lbl).clicked() {

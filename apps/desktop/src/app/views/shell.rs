@@ -152,18 +152,10 @@ impl McwApp {
         if open_repair {
             self.open_repair_center(&inst.instance_id, ctx);
         }
-        if open_tags {
-            if self.show_group_tags_modal {
-                focus_viewport(
-                    ctx,
-                    egui::ViewportId::from_hash_of("mcw_vp_group_tags"),
-                    Some(&format!("Edit Group & Tags - {}", inst.name)),
-                );
-            } else {
-                self.edit_group_input = inst.group.clone();
-                self.edit_tags_input = inst.tags.join(", ");
-                self.show_group_tags_modal = true;
-            }
+        if open_tags && !self.show_group_tags_modal {
+            self.edit_group_input = inst.group.clone();
+            self.edit_tags_input = inst.tags.join(", ");
+            self.show_group_tags_modal = true;
         }
         if change_icon {
             if let Some(chosen) = pick_file_dialog(
@@ -182,41 +174,17 @@ impl McwApp {
                 }
             }
         }
-        if open_clone {
-            if self.show_clone_modal {
-                focus_viewport(
-                    ctx,
-                    egui::ViewportId::from_hash_of("mcw_vp_clone_instance"),
-                    None,
-                );
-            } else {
-                self.clone_name_input = format!("{} (Copy)", inst.name);
-                self.clone_include_saves = false;
-                self.show_clone_modal = true;
-            }
+        if open_clone && !self.show_clone_modal {
+            self.clone_name_input = format!("{} (Copy)", inst.name);
+            self.clone_include_saves = false;
+            self.show_clone_modal = true;
         }
-        if open_rename {
-            if self.show_rename_modal {
-                focus_viewport(
-                    ctx,
-                    egui::ViewportId::from_hash_of("mcw_vp_rename_instance"),
-                    Some(&format!("Rename Instance - {}", inst.name)),
-                );
-            } else {
-                self.rename_input = inst.name.clone();
-                self.show_rename_modal = true;
-            }
+        if open_rename && !self.show_rename_modal {
+            self.rename_input = inst.name.clone();
+            self.show_rename_modal = true;
         }
         if open_delete {
-            if self.show_delete_modal {
-                focus_viewport(
-                    ctx,
-                    egui::ViewportId::from_hash_of("mcw_vp_delete_instance"),
-                    Some(&format!("Delete Instance - {}", inst.name)),
-                );
-            } else {
-                self.show_delete_modal = true;
-            }
+            self.show_delete_modal = true;
         }
     }
 
@@ -389,17 +357,7 @@ impl McwApp {
                             let hidden = total_tasks - 2;
                             let btn_label = format!("View All ({total_tasks}, +{hidden} more)");
                             if ui.button(btn_label).clicked() {
-                                if self.show_all_tasks_modal {
-                                    focus_viewport(
-                                        ctx,
-                                        egui::ViewportId::from_hash_of("mcw_vp_all_tasks"),
-                                        Some(&format!(
-                                            "All Active Tasks ({total_tasks}) - MCW Launcher"
-                                        )),
-                                    );
-                                } else {
-                                    self.show_all_tasks_modal = true;
-                                }
+                                self.show_all_tasks_modal = true;
                             }
                         });
                     }
@@ -456,59 +414,56 @@ impl McwApp {
                 }
             });
 
-        // Overflow isolated OS window when > 2 tasks are running and user clicked "View All"
+        // In-app centered modal when > 2 tasks are running and user clicked "View All"
         if self.show_all_tasks_modal && total_tasks > 2 {
             let mut open = self.show_all_tasks_modal;
-            let vp_id = egui::ViewportId::from_hash_of("mcw_vp_all_tasks");
-            let builder = centered_viewport_builder(
+            let tasks = self.active_tasks.clone();
+            let notice = self.notice_banner.clone();
+            let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
                 ctx,
-                format!("All Active Tasks ({total_tasks}) - MCW Launcher"),
-                [560.0, 420.0],
-                [380.0, 260.0],
+                "mcw_all_tasks_modal",
+                &format!("All Active Tasks ({total_tasks})"),
+                [560.0, 440.0],
+                [360.0, 260.0],
+                p,
+                notice.as_ref(),
+                |ui| {
+                    if !speed_text.is_empty() {
+                        ui.label(
+                            RichText::new(format!("Network Speed: {speed_text}"))
+                                .monospace()
+                                .size(11.5)
+                                .color(p.accent),
+                        );
+                        ui.add_space(6.0);
+                    }
+                    ScrollArea::vertical()
+                        .id_salt("all_active_tasks_modal_scroll")
+                        .show(ui, |ui| {
+                            for task in &tasks {
+                                Self::render_single_task_card(
+                                    ui,
+                                    p,
+                                    task,
+                                    &speed_text,
+                                    &pause_lbl,
+                                    &resume_lbl,
+                                    &cancel_lbl,
+                                    &paused_badge,
+                                    &cancelling_badge,
+                                    motion_secs,
+                                );
+                                ui.add_space(4.0);
+                            }
+                        });
+                },
             );
-            ctx.show_viewport_immediate(vp_id, builder, |vp_ctx, _class| {
-                if vp_ctx
-                    .input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
-                {
-                    open = false;
-                }
-                egui::CentralPanel::default()
-                    .frame(
-                        Frame::new()
-                            .fill(p.canvas)
-                            .inner_margin(egui::Margin::same(12)),
-                    )
-                    .show(vp_ctx, |ui| {
-                        if !speed_text.is_empty() {
-                            ui.label(
-                                RichText::new(format!("Network Speed: {speed_text}"))
-                                    .monospace()
-                                    .size(11.5)
-                                    .color(p.accent),
-                            );
-                            ui.add_space(6.0);
-                        }
-                        ScrollArea::vertical()
-                            .id_salt("all_active_tasks_modal_scroll")
-                            .show(ui, |ui| {
-                                for task in &self.active_tasks {
-                                    Self::render_single_task_card(
-                                        ui,
-                                        p,
-                                        task,
-                                        &speed_text,
-                                        &pause_lbl,
-                                        &resume_lbl,
-                                        &cancel_lbl,
-                                        &paused_badge,
-                                        &cancelling_badge,
-                                        motion_secs,
-                                    );
-                                    ui.add_space(4.0);
-                                }
-                            });
-                    });
-            });
+            if !keep_open {
+                open = false;
+            }
+            if dismiss_notice {
+                self.notice_banner = None;
+            }
             self.show_all_tasks_modal = open;
         }
     }

@@ -79,7 +79,7 @@ impl AtLauncherPack {
 }
 
 pub struct AtLauncherClient {
-    http: reqwest::Client,
+    pub(crate) http: reqwest::Client,
     cache: Option<Arc<ApiCache>>,
 }
 
@@ -326,19 +326,19 @@ impl AtLauncherClient {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| pack.name.trim());
-        let mut candidate_name = if base_name.is_empty() {
-            safe_name.clone()
+        let raw_base = if base_name.is_empty() {
+            safe_name.as_str()
         } else {
-            base_name.to_string()
+            base_name
         };
-        let mut idx = 2usize;
-        while store.load_instance(&candidate_name).is_ok() {
-            candidate_name = format!("{base_name} ({idx})");
-            idx += 1;
-        }
-        let (inst, _) = store
+        let candidate_name = store
+            .resolve_unique_instance_name(raw_base)
+            .map_err(|e| ProviderError::Io(std::io::Error::other(e.to_string())))?;
+        let (inst, mut inst_settings) = store
             .create_instance(&candidate_name, &game_version, loader.clone())
             .map_err(|e| ProviderError::Io(std::io::Error::other(e.to_string())))?;
+        inst_settings.disable_mod_repair_and_updates = Some(true);
+        let _ = store.save_settings(&inst.instance_id, &inst_settings);
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
         let mods_dir = mc_dir.join("mods");
         fs::create_dir_all(&mods_dir)?;
@@ -453,7 +453,7 @@ impl AtLauncherClient {
     }
 }
 
-fn is_atlauncher_loader_entry(mod_type: &str, mod_name: &str) -> bool {
+pub(crate) fn is_atlauncher_loader_entry(mod_type: &str, mod_name: &str) -> bool {
     let t = mod_type.trim().to_ascii_lowercase();
     let n = mod_name.trim().to_ascii_lowercase();
     t == "forge"
@@ -464,7 +464,7 @@ fn is_atlauncher_loader_entry(mod_type: &str, mod_name: &str) -> bool {
 }
 
 /// Extract and normalize ATLauncher modloader from `Configs.json` (matching Python `ATLauncherClient._loader`).
-fn parse_atlauncher_loader(cfg: &serde_json::Value, game_version: &str) -> ModLoader {
+pub(crate) fn parse_atlauncher_loader(cfg: &serde_json::Value, game_version: &str) -> ModLoader {
     if let Some(l) = cfg.get("loader").and_then(|v| v.as_object()) {
         let ltype = l.get("type").and_then(|v| v.as_str()).unwrap_or("").trim();
         let meta = l.get("metadata").and_then(|v| v.as_object());

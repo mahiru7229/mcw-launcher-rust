@@ -130,6 +130,75 @@ fn validate_not_same_root(source_root: &Path, dest_root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn score_python_root_candidate(dir: &Path) -> u8 {
+    if !dir.join("instances").is_dir() {
+        return 0;
+    }
+    let mut score = 1u8;
+    if dir.join("config").join("launcher_settings.json").is_file() {
+        score += 2;
+    }
+    if dir.join("runtimes").is_dir() {
+        score += 1;
+    }
+    if dir.join("accounts").is_dir() {
+        score += 1;
+    }
+    score
+}
+
+/// Auto-detects the actual MCW Launcher Python root directory when given either
+/// the root folder itself, a direct subfolder (`instances/`, `config/`, `runtimes/`, `accounts/`),
+/// or a parent container folder up to 2 directory levels deep.
+pub fn resolve_python_launcher_root(selected_path: &Path) -> Option<PathBuf> {
+    if !selected_path.is_dir() {
+        return None;
+    }
+    if selected_path.join("instances").is_dir() {
+        return Some(selected_path.to_path_buf());
+    }
+    if let Some(name) = selected_path.file_name().and_then(|n| n.to_str()) {
+        if matches!(
+            name.to_ascii_lowercase().as_str(),
+            "instances" | "config" | "runtimes" | "accounts"
+        ) {
+            if let Some(parent) = selected_path.parent() {
+                if parent.join("instances").is_dir() {
+                    return Some(parent.to_path_buf());
+                }
+            }
+        }
+    }
+
+    let mut best: Option<(u8, PathBuf)> = None;
+    let Ok(depth1) = fs::read_dir(selected_path) else {
+        return None;
+    };
+    for entry in depth1.flatten() {
+        let p1 = entry.path();
+        if !p1.is_dir() {
+            continue;
+        }
+        let s1 = score_python_root_candidate(&p1);
+        if s1 > best.as_ref().map(|(s, _)| *s).unwrap_or(0) {
+            best = Some((s1, p1.clone()));
+        }
+        if let Ok(depth2) = fs::read_dir(&p1) {
+            for e2 in depth2.flatten() {
+                let p2 = e2.path();
+                if !p2.is_dir() {
+                    continue;
+                }
+                let s2 = score_python_root_candidate(&p2);
+                if s2 > best.as_ref().map(|(s, _)| *s).unwrap_or(0) {
+                    best = Some((s2, p2));
+                }
+            }
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
 /// Strictly read-only inspection of an existing MCW Launcher Python installation directory
 /// (supports both legacy 1.8.x `.minecraft/` layout and modern 2.x/v0.5+ flat layout).
 pub fn inspect_python_launcher(
@@ -145,9 +214,11 @@ pub fn inspect_python_launcher(
             ),
         });
     }
-    validate_not_same_root(source_root, &dest_paths.project_root)?;
+    let resolved_root =
+        resolve_python_launcher_root(source_root).unwrap_or_else(|| source_root.to_path_buf());
+    validate_not_same_root(&resolved_root, &dest_paths.project_root)?;
 
-    let src_instances = source_root.join("instances");
+    let src_instances = resolved_root.join("instances");
     if !src_instances.is_dir() {
         return Err(StorageError::Io {
             path: src_instances.display().to_string(),
@@ -159,12 +230,12 @@ pub fn inspect_python_launcher(
     }
 
     let mut inspection = PythonMigrationInspection {
-        source_root: source_root.to_path_buf(),
-        has_launcher_settings: source_root
+        source_root: resolved_root.clone(),
+        has_launcher_settings: resolved_root
             .join("config")
             .join("launcher_settings.json")
             .is_file(),
-        has_accounts_db: source_root.join("accounts").join("accounts.db").is_file(),
+        has_accounts_db: resolved_root.join("accounts").join("accounts.db").is_file(),
         ..Default::default()
     };
 
@@ -234,7 +305,7 @@ pub fn inspect_python_launcher(
     inspection.instances.sort_by_key(|a| a.name.to_lowercase());
 
     // Detect valid managed Java runtimes (`runtimes/java-*` containing `bin/java(.exe)`)
-    let src_runtimes = source_root.join("runtimes");
+    let src_runtimes = resolved_root.join("runtimes");
     if src_runtimes.is_dir() {
         if let Ok(entries) = fs::read_dir(&src_runtimes) {
             for entry in entries.flatten() {
@@ -256,7 +327,7 @@ pub fn inspect_python_launcher(
     }
 
     // Detect custom themes (`themes/<id>` with `theme.json` or standalone `.json`, skipping `mcw-default`)
-    let src_themes = source_root.join("themes");
+    let src_themes = resolved_root.join("themes");
     if src_themes.is_dir() {
         if let Ok(entries) = fs::read_dir(&src_themes) {
             for entry in entries.flatten() {
@@ -294,6 +365,7 @@ pub fn migrate_from_python_launcher(
     progress_cb: Option<&dyn Fn(usize, usize, String)>,
 ) -> Result<PythonMigrationResult> {
     let inspection = inspect_python_launcher(source_root, dest_paths)?;
+    let resolved_root = inspection.source_root.clone();
     let selected: HashSet<&str> = options
         .selected_folders
         .iter()
@@ -331,7 +403,7 @@ pub fn migrate_from_python_launcher(
 
     // Import managed Java runtimes FIRST so instance settings can remap `runtimes/...` paths cleanly.
     if options.import_runtimes {
-        let src_runtimes = source_root.join("runtimes");
+        let src_runtimes = resolved_root.join("runtimes");
         for rt_name in &inspection.managed_runtimes {
             step += 1;
             if let Some(cb) = progress_cb {
@@ -360,7 +432,7 @@ pub fn migrate_from_python_launcher(
 
     // Import custom themes
     if options.import_themes {
-        let src_themes = source_root.join("themes");
+        let src_themes = resolved_root.join("themes");
         for theme_name in &inspection.custom_themes {
             step += 1;
             if let Some(cb) = progress_cb {
@@ -400,7 +472,7 @@ pub fn migrate_from_python_launcher(
                 "Importing global launcher preferences...".to_string(),
             );
         }
-        let settings_file = source_root.join("config").join("launcher_settings.json");
+        let settings_file = resolved_root.join("config").join("launcher_settings.json");
         match fs::read_to_string(&settings_file)
             .ok()
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
@@ -415,7 +487,7 @@ pub fn migrate_from_python_launcher(
     }
 
     let store = InstanceStore::new(dest_paths);
-    let src_instances = source_root.join("instances");
+    let src_instances = resolved_root.join("instances");
     for item in chosen_instances {
         step += 1;
         if let Some(cb) = progress_cb {
@@ -493,7 +565,7 @@ pub fn migrate_from_python_launcher(
             .unwrap_or_default();
         sanitize_instance_java_path(
             &mut settings,
-            source_root,
+            &resolved_root,
             dest_paths,
             &target_id,
             &mut result.warnings,
@@ -1536,5 +1608,36 @@ mod tests {
             vec!["Fabulously Optimized (Imported)".to_string()]
         );
         assert!(fo_dir.join("mods").join("sodium.jar").is_file());
+    }
+
+    #[test]
+    fn auto_detects_python_launcher_root_from_parent_directory() {
+        let parent = tempdir().unwrap();
+        let nested_root = parent.path().join("MINECRAFT").join("lauche");
+        let dst = tempdir().unwrap();
+
+        fs::create_dir_all(nested_root.join("config")).unwrap();
+        fs::write(
+            nested_root.join("config").join("launcher_settings.json"),
+            r#"{"gui":{"language":"en-US"}}"#,
+        )
+        .unwrap();
+        let inst_dir = nested_root.join("instances").join("NestedPack");
+        fs::create_dir_all(&inst_dir).unwrap();
+        fs::write(
+            inst_dir.join("instance.json"),
+            r#"{"name":"NestedPack","version_id":"1.21.4","mod_loader":["vanilla","-1"]}"#,
+        )
+        .unwrap();
+
+        let dest_paths = LauncherPaths::portable(dst.path());
+        dest_paths.initialize().unwrap();
+
+        // Pass top-level parent directory and verify auto-detection resolves `nested_root`
+        let insp = inspect_python_launcher(parent.path(), &dest_paths).unwrap();
+        assert_eq!(insp.source_root, nested_root);
+        assert!(insp.has_launcher_settings);
+        assert_eq!(insp.instances.len(), 1);
+        assert_eq!(insp.instances[0].name, "NestedPack");
     }
 }
