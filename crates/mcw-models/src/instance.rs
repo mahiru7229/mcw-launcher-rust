@@ -120,6 +120,18 @@ pub struct InstanceSettings {
     pub forge_preflight_always_allow: bool,
     #[serde(default)]
     pub disable_mod_repair_and_updates: Option<bool>,
+    #[serde(default)]
+    pub pre_launch_command: String,
+    #[serde(default)]
+    pub post_exit_command: String,
+    #[serde(default)]
+    pub wrapper_command: String,
+    #[serde(default)]
+    pub env_vars: Vec<(String, String)>,
+    #[serde(default)]
+    pub enable_gamemode: bool,
+    #[serde(default)]
+    pub enable_mangohud: bool,
 }
 
 impl InstanceSettings {
@@ -175,6 +187,12 @@ impl Default for InstanceSettings {
             curseforge_failure_policy: default_inherit(),
             forge_preflight_always_allow: false,
             disable_mod_repair_and_updates: None,
+            pre_launch_command: String::new(),
+            post_exit_command: String::new(),
+            wrapper_command: String::new(),
+            env_vars: Vec::new(),
+            enable_gamemode: false,
+            enable_mangohud: false,
         }
     }
 }

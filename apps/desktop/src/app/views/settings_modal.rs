@@ -823,6 +823,39 @@ impl McwApp {
                             *prefs_dirty = true;
                         }
                     });
+                    ui.add_space(6.0);
+                    let seg_cur = match self.prefs.download_segments_per_file {
+                        1 => "Off (1 stream)".to_string(),
+                        4 => "4 streams".to_string(),
+                        8 => "8 streams".to_string(),
+                        _ => "6 streams (Default)".to_string(),
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Multi-segment Range streams (files >= 4 MB):");
+                        egui::ComboBox::from_id_salt("launcher_settings_download_segments_combo")
+                            .selected_text(seg_cur)
+                            .width(190.0)
+                            .show_ui(ui, |ui| {
+                                for (val, label) in [
+                                    (1usize, "Off (1 stream)"),
+                                    (4usize, "4 streams"),
+                                    (6usize, "6 streams (Default)"),
+                                    (8usize, "8 streams"),
+                                ] {
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.prefs.download_segments_per_file,
+                                            val,
+                                            label,
+                                        )
+                                        .changed()
+                                    {
+                                        mcw_net::set_global_segments_per_file(val);
+                                        *prefs_dirty = true;
+                                    }
+                                }
+                            });
+                    });
                 });
             ui.add_space(8.0);
         }

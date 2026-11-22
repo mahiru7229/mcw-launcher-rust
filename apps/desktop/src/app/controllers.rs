@@ -190,9 +190,16 @@ impl McwApp {
         if let Some(ref s) = self.selected_settings {
             self.edit_jvm_args_text = s.jvm_arguments.join("\n");
             self.edit_game_args_text = s.game_arguments.join("\n");
+            self.edit_env_vars_text = s
+                .env_vars
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("\n");
         } else {
             self.edit_jvm_args_text.clear();
             self.edit_game_args_text.clear();
+            self.edit_env_vars_text.clear();
         }
         self.mod_update_candidates.clear();
         self.instance_settings_dirty = false;
@@ -317,11 +324,11 @@ impl McwApp {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         let slug = item_key.clone();
+        let downloader = self.download_client.clone();
 
         self.runtime.spawn(async move {
             let res = async {
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
-                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
                 let path = if provider_is_cf {
                     let client =
                         CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
@@ -461,14 +468,21 @@ impl McwApp {
             return;
         }
         let mods_dir = self.paths.minecraft_dir(instance_id).join("mods");
+        let mods_cache_file = self
+            .paths
+            .cache_root
+            .join("mod_metadata")
+            .join(format!("{instance_id}.json"));
         let id = instance_id.to_string();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
-            let mods = tokio::task::spawn_blocking(move || ModManager::new(&mods_dir).list())
-                .await
-                .unwrap_or_default();
+            let mods = tokio::task::spawn_blocking(move || {
+                ModScanner::scan_dir_cached(&mods_dir, &mods_cache_file)
+            })
+            .await
+            .unwrap_or_default();
             let _ = tx.send(AppEvent::ModsLoaded {
                 instance_id: id,
                 mods,
@@ -569,6 +583,8 @@ impl McwApp {
             message: msg_str.clone(),
             current: 0,
             total: 0,
+            started_at: Instant::now(),
+            is_bytes: false,
             control: Arc::clone(&control),
         });
         if !msg_str.trim().is_empty() {
@@ -584,6 +600,9 @@ impl McwApp {
             self.push_global_log(format!("[TASK] Finished #{task_id} '{}'.", task.label));
         }
         self.last_task_log_msg.remove(&task_id);
+        if self.active_tasks.is_empty() {
+            mcw_net::flush_persistent_verification_cache();
+        }
     }
 
     pub(crate) fn latest_mc_version(&self, include_snapshots: bool) -> String {
@@ -609,12 +628,12 @@ impl McwApp {
         self.versions_loading = true;
         self.push_global_log("[INFO] Loading Minecraft version manifest...");
         let paths = self.paths.clone();
+        let client = self.download_client.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
             let res = async {
-                let client = DownloadClient::new().map_err(|e| e.to_string())?;
                 let svc = VersionManifestService::new(&paths, &client);
                 let manifest = svc.get_manifest(false).await.map_err(|e| e.to_string())?;
                 let versions: Vec<(String, String)> = manifest
@@ -746,6 +765,7 @@ impl McwApp {
         let always_allow_preflight = bypass_preflight || settings.forge_preflight_always_allow;
         let tx = self.tx.clone();
         let ctx = ctx.clone();
+        let client = self.download_client.with_task_control(task_ctrl);
 
         self.runtime.spawn(async move {
             let result = async {
@@ -776,9 +796,6 @@ impl McwApp {
                     }
                 };
 
-                let client = DownloadClient::new()
-                    .map_err(|e| e.to_string())?
-                    .with_task_control(task_ctrl);
                 let pipeline = VanillaLaunchPipeline::new(&paths, &client);
                 let progress_sink = Arc::new(ChannelProgressSink {
                     instance_id: inst.instance_id.clone(),
@@ -887,6 +904,24 @@ impl McwApp {
                     }
                 }
 
+                if !settings.pre_launch_command.trim().is_empty() {
+                    let pre_cmd = settings.pre_launch_command.clone();
+                    let pre_cwd = prepared.spec.working_dir.clone();
+                    let pre_env = prepared.spec.env_vars.clone();
+                    let _ = tx.send(AppEvent::LogReceived {
+                        instance_id: inst.instance_id.clone(),
+                        line: LogLine {
+                            stream: LogStream::Stdout,
+                            text: format!("[Pre-launch] Running: {}", pre_cmd.trim()),
+                        },
+                    });
+                    tokio::task::spawn_blocking(move || {
+                        run_lifecycle_hook(&pre_cmd, &pre_cwd, &pre_env, "Pre-launch")
+                    })
+                    .await
+                    .map_err(|e| format!("Pre-launch hook task error: {e}"))??;
+                }
+
                 let log_path = paths
                     .logs_root
                     .join(format!("{}-latest.log", inst.instance_id));
@@ -914,6 +949,29 @@ impl McwApp {
                 ctx.request_repaint();
 
                 let report = supervised.wait().await.map_err(|e| e.to_string())?;
+
+                if !settings.post_exit_command.trim().is_empty() {
+                    let post_cmd = settings.post_exit_command.clone();
+                    let post_cwd = prepared.spec.working_dir.clone();
+                    let mut post_env = prepared.spec.env_vars.clone();
+                    post_env.push((
+                        "INST_EXITCODE".to_string(),
+                        report.exit_code.map(|c| c.to_string()).unwrap_or_default(),
+                    ));
+                    if let Ok(Err(warn_msg)) = tokio::task::spawn_blocking(move || {
+                        run_lifecycle_hook(&post_cmd, &post_cwd, &post_env, "Post-exit")
+                    })
+                    .await
+                    {
+                        let _ = tx.send(AppEvent::LogReceived {
+                            instance_id: inst.instance_id.clone(),
+                            line: LogLine {
+                                stream: LogStream::Stderr,
+                                text: format!("[Post-exit] Warning: {warn_msg}"),
+                            },
+                        });
+                    }
+                }
 
                 // Persist playtime & exit status
                 let store = InstanceStore::new(&paths);
@@ -1767,20 +1825,24 @@ impl McwApp {
         let file_name = choice.file_name.clone();
         let sha1 = choice.sha1;
         let file_size = choice.file_size;
+        let downloader = self.download_client.with_task_control(task_ctrl);
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
         self.runtime.spawn(async move {
             let res = async {
                 let _ = std::fs::create_dir_all(&target_dir);
-                let downloader = DownloadClient::new()
-                    .map_err(|e| e.to_string())?
-                    .with_task_control(task_ctrl);
                 let req = mcw_net::DownloadRequest::new(url, dest)
                     .with_sha1(sha1)
                     .with_size(file_size);
+                let prog_cb = make_task_byte_cb(
+                    tx.clone(),
+                    ctx_c.clone(),
+                    task_id,
+                    format!("Downloading {file_name}"),
+                );
                 downloader
-                    .download_file(&req)
+                    .download_file_with_progress(&req, prog_cb)
                     .await
                     .map_err(|e| e.to_string())?;
                 Ok::<String, String>(file_name)
@@ -2009,6 +2071,7 @@ impl McwApp {
         let cf_api_key = self.resolved_cf_api_key();
         let cache_path = self.paths.cache_root.join("providers.sqlite");
         let picker_title = project_name.unwrap_or_else(|| choice.title.clone());
+        let downloader = self.download_client.with_task_control(task_ctrl);
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
@@ -2017,14 +2080,17 @@ impl McwApp {
                 if let Some(old_name) = remove_existing_file {
                     remove_mod_file_and_twins(&mods_dir, &old_name);
                 }
-                let downloader = DownloadClient::new()
-                    .map_err(|e| e.to_string())?
-                    .with_task_control(task_ctrl);
                 let req = mcw_net::DownloadRequest::new(url, dest)
                     .with_sha1(choice.sha1)
                     .with_size(choice.file_size);
+                let prog_cb = make_task_byte_cb(
+                    tx.clone(),
+                    ctx.clone(),
+                    task_id,
+                    format!("Downloading {dest_file_name}"),
+                );
                 downloader
-                    .download_file(&req)
+                    .download_file_with_progress(&req, prog_cb)
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -2252,14 +2318,12 @@ impl McwApp {
         );
         let inst_dir = self.paths.instance_dir(&inst.instance_id);
         let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let downloader = self.download_client.with_task_control(task_ctrl);
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
         self.runtime.spawn(async move {
             let res = async {
-                let downloader = DownloadClient::new()
-                    .map_err(|e| e.to_string())?
-                    .with_task_control(task_ctrl);
                 ModUpdateManager::apply_updates(&inst_dir, &mc_dir, &candidates, &downloader)
                     .await
                     .map_err(|e| e.to_string())
@@ -2287,15 +2351,27 @@ impl McwApp {
             "Downloading & extracting managed runtime...",
         );
         let runtimes_root = self.paths.runtimes_root.clone();
+        let client = self.download_client.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
             let res = async {
-                let client = DownloadClient::new().map_err(|e| e.to_string())?;
-                JavaProvisioner::install_managed_exact(&runtimes_root, major, true, &client)
-                    .await
-                    .map_err(|e| e.to_string())
+                let prog_cb = make_task_byte_cb(
+                    tx.clone(),
+                    ctx.clone(),
+                    task_id,
+                    format!("Downloading Temurin Java {major}"),
+                );
+                JavaProvisioner::install_managed_exact_with_progress(
+                    &runtimes_root,
+                    major,
+                    true,
+                    &client,
+                    prog_cb,
+                )
+                .await
+                .map_err(|e| e.to_string())
             }
             .await;
             let _ = tx.send(AppEvent::JavaInstallFinished {
@@ -2325,12 +2401,12 @@ impl McwApp {
             }),
         );
         let paths = self.paths.clone();
+        let client = self.download_client.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
             let res = async {
-                let client = DownloadClient::new().map_err(|e| e.to_string())?;
                 let svc = RepairService::new(&paths, &client);
                 let sink = Arc::new(ChannelProgressSink {
                     instance_id: inst.instance_id.clone(),
@@ -2448,6 +2524,7 @@ impl McwApp {
             },
         };
         let enable_lan_agent = self.archive_enable_lan_agent;
+        let downloader = self.download_client.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
 
@@ -2465,7 +2542,6 @@ impl McwApp {
             });
 
             let res = async {
-                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
                 let cache_path = paths.cache_root.join("providers").join("api_cache.sqlite");
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
                 let cf = CurseForgeClient::from_root(&paths.project_root, cache).ok();
@@ -2527,6 +2603,7 @@ impl McwApp {
             .join("api_cache.sqlite");
         let tx = self.tx.clone();
         let ctx = ctx.clone();
+        let downloader = self.download_client.clone();
 
         self.runtime.spawn(async move {
             let tx_p = tx.clone();
@@ -2567,13 +2644,18 @@ impl McwApp {
                 let _ = std::fs::create_dir_all(&mrpack_dir);
                 let archive_path = mrpack_dir.join(&primary.filename);
 
-                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
                 cb(0, 1, format!("Downloading {}...", primary.filename));
+                let prog_cb = make_task_byte_cb(
+                    tx.clone(),
+                    ctx.clone(),
+                    task_id,
+                    format!("Downloading {}", primary.filename),
+                );
                 downloader
-                    .download_file(&mcw_net::DownloadRequest::new(
-                        primary.url.clone(),
-                        archive_path.clone(),
-                    ))
+                    .download_file_with_progress(
+                        &mcw_net::DownloadRequest::new(primary.url.clone(), archive_path.clone()),
+                        prog_cb,
+                    )
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -3039,6 +3121,9 @@ impl McwApp {
                         task.message = message;
                         task.current = current;
                         task.total = total;
+                        if total >= 16_384 {
+                            task.is_bytes = true;
+                        }
                     }
                 }
                 AppEvent::LaunchProgress { instance_id, event } => {
@@ -3057,6 +3142,12 @@ impl McwApp {
                             task.message = format!("[{:?}] {}", event.stage, event.message);
                             task.current = event.current;
                             task.total = event.total;
+                            task.is_bytes = matches!(
+                                event.stage,
+                                mcw_models::progress::ProgressStage::DownloadingClient
+                                    | mcw_models::progress::ProgressStage::InstallingJava
+                                    | mcw_models::progress::ProgressStage::InstallingModLoader
+                            ) && event.total >= 16_384;
                         }
                     }
                     self.launch_states
@@ -3961,6 +4052,64 @@ impl McwApp {
                         }
                     }
                 }
+                AppEvent::JunkScanCompleted { report, manual } => {
+                    self.junk_scanning = false;
+                    let threshold = 50 * 1024 * 1024;
+                    if (manual && report.total_bytes > 0) || report.total_bytes >= threshold {
+                        self.junk_clean_temp = true;
+                        self.junk_clean_logs = true;
+                        self.junk_clean_caches = true;
+                        self.junk_scan_report = Some(report);
+                        self.show_junk_cleanup_modal = true;
+                    } else if manual {
+                        self.notice_banner =
+                            Some(("No junk or expired cache files found.".to_string(), false));
+                    }
+                }
+                AppEvent::JunkCleanCompleted(res) => {
+                    self.junk_cleaning = false;
+                    match res {
+                        Ok((count, bytes)) => {
+                            self.show_junk_cleanup_modal = false;
+                            self.junk_scan_report = None;
+                            self.notice_banner = Some((
+                                format!(
+                                    "Cleaned {count} junk item(s), reclaimed {}.",
+                                    format_bytes(bytes)
+                                ),
+                                false,
+                            ));
+                            self.start_storage_scan(ctx);
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Junk cleanup failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::WatchedFolderChanged(inst_id) => {
+                    if self.selected_instance_id.as_deref() == Some(inst_id.as_str()) {
+                        match self.active_tab {
+                            DetailTab::Mods => self.load_mods_async(&inst_id, ctx, true),
+                            DetailTab::ResourcePacks => self.load_content_packs_async(
+                                &inst_id,
+                                ContentKind::ResourcePack,
+                                ctx,
+                                true,
+                            ),
+                            DetailTab::Shaders => self.load_content_packs_async(
+                                &inst_id,
+                                ContentKind::ShaderPack,
+                                ctx,
+                                true,
+                            ),
+                            DetailTab::Screenshots => {
+                                self.load_screenshots_async(&inst_id, ctx, true)
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
     }
@@ -4320,6 +4469,9 @@ impl McwApp {
 
         let paths = self.paths.clone();
         let cf_key = self.resolved_cf_api_key();
+        let downloader = self
+            .download_client
+            .with_task_control(Arc::clone(&task_ctrl));
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
@@ -4364,9 +4516,6 @@ impl McwApp {
             };
 
             let res: Result<mcw_providers::ModpackInstallReport, String> = async {
-                let downloader = DownloadClient::new()
-                    .map_err(|e| e.to_string())?
-                    .with_task_control(Arc::clone(&task_ctrl));
                 let cache = ApiCache::open(&paths.cache_root.join("providers.sqlite"))
                     .ok()
                     .map(Arc::new);
@@ -4384,12 +4533,18 @@ impl McwApp {
                         } else {
                             ver.file_name
                         };
-                        let archive_path = paths.cache_root.join("modpacks").join(fname);
+                        let archive_path = paths.cache_root.join("modpacks").join(&fname);
                         cb(0, 1, "Downloading .mrpack archive...".to_string());
                         let req = mcw_net::DownloadRequest::new(url, &archive_path)
                             .with_size(ver.file_size);
+                        let prog_cb = make_task_byte_cb(
+                            tx.clone(),
+                            ctx_c.clone(),
+                            task_id,
+                            format!("Downloading {fname}"),
+                        );
                         downloader
-                            .download_file(&req)
+                            .download_file_with_progress(&req, prog_cb)
                             .await
                             .map_err(|e| e.to_string())?;
                         let rep = ModpackInstaller::install_from_archive_with_options(
@@ -4425,12 +4580,18 @@ impl McwApp {
                         } else {
                             ver.file_name
                         };
-                        let archive_path = paths.cache_root.join("modpacks").join(fname);
+                        let archive_path = paths.cache_root.join("modpacks").join(&fname);
                         cb(0, 1, "Downloading CurseForge modpack archive...".to_string());
                         let req = mcw_net::DownloadRequest::new(dl_url, &archive_path)
                             .with_size(ver.file_size);
+                        let prog_cb = make_task_byte_cb(
+                            tx.clone(),
+                            ctx_c.clone(),
+                            task_id,
+                            format!("Downloading {fname}"),
+                        );
                         downloader
-                            .download_file(&req)
+                            .download_file_with_progress(&req, prog_cb)
                             .await
                             .map_err(|e| e.to_string())?;
                         let rep = ModpackInstaller::install_from_archive_with_options(
@@ -4566,7 +4727,7 @@ impl McwApp {
     pub(crate) fn apply_typography_and_scale(&self, ctx: &egui::Context) {
         let custom_path =
             resolve_custom_font_path(&self.prefs.custom_font_family, &self.system_fonts);
-        configure_fonts(ctx, custom_path.as_deref());
+        configure_fonts_with_spec(ctx, &self.prefs.custom_font_family, custom_path.as_deref());
         ctx.set_zoom_factor(self.prefs.ui_scale.clamp(0.75, 1.75));
     }
 
@@ -4788,12 +4949,12 @@ impl McwApp {
         }
         self.latest_java_checking = true;
         self.latest_java_error = None;
+        let client = self.download_client.clone();
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
         self.runtime.spawn(async move {
             let res = async {
-                let client = DownloadClient::new().map_err(|e| e.to_string())?;
                 JavaProvisioner::fetch_latest_feature_release(&client)
                     .await
                     .map_err(|e| e.to_string())
@@ -5314,12 +5475,12 @@ impl McwApp {
             "Preparing isolated OptiFine standalone installer...",
         );
         let paths = self.paths.clone();
+        let client = self.download_client.clone();
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
         self.runtime.spawn(async move {
             let res: Result<OptiFineState, String> = async {
-                let client = DownloadClient::new().map_err(|e| e.to_string())?;
                 let manifest_svc = VersionManifestService::new(&paths, &client);
                 let entry = manifest_svc
                     .find_version(&instance.version_id, false)
@@ -5456,14 +5617,12 @@ impl McwApp {
             return;
         }
         self.connectivity_checking = true;
+        let client = self.download_client.clone();
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
         self.runtime.spawn(async move {
-            let status = match DownloadClient::new() {
-                Ok(client) => ConnectivityMonitor::probe(&client).await,
-                Err(_) => ConnectivityStatus::Offline,
-            };
+            let status = ConnectivityMonitor::probe(&client).await;
             let _ = tx.send(AppEvent::ConnectivityChecked(status));
             ctx_c.request_repaint();
         });
@@ -5579,6 +5738,7 @@ impl McwApp {
             .join("providers")
             .join("api_cache.sqlite");
         let cf_key = self.resolved_cf_api_key();
+        let downloader = self.download_client.clone();
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
@@ -5595,7 +5755,6 @@ impl McwApp {
                 ctx_p.request_repaint();
             });
             let res = async {
-                let downloader = DownloadClient::new().map_err(|e| e.to_string())?;
                 let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
                 let cf = CurseForgeClient::new(cf_key, cache.clone()).ok();
                 let ftb = FtbClient::new(cache.clone()).ok();
@@ -5740,11 +5899,25 @@ impl McwApp {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        let some_env_vars: Vec<(String, String)> = self
+            .edit_env_vars_text
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    return None;
+                }
+                let (k, v) = trimmed.split_once('=')?;
+                let key = k.trim();
+                (!key.is_empty()).then(|| (key.to_string(), v.to_string()))
+            })
+            .collect();
         let Some(ref mut s) = self.selected_settings else {
             return false;
         };
         s.jvm_arguments = jvm_args;
         s.game_arguments = game_args;
+        s.env_vars = some_env_vars;
         let store = InstanceStore::new(&self.paths);
         match store.save_settings(&inst.instance_id, s) {
             Ok(()) => {
@@ -5968,6 +6141,127 @@ impl McwApp {
         );
         self.save_prefs();
     }
+
+    pub(crate) fn start_junk_scan(&mut self, manual: bool, ctx: &egui::Context) {
+        if self.junk_scanning || self.junk_cleaning {
+            return;
+        }
+        self.junk_scanning = true;
+        let paths = self.paths.clone();
+        let retention_days = self.prefs.junk_retention_days.max(1);
+        let active_versions: HashSet<String> = self
+            .instances
+            .iter()
+            .map(|i| i.version_id.clone())
+            .collect();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let report = tokio::task::spawn_blocking(move || {
+                StorageCleanupService::scan_junk(&paths, retention_days, &active_versions)
+            })
+            .await
+            .unwrap_or_default();
+            let _ = tx.send(AppEvent::JunkScanCompleted { report, manual });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_junk_clean(
+        &mut self,
+        include_temp: bool,
+        include_logs: bool,
+        include_caches: bool,
+        ctx: &egui::Context,
+    ) {
+        let Some(report) = self.junk_scan_report.clone() else {
+            return;
+        };
+        if self.junk_cleaning {
+            return;
+        }
+        self.junk_cleaning = true;
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                StorageCleanupService::clean_junk(
+                    &report,
+                    include_temp,
+                    include_logs,
+                    include_caches,
+                )
+            })
+            .await
+            .map(|r| (r.removed_count, r.reclaimed_bytes))
+            .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::JunkCleanCompleted(res));
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn sync_active_folder_watcher(&mut self, ctx: &egui::Context) {
+        let target: Option<(String, std::path::PathBuf)> =
+            if self.active_page == AppPage::Home && self.instance_inline_browser.is_none() {
+                self.selected_instance_id.as_ref().and_then(|id| {
+                    let mc_dir = self.paths.minecraft_dir(id);
+                    let sub = match self.active_tab {
+                        DetailTab::Mods => "mods",
+                        DetailTab::ResourcePacks => "resourcepacks",
+                        DetailTab::Shaders => "shaderpacks",
+                        DetailTab::Screenshots => "screenshots",
+                        _ => return None,
+                    };
+                    let dir = mc_dir.join(sub);
+                    dir.is_dir().then(|| (id.clone(), dir))
+                })
+            } else {
+                None
+            };
+
+        let target_path = target.as_ref().map(|(_, d)| d.clone());
+        if self.watched_folder_path == target_path {
+            return;
+        }
+        self.folder_watcher = None;
+        self.watched_folder_path = None;
+
+        if let Some((inst_id, dir)) = target {
+            let tx = self.tx.clone();
+            let ctx_c = ctx.clone();
+            let last_sent = Arc::new(std::sync::Mutex::new(
+                Instant::now() - Duration::from_secs(2),
+            ));
+            let handler = move |res: std::result::Result<Event, notify::Error>| {
+                let Ok(ev) = res else {
+                    return;
+                };
+                let dominated_by_tmp = !ev.paths.is_empty()
+                    && ev.paths.iter().all(|p| {
+                        let s = p.to_string_lossy();
+                        s.ends_with(".part") || s.contains(".part.seg.") || s.ends_with(".tmp")
+                    });
+                if dominated_by_tmp {
+                    return;
+                }
+                if let Ok(mut guard) = last_sent.lock() {
+                    if guard.elapsed() >= Duration::from_millis(400) {
+                        *guard = Instant::now();
+                        let _ = tx.send(AppEvent::WatchedFolderChanged(inst_id.clone()));
+                        ctx_c.request_repaint();
+                    }
+                }
+            };
+            if let Ok(mut watcher) = notify::recommended_watcher(handler) {
+                if watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
+                    self.folder_watcher = Some(watcher);
+                    self.watched_folder_path = Some(dir);
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn apply_lan_agent_option(settings: &mut InstanceSettings, enable: bool) {
@@ -6056,6 +6350,42 @@ pub(crate) fn normalize_mod_stem(file_name: &str) -> String {
         stem.to_ascii_lowercase()
     } else {
         parts.join("-")
+    }
+}
+
+fn make_task_byte_cb(
+    tx: std::sync::mpsc::Sender<AppEvent>,
+    ctx: egui::Context,
+    task_id: u64,
+    label: String,
+) -> impl Fn(u64, u64) + Send + Sync + 'static {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let last = Arc::new(AtomicU64::new(0));
+    move |done, total| {
+        if done == 0 && total == 0 {
+            return;
+        }
+        let prev = last.load(Ordering::Relaxed);
+        let finished = total > 0 && done >= total;
+        if finished || prev == 0 || done.saturating_sub(prev) >= 128 * 1024 {
+            last.store(done.max(1), Ordering::Relaxed);
+            let msg = if total > 0 {
+                format!(
+                    "{label} ({:.1} / {:.1} MB)",
+                    done as f64 / 1_048_576.0,
+                    total as f64 / 1_048_576.0
+                )
+            } else {
+                format!("{label} ({:.1} MB)", done as f64 / 1_048_576.0)
+            };
+            let _ = tx.send(AppEvent::TaskProgress {
+                task_id,
+                message: msg,
+                current: done,
+                total: total.max(done),
+            });
+            ctx.request_repaint();
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 # MCW Launcher: Rust Edition
 
-[![Status](https://img.shields.io/badge/status-v1.1.0-7C3AED?style=flat-square)](#)
+[![Status](https://img.shields.io/badge/status-v1.2.0-7C3AED?style=flat-square)](#)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -135,6 +135,8 @@ Output binaries:
 
 ---
 
-## License
+## License & Third-Party Fonts
 
 This project is licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
+
+- **JetBrains Mono** (`assets/fonts/JetBrainsMono-Regular.ttf`): Licensed under the **SIL Open Font License 1.1** — see [assets/fonts/JetBrainsMono-OFL.txt](assets/fonts/JetBrainsMono-OFL.txt). Copyright 2020 The JetBrains Mono Project Authors.

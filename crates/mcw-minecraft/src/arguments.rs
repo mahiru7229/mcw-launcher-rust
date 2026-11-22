@@ -119,6 +119,14 @@ impl ArgumentBuilder {
             }
         }
 
+        if Self::needs_log4shell_mitigation(version)
+            && !jvm_args
+                .iter()
+                .any(|arg| arg.starts_with("-Dlog4j2.formatMsgNoLookups"))
+        {
+            jvm_args.push("-Dlog4j2.formatMsgNoLookups=true".to_string());
+        }
+
         if account_source == AccountSource::Offline {
             jvm_args.retain(|arg| {
                 !UNSAFE_OFFLINE_AUTH_HOST_PREFIXES
@@ -172,6 +180,28 @@ impl ArgumentBuilder {
             .unwrap_or(&version.id)
             .trim();
         ver == "1.16.4" || ver == "1.16.5" || ver.contains("1.16.4") || ver.contains("1.16.5")
+    }
+
+    /// Automatic Log4Shell mitigation (`CVE-2021-44228`) for Minecraft `1.7` through `1.18.1`.
+    pub fn needs_log4shell_mitigation(version: &VersionMetadata) -> bool {
+        let raw = version
+            .inherits_from
+            .as_deref()
+            .unwrap_or(&version.id)
+            .trim();
+        let base = raw.split(['-', '+']).next().unwrap_or(raw).trim();
+        let mut parts = base.split('.');
+        let Ok(major) = parts.next().unwrap_or_default().parse::<u32>() else {
+            return false;
+        };
+        let Ok(minor) = parts.next().unwrap_or_default().parse::<u32>() else {
+            return false;
+        };
+        let patch = parts
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        major == 1 && ((7..=17).contains(&minor) || (minor == 18 && patch <= 1))
     }
 
     fn normalize_offline_identity_args(args: Vec<String>, auth: &Authentication) -> Vec<String> {
@@ -343,5 +373,57 @@ mod tests {
         assert!(jvm.contains(
             &"-DignoreList=bootstraplauncher,1.20.1-forge-47.4.0.jar,1.20.1.jar".to_string()
         ));
+    }
+
+    #[test]
+    fn injects_log4shell_mitigation_for_vulnerable_versions_only() {
+        let make_meta = |id: &str, inherits_from: Option<&str>| VersionMetadata {
+            id: id.to_string(),
+            version_type: "release".to_string(),
+            main_class: "net.minecraft.client.main.Main".to_string(),
+            inherits_from: inherits_from.map(str::to_string),
+            asset_index: None,
+            assets: None,
+            downloads: None,
+            libraries: vec![],
+            java_version: None,
+            minecraft_arguments: None,
+            arguments: Some(Arguments {
+                jvm: vec![],
+                game: vec![],
+            }),
+        };
+
+        for ver in ["1.7.10", "1.12.2", "1.16.5", "1.18", "1.18.1"] {
+            let meta = make_meta(ver, None);
+            let (jvm, _) = ArgumentBuilder::build(
+                &meta,
+                &ArgumentContext::new(HashMap::new()),
+                &InstanceSettings::default(),
+                &Authentication {
+                    player_name: "Player".to_string(),
+                    uuid: "0123456789abcdef0123456789abcdef".to_string(),
+                    access_token: "0".to_string(),
+                    xuid: String::new(),
+                    client_id: String::new(),
+                    user_type: "legacy".to_string(),
+                },
+                AccountSource::Offline,
+            );
+            assert!(
+                jvm.contains(&"-Dlog4j2.formatMsgNoLookups=true".to_string()),
+                "expected mitigation for {ver}"
+            );
+        }
+
+        let inherited = make_meta("1.16.5-forge-36.2.39", Some("1.16.5"));
+        assert!(ArgumentBuilder::needs_log4shell_mitigation(&inherited));
+
+        for safe in ["1.6.4", "1.18.2", "1.20.1", "1.21.4"] {
+            assert!(
+                !ArgumentBuilder::needs_log4shell_mitigation(&make_meta(safe, None)),
+                "unexpected mitigation for {safe}"
+            );
+        }
     }
 }

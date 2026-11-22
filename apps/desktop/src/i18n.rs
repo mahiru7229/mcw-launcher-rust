@@ -317,6 +317,22 @@ pub struct LauncherPrefs {
     pub ui_scale: f32,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
+    #[serde(default = "default_segments_per_file")]
+    pub download_segments_per_file: usize,
+    #[serde(default = "default_true")]
+    pub auto_cleanup_reminders: bool,
+    #[serde(default = "default_junk_retention_days")]
+    pub junk_retention_days: u32,
+    #[serde(default)]
+    pub junk_reminder_snooze_until: u64,
+}
+
+fn default_segments_per_file() -> usize {
+    6
+}
+
+fn default_junk_retention_days() -> u32 {
+    14
 }
 
 fn default_ui_scale() -> f32 {
@@ -440,6 +456,10 @@ impl Default for LauncherPrefs {
             custom_font_family: String::new(),
             ui_scale: default_ui_scale(),
             font_size: default_font_size(),
+            download_segments_per_file: default_segments_per_file(),
+            auto_cleanup_reminders: true,
+            junk_retention_days: default_junk_retention_days(),
+            junk_reminder_snooze_until: 0,
         }
     }
 }

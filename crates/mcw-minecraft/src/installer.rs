@@ -89,7 +89,14 @@ impl<'a> VanillaLaunchPipeline<'a> {
         let client_req = DownloadRequest::new(&client_artifact.url, &client_jar)
             .with_sha1(client_artifact.sha1.clone())
             .with_size(client_artifact.size);
-        self.client.download_file(&client_req).await?;
+        let client_cb = make_byte_progress_cb(
+            Arc::clone(&progress),
+            ProgressStage::DownloadingClient,
+            format!("Downloading client JAR ({base_version_id})"),
+        );
+        self.client
+            .download_file_with_progress(&client_req, client_cb)
+            .await?;
 
         // 3. Resolve Java runtime BEFORE Forge/NeoForge installer (so modern installers can run
         //    with the right Java, and legacy 1.12.2 Forge gets Java 8 automatically!)
@@ -126,10 +133,16 @@ impl<'a> VanillaLaunchPipeline<'a> {
                     current: 0,
                     total: 1,
                 });
-                JavaProvisioner::ensure_managed(
+                let java_cb = make_byte_progress_cb(
+                    Arc::clone(&progress),
+                    ProgressStage::InstallingJava,
+                    format!("Downloading managed Java {managed_major}"),
+                );
+                JavaProvisioner::ensure_managed_with_progress(
                     &self.paths.runtimes_root,
                     required_java,
                     self.client,
+                    java_cb,
                 )
                 .await?
             }
@@ -171,8 +184,23 @@ impl<'a> VanillaLaunchPipeline<'a> {
                 total: 1,
             });
             let forge_svc = ForgeLoaderService::new(self.paths, self.client);
+            let forge_cb = make_byte_progress_cb(
+                Arc::clone(&progress),
+                ProgressStage::InstallingModLoader,
+                format!(
+                    "Downloading {} {} installer",
+                    family.as_str(),
+                    clean_loader_ver
+                ),
+            );
             forge_svc
-                .install_and_merge(family, &base_metadata, &clean_loader_ver, Some(&java.path))
+                .install_and_merge_with_progress(
+                    family,
+                    &base_metadata,
+                    &clean_loader_ver,
+                    Some(&java.path),
+                    forge_cb,
+                )
                 .await?
         } else {
             OptiFineManager::apply_to_version(self.paths, instance, base_metadata)?
@@ -263,6 +291,32 @@ impl<'a> VanillaLaunchPipeline<'a> {
             account_source,
         );
 
+        let mut launch_env = vec![
+            ("INST_NAME".to_string(), instance.name.clone()),
+            ("INST_ID".to_string(), instance.instance_id.clone()),
+            (
+                "INST_DIR".to_string(),
+                self.paths
+                    .instance_dir(&instance.instance_id)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            (
+                "INST_MC_DIR".to_string(),
+                game_dir.to_string_lossy().into_owned(),
+            ),
+            (
+                "INST_JAVA".to_string(),
+                java.path.to_string_lossy().into_owned(),
+            ),
+        ];
+        for (k, v) in &settings.env_vars {
+            let trimmed = k.trim();
+            if !trimmed.is_empty() {
+                launch_env.push((trimmed.to_string(), v.clone()));
+            }
+        }
+
         progress.on_progress(ProgressEvent {
             stage: ProgressStage::Completed,
             message: "Ready to launch".to_string(),
@@ -280,8 +334,47 @@ impl<'a> VanillaLaunchPipeline<'a> {
                 jvm_args,
                 main_class: metadata.main_class,
                 game_args,
+                wrapper_command: (!settings.wrapper_command.trim().is_empty())
+                    .then(|| settings.wrapper_command.trim().to_string()),
+                env_vars: launch_env,
+                enable_gamemode: settings.enable_gamemode,
+                enable_mangohud: settings.enable_mangohud,
             },
         })
+    }
+}
+
+fn make_byte_progress_cb(
+    progress: Arc<dyn ProgressSink>,
+    stage: ProgressStage,
+    label: String,
+) -> impl Fn(u64, u64) + Send + Sync + 'static {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let last_reported = Arc::new(AtomicU64::new(0));
+    move |done, total| {
+        if done == 0 && total == 0 {
+            return;
+        }
+        let prev = last_reported.load(Ordering::Relaxed);
+        let finished = total > 0 && done >= total;
+        if finished || prev == 0 || done.saturating_sub(prev) >= 128 * 1024 {
+            last_reported.store(done.max(1), Ordering::Relaxed);
+            let msg = if total > 0 {
+                format!(
+                    "{label} ({:.1} / {:.1} MB)...",
+                    done as f64 / (1024.0 * 1024.0),
+                    total as f64 / (1024.0 * 1024.0)
+                )
+            } else {
+                format!("{label} ({:.1} MB)...", done as f64 / (1024.0 * 1024.0))
+            };
+            progress.on_progress(ProgressEvent {
+                stage,
+                message: msg,
+                current: done,
+                total: total.max(done),
+            });
+        }
     }
 }
 

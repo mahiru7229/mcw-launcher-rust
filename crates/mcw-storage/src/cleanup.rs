@@ -38,6 +38,70 @@ pub struct StorageCleanupReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct JunkCategorySummary {
+    pub file_count: usize,
+    pub total_bytes: u64,
+    pub paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct JunkScanReport {
+    pub temp_staging: JunkCategorySummary,
+    pub old_logs: JunkCategorySummary,
+    pub disposable_and_unused: JunkCategorySummary,
+    pub unused_versions: Vec<UnusedVersionCandidate>,
+    pub total_bytes: u64,
+    pub total_files: usize,
+}
+
+fn entry_age_days(path: &Path, now: SystemTime) -> u32 {
+    let meta = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    let mtime = meta.modified().unwrap_or(UNIX_EPOCH_FALLBACK);
+    let age_secs = now
+        .duration_since(mtime)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+    (age_secs / 86_400) as u32
+}
+
+fn collect_aged_files_in_dir(
+    dir: &Path,
+    min_age_days: u32,
+    now: SystemTime,
+    summary: &mut JunkCategorySummary,
+    skip_name: Option<&str>,
+) {
+    if !dir.is_dir() {
+        return;
+    }
+    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if let Some(skip) = skip_name {
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case(skip))
+            {
+                continue;
+            }
+        }
+        if entry_age_days(path, now) >= min_age_days {
+            if let Ok(meta) = entry.metadata() {
+                summary.file_count += 1;
+                summary.total_bytes = summary.total_bytes.saturating_add(meta.len());
+                summary.paths.push(path.to_path_buf());
+            }
+        }
+    }
+}
+
 pub struct StorageCleanupService;
 
 impl StorageCleanupService {
@@ -224,6 +288,159 @@ impl StorageCleanupService {
         fs::remove_dir_all(&dir)?;
         Ok(size)
     }
+
+    /// Safely scans disposable caches, leftover temp/staging files, aged logs, and unreferenced
+    /// MC versions without ever touching `saves/`, `mods/`, `config/`, `backups/`, `accounts/`,
+    /// or `runtimes/`.
+    pub fn scan_junk(
+        paths: &LauncherPaths,
+        retention_days: u32,
+        active_versions: &HashSet<String>,
+    ) -> JunkScanReport {
+        let now = SystemTime::now();
+        let mut report = JunkScanReport::default();
+
+        // 1. Leftover *.part / *.seg.* download fragments & expired updates/forge-staging/tmp files
+        let part_age = retention_days.min(1);
+        for sub in ["updates", "forge-staging", "tmp"] {
+            collect_aged_files_in_dir(
+                &paths.cache_root.join(sub),
+                retention_days,
+                now,
+                &mut report.temp_staging,
+                None,
+            );
+        }
+        if paths.cache_root.is_dir() {
+            for entry in WalkDir::new(&paths.cache_root)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = entry.path();
+                let fname = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let is_fragment = fname.ends_with(".part") || fname.contains(".part.seg.");
+                if is_fragment && entry_age_days(path, now) >= part_age {
+                    let in_tracked_temp = report.temp_staging.paths.iter().any(|p| p == path);
+                    if !in_tracked_temp {
+                        if let Ok(meta) = entry.metadata() {
+                            report.temp_staging.file_count += 1;
+                            report.temp_staging.total_bytes =
+                                report.temp_staging.total_bytes.saturating_add(meta.len());
+                            report.temp_staging.paths.push(path.to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Old launcher logs + aged instance compressed logs/crash-reports (preserve latest.log)
+        collect_aged_files_in_dir(
+            &paths.logs_root,
+            retention_days,
+            now,
+            &mut report.old_logs,
+            None,
+        );
+        if let Ok(inst_entries) = fs::read_dir(&paths.instances_root) {
+            for inst in inst_entries.flatten() {
+                let mc_dir = inst.path().join(".minecraft");
+                collect_aged_files_in_dir(
+                    &mc_dir.join("logs"),
+                    retention_days,
+                    now,
+                    &mut report.old_logs,
+                    Some("latest.log"),
+                );
+                collect_aged_files_in_dir(
+                    &mc_dir.join("crash-reports"),
+                    retention_days,
+                    now,
+                    &mut report.old_logs,
+                    None,
+                );
+            }
+        }
+
+        // 3. Disposable http/api/thumbnail caches + unreferenced MC versions past retention
+        for sub in ["http", "api", "thumbnails"] {
+            collect_aged_files_in_dir(
+                &paths.cache_root.join(sub),
+                retention_days,
+                now,
+                &mut report.disposable_and_unused,
+                None,
+            );
+        }
+        report.unused_versions = Self::scan_unused_versions(paths, retention_days, active_versions);
+        for ver in &report.unused_versions {
+            report.disposable_and_unused.file_count += 1;
+            report.disposable_and_unused.total_bytes = report
+                .disposable_and_unused
+                .total_bytes
+                .saturating_add(ver.size_bytes);
+        }
+
+        report.total_bytes = report
+            .temp_staging
+            .total_bytes
+            .saturating_add(report.old_logs.total_bytes)
+            .saturating_add(report.disposable_and_unused.total_bytes);
+        report.total_files = report.temp_staging.file_count
+            + report.old_logs.file_count
+            + report.disposable_and_unused.file_count;
+
+        report
+    }
+
+    pub fn clean_junk(
+        report: &JunkScanReport,
+        clean_temp: bool,
+        clean_logs: bool,
+        clean_disposable: bool,
+    ) -> StorageCleanupReport {
+        let mut out = StorageCleanupReport::default();
+        let mut delete_files = |paths: &[PathBuf]| {
+            for path in paths {
+                if !path.is_file() {
+                    continue;
+                }
+                let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                match fs::remove_file(path) {
+                    Ok(()) => {
+                        out.removed_count += 1;
+                        out.reclaimed_bytes = out.reclaimed_bytes.saturating_add(size);
+                    }
+                    Err(e) => {
+                        out.errors
+                            .push(format!("Failed to delete {}: {e}", path.display()));
+                    }
+                }
+            }
+        };
+
+        if clean_temp {
+            delete_files(&report.temp_staging.paths);
+        }
+        if clean_logs {
+            delete_files(&report.old_logs.paths);
+        }
+        if clean_disposable {
+            delete_files(&report.disposable_and_unused.paths);
+            let ver_rep = Self::prune_unused_versions(&report.unused_versions);
+            out.removed_count += ver_rep.removed_count;
+            out.reclaimed_bytes = out.reclaimed_bytes.saturating_add(ver_rep.reclaimed_bytes);
+            out.errors.extend(ver_rep.errors);
+        }
+
+        out
+    }
 }
 
 const UNIX_EPOCH_FALLBACK: SystemTime = SystemTime::UNIX_EPOCH;
@@ -330,5 +547,62 @@ mod tests {
         assert!(!v1.exists());
 
         assert!(StorageCleanupService::delete_cached_version(&paths, "../escape").is_err());
+    }
+
+    #[test]
+    fn scans_and_cleans_junk_preserving_saves_and_mods() {
+        let dir = tempdir().unwrap();
+        let paths = LauncherPaths::portable(dir.path());
+        paths.initialize().unwrap();
+
+        let saves_file = paths
+            .instances_root
+            .join("Main")
+            .join(".minecraft")
+            .join("saves")
+            .join("level.dat");
+        let mods_file = paths
+            .instances_root
+            .join("Main")
+            .join(".minecraft")
+            .join("mods")
+            .join("sodium.jar");
+        let latest_log = paths
+            .instances_root
+            .join("Main")
+            .join(".minecraft")
+            .join("logs")
+            .join("latest.log");
+        let gz_log = paths
+            .instances_root
+            .join("Main")
+            .join(".minecraft")
+            .join("logs")
+            .join("old.log.gz");
+        let temp_part = paths.cache_root.join("libraries").join("broken.jar.part");
+
+        fs::create_dir_all(saves_file.parent().unwrap()).unwrap();
+        fs::create_dir_all(mods_file.parent().unwrap()).unwrap();
+        fs::create_dir_all(latest_log.parent().unwrap()).unwrap();
+        fs::create_dir_all(temp_part.parent().unwrap()).unwrap();
+
+        fs::write(&saves_file, b"world").unwrap();
+        fs::write(&mods_file, b"mod").unwrap();
+        fs::write(&latest_log, b"live").unwrap();
+        fs::write(&gz_log, vec![b'z'; 300]).unwrap();
+        fs::write(&temp_part, vec![b'p'; 500]).unwrap();
+
+        let scan = StorageCleanupService::scan_junk(&paths, 0, &HashSet::new());
+        assert_eq!(scan.temp_staging.total_bytes, 500);
+        assert_eq!(scan.old_logs.total_bytes, 300);
+        assert_eq!(scan.total_bytes, 800);
+
+        let cleaned = StorageCleanupService::clean_junk(&scan, true, true, true);
+        assert_eq!(cleaned.reclaimed_bytes, 800);
+        assert!(!temp_part.exists());
+        assert!(!gz_log.exists());
+        assert!(saves_file.is_file());
+        assert!(mods_file.is_file());
+        assert!(latest_log.is_file());
     }
 }

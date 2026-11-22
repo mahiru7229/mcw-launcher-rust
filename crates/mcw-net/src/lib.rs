@@ -7,14 +7,17 @@ pub use connectivity::{ConnectivityMonitor, ConnectivityStatus};
 pub use journal::{DownloadJournal, DownloadJournalEntry};
 
 use futures::stream::{self, StreamExt};
-use reqwest::header::{RANGE, USER_AGENT};
+use reqwest::header::{
+    HeaderMap, ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_NONE_MATCH, RANGE, RETRY_AFTER, USER_AGENT,
+};
 use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -23,6 +26,33 @@ type VerificationKey = (PathBuf, u64, u128);
 fn verification_cache() -> &'static Mutex<HashMap<VerificationKey, String>> {
     static CACHE: OnceLock<Mutex<HashMap<VerificationKey, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn verification_cache_file() -> &'static Mutex<Option<PathBuf>> {
+    static PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    PATH.get_or_init(|| Mutex::new(None))
+}
+
+static VERIFICATION_CACHE_DIRTY: AtomicUsize = AtomicUsize::new(0);
+static GLOBAL_SEGMENTS_PER_FILE: AtomicUsize = AtomicUsize::new(6);
+const SEGMENT_MIN_BYTES: u64 = 4 * 1024 * 1024;
+const PROGRESS_THROTTLE_BYTES: u64 = 128 * 1024;
+const DISK_BUF_BYTES: usize = 256 * 1024;
+const MAX_PERSISTED_VERIFY_ENTRIES: usize = 50_000;
+
+/// Configure how many concurrent HTTP Range segments are used for large downloads (`>= 4 MiB`).
+/// `0` or `1` disables segmented downloads (single connection); typical values are `4`, `6`, `8`.
+pub fn set_global_segments_per_file(segments: usize) {
+    let clamped = if segments <= 1 {
+        1
+    } else {
+        segments.clamp(2, 16)
+    };
+    GLOBAL_SEGMENTS_PER_FILE.store(clamped, Ordering::Relaxed);
+}
+
+pub fn global_segments_per_file() -> usize {
+    GLOBAL_SEGMENTS_PER_FILE.load(Ordering::Relaxed)
 }
 use tokio::sync::Notify;
 
@@ -189,13 +219,61 @@ pub struct DownloadClient {
     control: Option<Arc<TaskControl>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedHttpMeta {
+    etag: String,
+}
+
+#[derive(Debug)]
+enum SegmentAttemptError {
+    FallbackSingleStream(String),
+    Retryable(String),
+    Permanent(String),
+    Cancelled,
+    Io { path: String, source: io::Error },
+}
+
+pub fn is_retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
+    let raw = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    let secs = raw.parse::<u64>().ok()?;
+    Some(Duration::from_secs(secs.clamp(1, 15)))
+}
+
+pub fn compute_byte_ranges(total: u64, segments: usize) -> Vec<(u64, u64)> {
+    if total == 0 || segments <= 1 {
+        return vec![(0, total.saturating_sub(1))];
+    }
+    let count = (segments as u64).min(total).max(1);
+    let base = total / count;
+    let rem = total % count;
+    let mut out = Vec::with_capacity(count as usize);
+    let mut start = 0u64;
+    for i in 0..count {
+        let len = base + if i < rem { 1 } else { 0 };
+        let end = start + len - 1;
+        out.push((start, end));
+        start = end + 1;
+    }
+    out
+}
+
 impl DownloadClient {
     pub fn new() -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(mcw_models::user_agent())
             .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(120))
-            .pool_max_idle_per_host(20)
+            .read_timeout(Duration::from_secs(30))
+            .tcp_nodelay(true)
+            .http2_adaptive_window(true)
+            .http2_initial_stream_window_size(Some(2 * 1024 * 1024))
+            .http2_initial_connection_window_size(Some(4 * 1024 * 1024))
+            .pool_max_idle_per_host(32)
             .build()?;
         Ok(Self {
             http,
@@ -225,6 +303,7 @@ impl DownloadClient {
         let mut last_err = String::new();
         for attempt in 0..=self.max_retries {
             self.check_control().await?;
+            let mut retry_delay: Option<Duration> = None;
             match self
                 .http
                 .get(url)
@@ -239,14 +318,21 @@ impl DownloadClient {
                     });
                 }
                 Ok(resp) => {
-                    last_err = format!("HTTP {}", resp.status());
+                    let status = resp.status();
+                    last_err = format!("HTTP {status}");
+                    if !is_retryable_status(status) {
+                        break;
+                    }
+                    retry_delay = parse_retry_after(resp.headers());
                 }
                 Err(e) => {
                     last_err = e.to_string();
                 }
             }
             if attempt < self.max_retries {
-                sleep(Duration::from_millis(300 * (1 << attempt.min(4)))).await;
+                let wait = retry_delay
+                    .unwrap_or_else(|| Duration::from_millis(300 * (1 << attempt.min(4))));
+                sleep(wait).await;
             }
         }
         Err(NetError::DownloadFailed {
@@ -255,7 +341,98 @@ impl DownloadClient {
         })
     }
 
+    /// Fetch text with `ETag` / `If-None-Match` conditional caching (`304 Not Modified`).
+    pub async fn get_text_cached(&self, url: &str, cache_path: &Path) -> Result<String> {
+        let etag_path = etag_sidecar_path(cache_path);
+        let cached_body = fs::read_to_string(cache_path)
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let cached_etag = if cached_body.is_some() {
+            fs::read_to_string(&etag_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<CachedHttpMeta>(&s).ok())
+                .map(|m| m.etag)
+                .filter(|e| !e.trim().is_empty())
+        } else {
+            None
+        };
+
+        let mut last_err = String::new();
+        for attempt in 0..=self.max_retries {
+            self.check_control().await?;
+            let mut retry_delay: Option<Duration> = None;
+            let mut req_builder = self
+                .http
+                .get(url)
+                .header(USER_AGENT, mcw_models::user_agent());
+            if let Some(ref etag) = cached_etag {
+                req_builder = req_builder.header(IF_NONE_MATCH, etag.as_str());
+            }
+
+            match req_builder.send().await {
+                Ok(resp) if resp.status() == StatusCode::NOT_MODIFIED => {
+                    if let Some(body) = cached_body {
+                        return Ok(body);
+                    }
+                    last_err = "HTTP 304 Not Modified without local cache body".to_string();
+                }
+                Ok(resp) if resp.status().is_success() => {
+                    let new_etag = resp
+                        .headers()
+                        .get(ETAG)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    let text = resp.text().await.map_err(|e| NetError::DownloadFailed {
+                        url: url.to_string(),
+                        reason: e.to_string(),
+                    })?;
+                    let _ = write_text_atomic(cache_path, &text);
+                    if let Some(etag) = new_etag {
+                        if let Ok(meta_raw) = serde_json::to_string(&CachedHttpMeta { etag }) {
+                            let _ = write_text_atomic(&etag_path, &meta_raw);
+                        }
+                    }
+                    return Ok(text);
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    last_err = format!("HTTP {status}");
+                    if !is_retryable_status(status) {
+                        break;
+                    }
+                    retry_delay = parse_retry_after(resp.headers());
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                }
+            }
+            if attempt < self.max_retries {
+                let wait = retry_delay
+                    .unwrap_or_else(|| Duration::from_millis(300 * (1 << attempt.min(4))));
+                sleep(wait).await;
+            }
+        }
+
+        Err(NetError::DownloadFailed {
+            url: url.to_string(),
+            reason: last_err,
+        })
+    }
+
     pub async fn download_file(&self, req: &DownloadRequest) -> Result<DownloadOutcome> {
+        self.download_file_with_progress(req, |_, _| {}).await
+    }
+
+    pub async fn download_file_with_progress<F>(
+        &self,
+        req: &DownloadRequest,
+        on_bytes: F,
+    ) -> Result<DownloadOutcome>
+    where
+        F: Fn(u64, u64) + Send + Sync + 'static,
+    {
         self.check_control().await?;
         if req.destination.is_file()
             && verify_file(
@@ -281,14 +458,89 @@ impl DownloadClient {
                 })?;
         }
 
+        let on_bytes_cb: Arc<dyn Fn(u64, u64) + Send + Sync> = Arc::new(on_bytes);
         let part_path = part_path_for(&req.destination);
         let urls = req.candidate_urls();
         let mut last_err = String::from("no candidate URLs");
+        let seg_count = global_segments_per_file();
 
         for url in urls {
+            let mut allow_segmented = seg_count >= 2
+                && (req.expected_size == 0 || req.expected_size >= SEGMENT_MIN_BYTES);
+
+            if allow_segmented {
+                if let Some(total_len) = self.probe_range_length(url, req.expected_size).await {
+                    if total_len >= SEGMENT_MIN_BYTES {
+                        for attempt in 0..=self.max_retries {
+                            self.check_control().await?;
+                            match self
+                                .download_segmented(
+                                    url,
+                                    &part_path,
+                                    total_len,
+                                    seg_count,
+                                    Arc::clone(&on_bytes_cb),
+                                )
+                                .await
+                            {
+                                Ok(bytes_written) => {
+                                    verify_file(
+                                        &part_path,
+                                        req.expected_sha1.as_deref(),
+                                        req.expected_size,
+                                    )?;
+                                    rename_with_retry(&part_path, &req.destination)?;
+                                    return Ok(DownloadOutcome {
+                                        destination: req.destination.clone(),
+                                        skipped: false,
+                                        bytes_written,
+                                    });
+                                }
+                                Err(SegmentAttemptError::Cancelled) => {
+                                    cleanup_segment_files(&part_path, seg_count);
+                                    return Err(NetError::Cancelled);
+                                }
+                                Err(SegmentAttemptError::Io { path, source }) => {
+                                    cleanup_segment_files(&part_path, seg_count);
+                                    return Err(NetError::Io { path, source });
+                                }
+                                Err(SegmentAttemptError::FallbackSingleStream(reason)) => {
+                                    cleanup_segment_files(&part_path, seg_count);
+                                    debug!(url = %url, reason = %reason, "Falling back to single-stream download");
+                                    allow_segmented = false;
+                                    break;
+                                }
+                                Err(SegmentAttemptError::Permanent(reason)) => {
+                                    cleanup_segment_files(&part_path, seg_count);
+                                    last_err = reason;
+                                    allow_segmented = false;
+                                    break;
+                                }
+                                Err(SegmentAttemptError::Retryable(reason)) => {
+                                    cleanup_segment_files(&part_path, seg_count);
+                                    last_err = reason;
+                                    if attempt < self.max_retries {
+                                        sleep(Duration::from_millis(250 * (1 << attempt.min(4))))
+                                            .await;
+                                    }
+                                }
+                            }
+                        }
+                        if allow_segmented {
+                            // Retries exhausted on segmented download; try next mirror URL
+                            let _ = tokio::fs::remove_file(&part_path).await;
+                            continue;
+                        }
+                    }
+                }
+            }
+
             for attempt in 0..=self.max_retries {
                 self.check_control().await?;
-                match self.download_once(url, &part_path, req).await {
+                match self
+                    .download_once_with_progress(url, &part_path, req, Arc::clone(&on_bytes_cb))
+                    .await
+                {
                     Ok(bytes_written) => {
                         verify_file(&part_path, req.expected_sha1.as_deref(), req.expected_size)?;
                         rename_with_retry(&part_path, &req.destination)?;
@@ -302,6 +554,7 @@ impl DownloadClient {
                         return Err(NetError::Cancelled);
                     }
                     Err(err) => {
+                        let non_retryable = is_permanent_download_error(&err);
                         last_err = err.to_string();
                         debug!(
                             url = %url,
@@ -309,12 +562,14 @@ impl DownloadClient {
                             error = %last_err,
                             "download attempt failed"
                         );
-                        // If hash/size mismatch, delete corrupted .part file before retry.
                         if matches!(
                             err,
                             NetError::HashMismatch { .. } | NetError::SizeMismatch { .. }
                         ) {
                             let _ = tokio::fs::remove_file(&part_path).await;
+                        }
+                        if non_retryable {
+                            break;
                         }
                         if attempt < self.max_retries {
                             sleep(Duration::from_millis(250 * (1 << attempt.min(4)))).await;
@@ -331,11 +586,220 @@ impl DownloadClient {
         })
     }
 
-    async fn download_once(
+    async fn probe_range_length(&self, url: &str, expected_size: u64) -> Option<u64> {
+        let resp = self
+            .http
+            .head(url)
+            .header(USER_AGENT, mcw_models::user_agent())
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let accepts_ranges = resp
+            .headers()
+            .get(ACCEPT_RANGES)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("bytes"));
+        if !accepts_ranges {
+            return None;
+        }
+        let head_len = resp
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if expected_size > 0 && head_len > 0 && head_len != expected_size {
+            return None;
+        }
+        let total = if expected_size > 0 {
+            expected_size
+        } else {
+            head_len
+        };
+        (total >= SEGMENT_MIN_BYTES).then_some(total)
+    }
+
+    async fn download_segmented(
+        &self,
+        url: &str,
+        part_path: &Path,
+        total_len: u64,
+        segments: usize,
+        on_bytes: Arc<dyn Fn(u64, u64) + Send + Sync>,
+    ) -> std::result::Result<u64, SegmentAttemptError> {
+        let ranges = compute_byte_ranges(total_len, segments);
+        if ranges.len() <= 1 {
+            return Err(SegmentAttemptError::FallbackSingleStream(
+                "file too small for multiple segments".to_string(),
+            ));
+        }
+
+        let shared_done = Arc::new(AtomicU64::new(0));
+        let last_emitted = Arc::new(AtomicU64::new(0));
+        on_bytes(0, total_len);
+
+        let jobs: Vec<_> = ranges
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (start, end))| (idx, start, end))
+            .collect();
+        let seg_total = jobs.len();
+
+        let results: Vec<std::result::Result<(usize, PathBuf, u64), SegmentAttemptError>> =
+            stream::iter(jobs)
+                .map(|(idx, start, end)| {
+                    let client = self.clone();
+                    let url = url.to_string();
+                    let seg_path = segment_path_for(part_path, idx);
+                    let shared_done = Arc::clone(&shared_done);
+                    let last_emitted = Arc::clone(&last_emitted);
+                    let on_bytes = Arc::clone(&on_bytes);
+                    async move {
+                        client
+                            .download_segment_part(
+                                &url,
+                                &seg_path,
+                                start,
+                                end,
+                                total_len,
+                                shared_done,
+                                last_emitted,
+                                on_bytes,
+                            )
+                            .await
+                            .map(|len| (idx, seg_path, len))
+                    }
+                })
+                .buffer_unordered(seg_total)
+                .collect()
+                .await;
+
+        let mut seg_files = vec![None; seg_total];
+        let mut combined_written = 0u64;
+        for res in results {
+            let (idx, path, len) = res?;
+            combined_written += len;
+            seg_files[idx] = Some(path);
+        }
+        on_bytes(total_len, total_len);
+
+        let ordered_paths: Vec<PathBuf> = seg_files.into_iter().flatten().collect();
+        let dest_part = part_path.to_path_buf();
+        tokio::task::spawn_blocking(move || combine_segment_files(&ordered_paths, &dest_part))
+            .await
+            .map_err(|e| SegmentAttemptError::Retryable(format!("Segment join panicked: {e}")))?
+            .map_err(|source| SegmentAttemptError::Io {
+                path: part_path.display().to_string(),
+                source,
+            })?;
+
+        Ok(combined_written)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn download_segment_part(
+        &self,
+        url: &str,
+        seg_path: &Path,
+        start: u64,
+        end: u64,
+        total_len: u64,
+        shared_done: Arc<AtomicU64>,
+        last_emitted: Arc<AtomicU64>,
+        on_bytes: Arc<dyn Fn(u64, u64) + Send + Sync>,
+    ) -> std::result::Result<u64, SegmentAttemptError> {
+        self.check_control()
+            .await
+            .map_err(|_| SegmentAttemptError::Cancelled)?;
+
+        let expected_seg_len = end - start + 1;
+        let response = self
+            .http
+            .get(url)
+            .header(USER_AGENT, mcw_models::user_agent())
+            .header(RANGE, format!("bytes={start}-{end}"))
+            .send()
+            .await
+            .map_err(|e| SegmentAttemptError::Retryable(e.to_string()))?;
+
+        let status = response.status();
+        if status == StatusCode::OK {
+            return Err(SegmentAttemptError::FallbackSingleStream(
+                "Server returned HTTP 200 instead of 206 Partial Content".to_string(),
+            ));
+        }
+        if status != StatusCode::PARTIAL_CONTENT {
+            let msg = format!("HTTP {status}");
+            return if is_retryable_status(status) {
+                Err(SegmentAttemptError::Retryable(msg))
+            } else {
+                Err(SegmentAttemptError::Permanent(msg))
+            };
+        }
+
+        let raw_file =
+            tokio::fs::File::create(seg_path)
+                .await
+                .map_err(|source| SegmentAttemptError::Io {
+                    path: seg_path.display().to_string(),
+                    source,
+                })?;
+        let mut writer = tokio::io::BufWriter::with_capacity(DISK_BUF_BYTES, raw_file);
+        let mut seg_written = 0u64;
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk_res) = stream.next().await {
+            self.check_control()
+                .await
+                .map_err(|_| SegmentAttemptError::Cancelled)?;
+            let chunk = chunk_res.map_err(|e| SegmentAttemptError::Retryable(e.to_string()))?;
+            writer
+                .write_all(&chunk)
+                .await
+                .map_err(|source| SegmentAttemptError::Io {
+                    path: seg_path.display().to_string(),
+                    source,
+                })?;
+            let n = chunk.len() as u64;
+            seg_written += n;
+            GLOBAL_DOWNLOADED_BYTES.fetch_add(n, Ordering::Relaxed);
+            let done_now = shared_done.fetch_add(n, Ordering::Relaxed) + n;
+            let prev = last_emitted.load(Ordering::Relaxed);
+            if done_now.saturating_sub(prev) >= PROGRESS_THROTTLE_BYTES
+                && last_emitted
+                    .compare_exchange(prev, done_now, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                on_bytes(done_now.min(total_len), total_len);
+            }
+            bandwidth::throttle_bytes(chunk.len()).await;
+        }
+        writer
+            .flush()
+            .await
+            .map_err(|source| SegmentAttemptError::Io {
+                path: seg_path.display().to_string(),
+                source,
+            })?;
+
+        if seg_written != expected_seg_len {
+            return Err(SegmentAttemptError::Retryable(format!(
+                "Segment length mismatch: expected {expected_seg_len}, got {seg_written}"
+            )));
+        }
+
+        Ok(seg_written)
+    }
+
+    async fn download_once_with_progress(
         &self,
         url: &str,
         part_path: &Path,
         req: &DownloadRequest,
+        on_bytes: Arc<dyn Fn(u64, u64) + Send + Sync>,
     ) -> Result<u64> {
         let existing_len = tokio::fs::metadata(part_path)
             .await
@@ -372,14 +836,31 @@ impl DownloadClient {
             });
         }
         if !status.is_success() {
+            let suffix = if !is_retryable_status(status) {
+                " (non-retryable)"
+            } else {
+                ""
+            };
             return Err(NetError::DownloadFailed {
                 url: url.to_string(),
-                reason: format!("HTTP {status}"),
+                reason: format!("HTTP {status}{suffix}"),
             });
         }
 
         let append_mode = resume_from > 0 && status == StatusCode::PARTIAL_CONTENT;
-        let mut file = if append_mode {
+        let total_len = if req.expected_size > 0 {
+            req.expected_size
+        } else if let Some(cl) = response.content_length() {
+            if append_mode {
+                resume_from + cl
+            } else {
+                cl
+            }
+        } else {
+            0
+        };
+
+        let raw_file = if append_mode {
             tokio::fs::OpenOptions::new()
                 .append(true)
                 .open(part_path)
@@ -396,8 +877,12 @@ impl DownloadClient {
                     source,
                 })?
         };
+        let mut file = tokio::io::BufWriter::with_capacity(DISK_BUF_BYTES, raw_file);
 
         let mut written = if append_mode { resume_from } else { 0 };
+        let mut last_reported = written;
+        on_bytes(written, total_len);
+
         let mut stream = response.bytes_stream();
         while let Some(chunk_res) = stream.next().await {
             self.check_control().await?;
@@ -413,12 +898,17 @@ impl DownloadClient {
                 })?;
             written += chunk.len() as u64;
             GLOBAL_DOWNLOADED_BYTES.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            if written.saturating_sub(last_reported) >= PROGRESS_THROTTLE_BYTES {
+                last_reported = written;
+                on_bytes(written, total_len);
+            }
             bandwidth::throttle_bytes(chunk.len()).await;
         }
         file.flush().await.map_err(|source| NetError::Io {
             path: part_path.display().to_string(),
             source,
         })?;
+        on_bytes(written, total_len.max(written));
 
         Ok(written)
     }
@@ -493,9 +983,69 @@ pub fn compute_sha1(path: &Path) -> Result<String> {
     Ok(hex_encode(&digest))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedVerifyEntry {
+    path: String,
+    size: u64,
+    mtime_ns: u128,
+    sha1: String,
+}
+
+/// Initialize the persistent verification cache from disk so unchanged assets/libraries are
+/// never re-hashed across launcher restarts.
+pub fn init_persistent_verification_cache(cache_file: &Path) {
+    if let Ok(mut path_guard) = verification_cache_file().lock() {
+        *path_guard = Some(cache_file.to_path_buf());
+    }
+    let Ok(raw) = fs::read_to_string(cache_file) else {
+        return;
+    };
+    let Ok(entries) = serde_json::from_str::<Vec<PersistedVerifyEntry>>(&raw) else {
+        return;
+    };
+    if let Ok(mut guard) = verification_cache().lock() {
+        for item in entries {
+            let p = PathBuf::from(&item.path);
+            if p.is_file() {
+                guard.insert((p, item.size, item.mtime_ns), item.sha1);
+            }
+        }
+    }
+}
+
+/// Flush the in-memory verification cache to disk atomically (bounded to 50,000 entries).
+pub fn flush_persistent_verification_cache() {
+    let cache_path = verification_cache_file()
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    let Some(cache_path) = cache_path else {
+        return;
+    };
+    let entries: Vec<PersistedVerifyEntry> = {
+        let Ok(guard) = verification_cache().lock() else {
+            return;
+        };
+        guard
+            .iter()
+            .take(MAX_PERSISTED_VERIFY_ENTRIES)
+            .map(|((path, size, mtime_ns), sha1)| PersistedVerifyEntry {
+                path: path.to_string_lossy().to_string(),
+                size: *size,
+                mtime_ns: *mtime_ns,
+                sha1: sha1.clone(),
+            })
+            .collect()
+    };
+    VERIFICATION_CACHE_DIRTY.store(0, Ordering::Relaxed);
+    if let Ok(json) = serde_json::to_string(&entries) {
+        let _ = write_text_atomic(&cache_path, &json);
+    }
+}
+
 /// Verify file size (only when `expected_size > 0`) and SHA-1 (when provided),
-/// using an in-memory `(path, size, mtime_ns)` verification cache so unchanged
-/// libraries and assets are not re-hashed repeatedly (mirroring Python `VerificationCache`).
+/// using an in-memory + persistent `(path, size, mtime_ns)` verification cache so unchanged
+/// libraries and assets are not re-hashed repeatedly.
 pub fn verify_file(path: &Path, expected_sha1: Option<&str>, expected_size: u64) -> Result<()> {
     let meta = fs::metadata(path).map_err(|source| NetError::Io {
         path: path.display().to_string(),
@@ -543,6 +1093,9 @@ pub fn verify_file(path: &Path, expected_sha1: Option<&str>, expected_size: u64)
                 if let Ok(mut guard) = verification_cache().lock() {
                     guard.insert(cache_key, actual);
                 }
+                if VERIFICATION_CACHE_DIRTY.fetch_add(1, Ordering::Relaxed) >= 128 {
+                    flush_persistent_verification_cache();
+                }
             }
         }
     }
@@ -558,6 +1111,51 @@ fn part_path_for(dest: &Path) -> PathBuf {
     let mut s = dest.as_os_str().to_os_string();
     s.push(format!(".{pid}-{seq}.part"));
     PathBuf::from(s)
+}
+
+fn segment_path_for(part_path: &Path, idx: usize) -> PathBuf {
+    let mut s = part_path.as_os_str().to_os_string();
+    s.push(format!(".seg.{idx}"));
+    PathBuf::from(s)
+}
+
+fn cleanup_segment_files(part_path: &Path, segments: usize) {
+    for idx in 0..segments {
+        let _ = fs::remove_file(segment_path_for(part_path, idx));
+    }
+}
+
+fn combine_segment_files(seg_paths: &[PathBuf], dest_part: &Path) -> io::Result<()> {
+    let out = File::create(dest_part)?;
+    let mut writer = io::BufWriter::with_capacity(DISK_BUF_BYTES, out);
+    for seg in seg_paths {
+        let mut reader = io::BufReader::with_capacity(DISK_BUF_BYTES, File::open(seg)?);
+        io::copy(&mut reader, &mut writer)?;
+        drop(reader);
+        let _ = fs::remove_file(seg);
+    }
+    io::Write::flush(&mut writer)?;
+    Ok(())
+}
+
+fn etag_sidecar_path(cache_path: &Path) -> PathBuf {
+    let mut s = cache_path.as_os_str().to_os_string();
+    s.push(".etag");
+    PathBuf::from(s)
+}
+
+fn write_text_atomic(dest: &Path, content: &str) -> io::Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = part_path_for(dest);
+    fs::write(&tmp, content.as_bytes())?;
+    let _ = fs::remove_file(dest);
+    fs::rename(&tmp, dest)
+}
+
+fn is_permanent_download_error(err: &NetError) -> bool {
+    matches!(err, NetError::DownloadFailed { reason, .. } if reason.contains("(non-retryable)"))
 }
 
 fn rename_with_retry(from: &Path, to: &Path) -> Result<()> {
@@ -608,5 +1206,40 @@ mod tests {
         assert!(verify_file(&path, Some(sha1), 11).is_ok());
         assert!(verify_file(&path, Some(sha1), 999).is_err());
         assert!(verify_file(&path, Some("0000000000000000000000000000000000000000"), 0).is_err());
+    }
+
+    #[test]
+    fn computes_segmented_ranges_and_retryable_statuses() {
+        assert_eq!(
+            compute_byte_ranges(10, 4),
+            vec![(0, 2), (3, 5), (6, 7), (8, 9)]
+        );
+        assert_eq!(compute_byte_ranges(100, 1), vec![(0, 99)]);
+        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
+        assert!(!is_retryable_status(StatusCode::FORBIDDEN));
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+    }
+
+    #[test]
+    fn persistent_verification_cache_roundtrips_to_disk() {
+        let dir = tempdir().unwrap();
+        let sample = dir.path().join("asset.dat");
+        let cache_file = dir.path().join("verify.json");
+        fs::write(&sample, b"hello world").unwrap();
+        let sha1 = "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed";
+
+        init_persistent_verification_cache(&cache_file);
+        assert!(verify_file(&sample, Some(sha1), 11).is_ok());
+        flush_persistent_verification_cache();
+
+        assert!(cache_file.is_file());
+        if let Ok(mut guard) = verification_cache().lock() {
+            guard.clear();
+        }
+        init_persistent_verification_cache(&cache_file);
+        if let Ok(guard) = verification_cache().lock() {
+            assert!(guard.values().any(|v| v == sha1));
+        }
     }
 }

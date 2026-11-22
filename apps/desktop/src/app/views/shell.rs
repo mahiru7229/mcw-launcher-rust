@@ -194,6 +194,7 @@ impl McwApp {
         p: ThemePalette,
         task: &ActiveTask,
         speed_text: &str,
+        current_download_bps: f64,
         pause_lbl: &str,
         resume_lbl: &str,
         cancel_lbl: &str,
@@ -258,15 +259,51 @@ impl McwApp {
                         let task_done = task.total > 0 && task.current >= task.total;
                         let show_speed =
                             !speed_text.is_empty() && !is_paused && !is_cancelled && !task_done;
+                        let eta_text =
+                            if task.total > 0 && !is_paused && !is_cancelled && !task_done {
+                                let rem = task.total.saturating_sub(task.current) as f64;
+                                if task.is_bytes && current_download_bps >= 1024.0 {
+                                    let secs = (rem / current_download_bps).round().max(1.0) as u64;
+                                    Some(format!("ETA {}", format_duration(secs)))
+                                } else if !task.is_bytes && task.current > 0 {
+                                    let elapsed = task.started_at.elapsed().as_secs_f64();
+                                    if elapsed >= 0.8 {
+                                        let rate = task.current as f64 / elapsed;
+                                        if rate > 0.01 {
+                                            let secs = (rem / rate).round().max(1.0) as u64;
+                                            Some(format!("ETA {}", format_duration(secs)))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
                         let right_text = if task.total > 0 {
                             let pct = ((task.current.min(task.total) as f64 / task.total as f64)
                                 * 100.0)
                                 .round() as u64;
-                            if !show_speed {
-                                format!("{}/{} ({pct}%)", task.current, task.total)
+                            let mut parts = if task.is_bytes {
+                                format!(
+                                    "{:.1} / {:.1} MB ({pct}%)",
+                                    task.current as f64 / (1024.0 * 1024.0),
+                                    task.total as f64 / (1024.0 * 1024.0)
+                                )
                             } else {
-                                format!("{}/{} ({pct}%) · {speed_text}", task.current, task.total)
+                                format!("{}/{} ({pct}%)", task.current, task.total)
+                            };
+                            if show_speed {
+                                parts.push_str(&format!(" · {speed_text}"));
                             }
+                            if let Some(eta) = eta_text {
+                                parts.push_str(&format!(" · {eta}"));
+                            }
+                            parts
                         } else if !show_speed {
                             if is_paused {
                                 paused_badge.to_string()
@@ -377,6 +414,7 @@ impl McwApp {
                 });
                 ui.add_space(6.0);
 
+                let speed_bps = self.current_download_bps;
                 // Show at most 2 representative tasks in the bottom bar; responsive 2-column when wide
                 let visible = &self.active_tasks[..total_tasks.min(2)];
                 if visible.len() == 2 && ui.available_width() >= 760.0 {
@@ -386,6 +424,7 @@ impl McwApp {
                             p,
                             &visible[0],
                             &speed_text,
+                            speed_bps,
                             &pause_lbl,
                             &resume_lbl,
                             &cancel_lbl,
@@ -398,6 +437,7 @@ impl McwApp {
                             p,
                             &visible[1],
                             &speed_text,
+                            speed_bps,
                             &pause_lbl,
                             &resume_lbl,
                             &cancel_lbl,
@@ -413,6 +453,7 @@ impl McwApp {
                             p,
                             task,
                             &speed_text,
+                            speed_bps,
                             &pause_lbl,
                             &resume_lbl,
                             &cancel_lbl,
@@ -431,6 +472,7 @@ impl McwApp {
         if self.show_all_tasks_modal && total_tasks > 2 {
             let mut open = self.show_all_tasks_modal;
             let tasks = self.active_tasks.clone();
+            let speed_bps = self.current_download_bps;
             let notice = self.modal_notice_for("mcw_all_tasks_modal");
             let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
                 ctx,
@@ -459,6 +501,7 @@ impl McwApp {
                                     p,
                                     task,
                                     &speed_text,
+                                    speed_bps,
                                     &pause_lbl,
                                     &resume_lbl,
                                     &cancel_lbl,

@@ -35,7 +35,9 @@ pub use jvm_presets::{
     detect_preset, get_preset_flags, JvmPresetId, AIKAR_FLAGS, SHENANDOAH_FLAGS, ZGC_FLAGS,
 };
 pub use lan_agent::LanAgentManager;
-pub use launcher::{LaunchSpec, ProcessLauncher};
+pub use launcher::{
+    prepare_command_invocation, run_lifecycle_hook, split_shell_words, LaunchSpec, ProcessLauncher,
+};
 pub use mclogs::{sanitize_log_text, McLogsClient, McLogsUploadResult};
 pub use provisioner::{AdoptiumRelease, JavaProvisioner};
 pub use supervisor::{

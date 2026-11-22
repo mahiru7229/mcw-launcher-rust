@@ -319,41 +319,161 @@ pub(crate) fn focus_viewport(
     let _ = title_hint;
 }
 
-pub(crate) fn pick_file_dialog(title: &str, filter: &str) -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let safe_title = title.replace('\'', "''");
-        let safe_filter = filter.replace('\'', "''");
-        let script = format!(
-            "Add-Type -AssemblyName System.Windows.Forms; \
-             $owner = New-Object System.Windows.Forms.Form; \
-             $owner.TopMost = $true; \
-             $d = New-Object System.Windows.Forms.OpenFileDialog; \
-             $d.Title = '{safe_title}'; \
-             $d.Filter = '{safe_filter}'; \
-             $res = $d.ShowDialog($owner); \
-             $owner.Dispose(); \
-             if ($res -eq 'OK') {{ Write-Output $d.FileName }}"
-        );
-        let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-STA", "-Command", &script])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .ok()?;
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(s))
+fn parse_filter_pairs(filter: &str) -> Vec<(String, Vec<String>)> {
+    let parts: Vec<&str> = filter.split('|').collect();
+    let mut out = Vec::new();
+    for &[desc_raw, spec_raw] in parts.as_chunks::<2>().0 {
+        let label = desc_raw.trim().to_string();
+        let exts: Vec<String> = spec_raw
+            .split([';', ','])
+            .map(|pat| {
+                pat.trim()
+                    .trim_start_matches('*')
+                    .trim_start_matches('.')
+                    .to_ascii_lowercase()
+            })
+            .filter(|ext| !ext.is_empty() && ext != "*")
+            .collect();
+        if !exts.is_empty() {
+            out.push((label, exts));
         }
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (title, filter);
-        None
+    out
+}
+
+fn apply_rfd_filters(mut dialog: rfd::FileDialog, filter: &str) -> rfd::FileDialog {
+    for (label, exts) in parse_filter_pairs(filter) {
+        let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
+        dialog = dialog.add_filter(&label, &ext_refs);
     }
+    dialog
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn has_xdg_desktop_portal() -> bool {
+    let Ok(out) = std::process::Command::new("dbus-send")
+        .args([
+            "--session",
+            "--dest=org.freedesktop.DBus",
+            "--type=method_call",
+            "--print-reply",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.NameHasOwner",
+            "string:org.freedesktop.portal.Desktop",
+        ])
+        .output()
+    else {
+        return false;
+    };
+    out.status.success() && String::from_utf8_lossy(&out.stdout).contains("boolean true")
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn run_linux_dialog_cmd(bin: &str, args: &[String]) -> Option<PathBuf> {
+    let out = std::process::Command::new(bin).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(s))
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_fallback_pick_folder(title: &str) -> Option<PathBuf> {
+    let zenity_args = vec![
+        "--file-selection".to_string(),
+        "--directory".to_string(),
+        "--title".to_string(),
+        title.to_string(),
+    ];
+    if let Some(p) = run_linux_dialog_cmd("zenity", &zenity_args) {
+        return Some(p);
+    }
+    let kdialog_args = vec![
+        "--getexistingdirectory".to_string(),
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+        "--title".to_string(),
+        title.to_string(),
+    ];
+    run_linux_dialog_cmd("kdialog", &kdialog_args)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_fallback_pick_file(title: &str, filter: &str) -> Option<PathBuf> {
+    let mut zenity_args = vec![
+        "--file-selection".to_string(),
+        "--title".to_string(),
+        title.to_string(),
+    ];
+    let pairs = parse_filter_pairs(filter);
+    for (label, exts) in &pairs {
+        let pats = exts
+            .iter()
+            .map(|e| format!("*.{e}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        zenity_args.push(format!("--file-filter={label} | {pats}"));
+    }
+    if !pairs.is_empty() {
+        zenity_args.push("--file-filter=All files | *".to_string());
+    }
+    if let Some(p) = run_linux_dialog_cmd("zenity", &zenity_args) {
+        return Some(p);
+    }
+    let kdialog_filter = if pairs.is_empty() {
+        "*".to_string()
+    } else {
+        pairs
+            .iter()
+            .flat_map(|(_, exts)| exts.iter().map(|e| format!("*.{e}")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let kdialog_args = vec![
+        "--getopenfilename".to_string(),
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+        kdialog_filter,
+        "--title".to_string(),
+        title.to_string(),
+    ];
+    run_linux_dialog_cmd("kdialog", &kdialog_args)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_fallback_save_file(title: &str, default_filename: &str) -> Option<PathBuf> {
+    let zenity_args = vec![
+        "--file-selection".to_string(),
+        "--save".to_string(),
+        "--confirm-overwrite".to_string(),
+        "--filename".to_string(),
+        default_filename.to_string(),
+        "--title".to_string(),
+        title.to_string(),
+    ];
+    if let Some(p) = run_linux_dialog_cmd("zenity", &zenity_args) {
+        return Some(p);
+    }
+    let kdialog_args = vec![
+        "--getsavefilename".to_string(),
+        default_filename.to_string(),
+        "--title".to_string(),
+        title.to_string(),
+    ];
+    run_linux_dialog_cmd("kdialog", &kdialog_args)
+}
+
+pub(crate) fn pick_file_dialog(title: &str, filter: &str) -> Option<PathBuf> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if !has_xdg_desktop_portal() {
+            return linux_fallback_pick_file(title, filter);
+        }
+    }
+    apply_rfd_filters(rfd::FileDialog::new().set_title(title), filter).pick_file()
 }
 
 pub(crate) fn pick_file_dialog_async(
@@ -368,39 +488,13 @@ pub(crate) fn pick_file_dialog_async(
 }
 
 pub(crate) fn pick_folder_dialog(title: &str) -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let safe_title = title.replace('\'', "''");
-        let script = format!(
-            "Add-Type -AssemblyName System.Windows.Forms; \
-             $owner = New-Object System.Windows.Forms.Form; \
-             $owner.TopMost = $true; \
-             $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
-             $d.Description = '{safe_title}'; \
-             $d.ShowNewFolderButton = $false; \
-             $res = $d.ShowDialog($owner); \
-             $owner.Dispose(); \
-             if ($res -eq 'OK') {{ Write-Output $d.SelectedPath }}"
-        );
-        let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-STA", "-Command", &script])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .ok()?;
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(s))
+        if !has_xdg_desktop_portal() {
+            return linux_fallback_pick_folder(title);
         }
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = title;
-        None
-    }
+    rfd::FileDialog::new().set_title(title).pick_folder()
 }
 
 pub(crate) fn pick_folder_dialog_async(
@@ -418,43 +512,19 @@ pub(crate) fn save_file_dialog(
     filter: &str,
     default_filename: &str,
 ) -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let safe_title = title.replace('\'', "''");
-        let safe_filter = filter.replace('\'', "''");
-        let safe_file = default_filename.replace('\'', "''");
-        let script = format!(
-            "Add-Type -AssemblyName System.Windows.Forms; \
-             $owner = New-Object System.Windows.Forms.Form; \
-             $owner.TopMost = $true; \
-             $d = New-Object System.Windows.Forms.SaveFileDialog; \
-             $d.Title = '{safe_title}'; \
-             $d.Filter = '{safe_filter}'; \
-             $d.FileName = '{safe_file}'; \
-             $d.OverwritePrompt = $true; \
-             $res = $d.ShowDialog($owner); \
-             $owner.Dispose(); \
-             if ($res -eq 'OK') {{ Write-Output $d.FileName }}"
-        );
-        let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-STA", "-Command", &script])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .ok()?;
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(s))
+        if !has_xdg_desktop_portal() {
+            return linux_fallback_save_file(title, default_filename);
         }
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (title, filter);
-        Some(PathBuf::from(default_filename))
-    }
+    apply_rfd_filters(
+        rfd::FileDialog::new()
+            .set_title(title)
+            .set_file_name(default_filename),
+        filter,
+    )
+    .save_file()
 }
 
 pub(crate) fn format_speed(bps: f64) -> String {
@@ -547,30 +617,108 @@ pub(crate) fn format_duration(secs: u64) -> String {
     }
 }
 
-pub(crate) fn open_external(target: &str) {
+pub(crate) fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn try_spawn_launcher(program: &str, args: &[&str]) -> std::result::Result<(), String> {
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{program}: {e}"))?;
+    std::thread::sleep(std::time::Duration::from_millis(90));
+    match child.try_wait() {
+        Ok(Some(status)) if !status.success() => Err(format!(
+            "{program} exited with code {}",
+            status.code().unwrap_or(-1)
+        )),
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("{program}: {e}")),
+    }
+}
+
+pub(crate) fn open_external_result(target: &str) -> std::result::Result<(), String> {
     if target.starts_with("http://") || target.starts_with("https://") {
-        let _ = webbrowser::open(target);
-        return;
+        return webbrowser::open(target).map_err(|e| format!("Failed to open URL: {e}"));
     }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("explorer.exe")
+        std::process::Command::new("explorer.exe")
             .arg(target)
-            .spawn();
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("explorer.exe failed: {e}"))
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg(target).spawn();
+        std::process::Command::new("open")
+            .arg(target)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open failed: {e}"))
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _ = std::process::Command::new("xdg-open").arg(target).spawn();
+        let candidates: Vec<(&str, Vec<&str>)> = vec![
+            ("xdg-open", vec![target]),
+            ("gio", vec!["open", target]),
+            ("kioclient", vec!["exec", target]),
+            ("kioclient5", vec!["exec", target]),
+            ("kde-open5", vec![target]),
+            ("kde-open", vec![target]),
+        ];
+        let mut errors = Vec::new();
+        for (prog, args) in &candidates {
+            match try_spawn_launcher(prog, args) {
+                Ok(()) => return Ok(()),
+                Err(e) => errors.push(e),
+            }
+        }
+        let target_path = std::path::Path::new(target);
+        let folder = if target_path.is_file() {
+            target_path.parent().unwrap_or(target_path)
+        } else {
+            target_path
+        };
+        let folder_str = folder.to_string_lossy().into_owned();
+        for fm in ["nautilus", "dolphin", "thunar", "nemo", "pcmanfm", "caja"] {
+            match try_spawn_launcher(fm, &[folder_str.as_str()]) {
+                Ok(()) => return Ok(()),
+                Err(e) => errors.push(e),
+            }
+        }
+        Err(format!(
+            "Could not open '{}': {}",
+            target,
+            errors.join("; ")
+        ))
+    }
+}
+
+pub(crate) fn open_external(target: &str) {
+    if let Err(err) = open_external_result(target) {
+        tracing::warn!(target = %target, error = %err, "External open failed");
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::window_size_for_resolution;
+    use super::{parse_filter_pairs, window_size_for_resolution};
+
+    #[test]
+    fn parses_win32_filter_strings_for_rfd() {
+        let parsed = parse_filter_pairs("Modpack (*.mrpack;*.zip)|*.mrpack;*.zip|All (*.*)|*.*");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, "Modpack (*.mrpack;*.zip)");
+        assert_eq!(parsed[0].1, vec!["mrpack", "zip"]);
+    }
 
     #[test]
     fn selects_expected_default_window_sizes_for_1080p_and_768p() {

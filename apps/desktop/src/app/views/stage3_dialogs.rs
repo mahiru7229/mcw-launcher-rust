@@ -402,6 +402,17 @@ impl McwApp {
                                     picked_font.clear();
                                     font_changed = true;
                                 }
+                                let bundled_mono = crate::theme::BUNDLED_JETBRAINS_MONO_OPTION;
+                                let bundled_selected =
+                                    picked_font.eq_ignore_ascii_case(bundled_mono);
+                                if ui
+                                    .selectable_label(bundled_selected, bundled_mono)
+                                    .clicked()
+                                    && !bundled_selected
+                                {
+                                    picked_font = bundled_mono.to_string();
+                                    font_changed = true;
+                                }
                                 for font in &self.system_fonts {
                                     let selected = picked_font.eq_ignore_ascii_case(&font.name);
                                     if ui.selectable_label(selected, &font.name).clicked()
@@ -692,6 +703,56 @@ impl McwApp {
                             .clicked()
                         {
                             self.start_prune_unused_versions(ctx);
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .checkbox(
+                                &mut self.prefs.auto_cleanup_reminders,
+                                "Auto junk cleanup reminder popup (>= 50 MB)",
+                            )
+                            .changed()
+                        {
+                            if self.prefs.auto_cleanup_reminders {
+                                self.prefs.junk_reminder_snooze_until = 0;
+                            }
+                            *prefs_dirty = true;
+                        }
+                        let cur_days = format!("{} days", self.prefs.junk_retention_days);
+                        ui.label("Retention:");
+                        egui::ComboBox::from_id_salt("launcher_settings_junk_retention_combo")
+                            .selected_text(cur_days)
+                            .width(105.0)
+                            .show_ui(ui, |ui| {
+                                for days in [7u32, 14, 30, 60] {
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.prefs.junk_retention_days,
+                                            days,
+                                            format!("{days} days"),
+                                        )
+                                        .changed()
+                                    {
+                                        *prefs_dirty = true;
+                                    }
+                                }
+                            });
+                        let scan_junk_lbl = if self.junk_scanning {
+                            "Scanning Junk..."
+                        } else {
+                            "Scan Junk Now"
+                        };
+                        if ui
+                            .add_enabled(
+                                !self.junk_scanning && !self.junk_cleaning,
+                                Button::new(scan_junk_lbl),
+                            )
+                            .clicked()
+                        {
+                            self.start_junk_scan(true, ctx);
                         }
                     });
                 });

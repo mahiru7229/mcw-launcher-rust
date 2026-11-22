@@ -1153,6 +1153,7 @@ impl McwApp {
         let settings_before = self.selected_settings.clone();
         let jvm_before = self.edit_jvm_args_text.clone();
         let game_before = self.edit_game_args_text.clone();
+        let env_before = self.edit_env_vars_text.clone();
 
         let Some(ref mut settings) = self.selected_settings else {
             return;
@@ -1396,7 +1397,74 @@ impl McwApp {
                                 .font(egui::TextStyle::Monospace),
                         );
 
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
 
+                        ui.label(RichText::new("Commands & Environment").strong());
+                        ui.label(
+                            RichText::new(
+                                "Supports $INST_NAME, $INST_ID, $INST_DIR, $INST_MC_DIR, and $INST_JAVA in hook/env values.",
+                            )
+                            .size(11.0)
+                            .color(p.text_muted),
+                        );
+                        ui.add_space(6.0);
+                        egui::Grid::new("inst_commands_env_grid")
+                            .num_columns(2)
+                            .spacing([10.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.label("Pre-launch command:");
+                                ui.add(
+                                    TextEdit::singleline(&mut settings.pre_launch_command)
+                                        .desired_width(400.0)
+                                        .font(egui::TextStyle::Monospace),
+                                );
+                                ui.end_row();
+                                ui.label("Wrapper command:");
+                                ui.add(
+                                    TextEdit::singleline(&mut settings.wrapper_command)
+                                        .hint_text("e.g. prime-run or env VAR=1")
+                                        .desired_width(400.0)
+                                        .font(egui::TextStyle::Monospace),
+                                );
+                                ui.end_row();
+                                ui.label("Post-exit command:");
+                                ui.add(
+                                    TextEdit::singleline(&mut settings.post_exit_command)
+                                        .desired_width(400.0)
+                                        .font(egui::TextStyle::Monospace),
+                                );
+                                ui.end_row();
+                            });
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            let gm_lbl = if cfg!(target_os = "linux") {
+                                "Enable GameMode (gamemoderun)"
+                            } else {
+                                "Enable GameMode (gamemoderun, Linux)"
+                            };
+                            let mh_lbl = if cfg!(target_os = "linux") {
+                                "Enable MangoHud (mangohud)"
+                            } else {
+                                "Enable MangoHud (mangohud, Linux)"
+                            };
+                            ui.checkbox(&mut settings.enable_gamemode, gm_lbl);
+                            ui.checkbox(&mut settings.enable_mangohud, mh_lbl);
+                        });
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("Environment variables (KEY=VALUE, one per line):")
+                                .size(11.5)
+                                .color(p.text_muted),
+                        );
+                        ui.add(
+                            TextEdit::multiline(&mut self.edit_env_vars_text)
+                                .hint_text("MESA_GL_VERSION_OVERRIDE=4.6\n__GL_THREADED_OPTIMIZATIONS=1")
+                                .desired_rows(2)
+                                .desired_width(520.0)
+                                .font(egui::TextStyle::Monospace),
+                        );
 
                         ui.add_space(10.0);
                         ui.separator();
@@ -1582,6 +1650,7 @@ impl McwApp {
         if self.selected_settings.as_ref() != settings_before.as_ref()
             || self.edit_jvm_args_text != jvm_before
             || self.edit_game_args_text != game_before
+            || self.edit_env_vars_text != env_before
         {
             self.instance_settings_dirty = true;
         }

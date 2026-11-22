@@ -9,6 +9,9 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub const BUNDLED_JETBRAINS_MONO_OPTION: &str = "JetBrains Mono (Bundled)";
+const JETBRAINS_MONO_TTF: &[u8] = include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
     Dark,
@@ -541,6 +544,12 @@ pub fn apply_theme_palette(
     visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, p.text);
     visuals.widgets.active.corner_radius = radius;
 
+    visuals.widgets.open.bg_fill = p.elevated;
+    visuals.widgets.open.weak_bg_fill = p.elevated;
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, p.accent);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, p.text);
+    visuals.widgets.open.corner_radius = radius;
+
     let mut style = Style {
         visuals,
         ..Style::default()
@@ -577,7 +586,18 @@ pub fn apply_theme_palette(
         MotionMode::Reduced => 0.04,
         MotionMode::Off => 0.0,
     };
-    ctx.set_style(style);
+    ctx.options_mut(|o| {
+        o.theme_preference = match mode {
+            ThemeMode::Dark => eframe::egui::ThemePreference::Dark,
+            ThemeMode::Light => eframe::egui::ThemePreference::Light,
+        };
+    });
+    ctx.set_theme(match mode {
+        ThemeMode::Dark => eframe::egui::Theme::Dark,
+        ThemeMode::Light => eframe::egui::Theme::Light,
+    });
+    ctx.set_style_of(eframe::egui::Theme::Dark, style.clone());
+    ctx.set_style_of(eframe::egui::Theme::Light, style);
 
     p
 }
@@ -799,7 +819,7 @@ pub fn scan_system_fonts() -> Vec<SystemFontEntry> {
 /// Resolves a stored custom font preference (either an exact display name or file path) to a readable font file.
 pub fn resolve_custom_font_path(spec: &str, system_fonts: &[SystemFontEntry]) -> Option<PathBuf> {
     let trimmed = spec.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(BUNDLED_JETBRAINS_MONO_OPTION) {
         return None;
     }
     if let Some(hit) = system_fonts
@@ -815,10 +835,18 @@ pub fn resolve_custom_font_path(spec: &str, system_fonts: &[SystemFontEntry]) ->
     None
 }
 
-/// Load system UI font (optional custom font first, then Segoe UI / Noto Sans fallback)
-/// plus symbol fallback and monospace font for Live Logs and file paths.
-pub fn configure_fonts(ctx: &Context, custom_font_path: Option<&Path>) {
+/// Load system UI font (optional custom font or bundled JetBrains Mono first, then Segoe UI / Noto Sans fallback)
+/// plus symbol fallback and bundled JetBrains Mono as default Monospace font for logs and paths.
+pub fn configure_fonts_with_spec(
+    ctx: &Context,
+    custom_font_spec: &str,
+    custom_font_path: Option<&Path>,
+) {
     let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "mcw_jetbrains_mono".to_owned(),
+        Arc::new(FontData::from_static(JETBRAINS_MONO_TTF)),
+    );
 
     #[cfg(windows)]
     let ui_candidates = [
@@ -845,7 +873,16 @@ pub fn configure_fonts(ctx: &Context, custom_font_path: Option<&Path>) {
         }
     }
 
-    if let Some(custom_path) = custom_font_path {
+    if custom_font_spec
+        .trim()
+        .eq_ignore_ascii_case(BUNDLED_JETBRAINS_MONO_OPTION)
+    {
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, "mcw_jetbrains_mono".to_owned());
+    } else if let Some(custom_path) = custom_font_path {
         if let Ok(bytes) = std::fs::read(custom_path) {
             if !bytes.is_empty() {
                 fonts.font_data.insert(
@@ -901,6 +938,12 @@ pub fn configure_fonts(ctx: &Context, custom_font_path: Option<&Path>) {
             break;
         }
     }
+
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, "mcw_jetbrains_mono".to_owned());
 
     ctx.set_fonts(fonts);
 }

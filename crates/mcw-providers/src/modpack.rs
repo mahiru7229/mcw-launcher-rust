@@ -1,8 +1,8 @@
 use crate::curseforge::CurseForgeClient;
 use crate::{ProviderError, Result};
 use mcw_models::instance::ModLoader;
-use mcw_net::{DownloadClient, DownloadRequest};
-use mcw_storage::{atomic_write_json, InstanceStore, LauncherPaths};
+use mcw_net::{DownloadClient, DownloadOutcome, DownloadRequest};
+use mcw_storage::{atomic_write_json, ContentStore, InstanceStore, LauncherPaths};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -10,6 +10,18 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use zip::ZipArchive;
+
+fn adopt_downloaded_mods(paths: &LauncherPaths, outcomes: &[DownloadOutcome]) {
+    for out in outcomes {
+        if !out.skipped
+            && fs::metadata(&out.destination)
+                .map(|m| m.len() >= 64 * 1024)
+                .unwrap_or(false)
+        {
+            let _ = ContentStore::adopt(paths, &out.destination);
+        }
+    }
+}
 
 pub type ModpackProgressCallback = Arc<dyn Fn(u64, u64, String) + Send + Sync>;
 
@@ -436,6 +448,7 @@ impl ModpackInstaller {
 
         let mut requests = Vec::new();
         let mut managed_files = Vec::new();
+        let mut hardlinked_files = 0usize;
         for f in &index.files {
             if let Some(ref env) = f.env {
                 if env
@@ -455,10 +468,16 @@ impl ModpackInstaller {
                 }
             }
             managed_files.push(f.path.replace('\\', "/"));
+            let dest = safe_join_under(&mc_dir, &f.path)?;
+            if let Some(sha256) = f.hashes.get("sha256") {
+                if ContentStore::try_hardlink_from_store(paths, sha256, &dest).is_some() {
+                    hardlinked_files += 1;
+                    continue;
+                }
+            }
             let Some(primary_url) = f.downloads.first() else {
                 continue;
             };
-            let dest = safe_join_under(&mc_dir, &f.path)?;
             let mut req = DownloadRequest::new(primary_url, dest)
                 .with_sha1(f.hashes.get("sha1").cloned())
                 .with_size(f.file_size);
@@ -468,15 +487,16 @@ impl ModpackInstaller {
             requests.push(req);
         }
 
-        let downloaded_files = requests.len();
+        let downloaded_files = requests.len() + hardlinked_files;
         let prog_cb = on_progress.clone();
-        downloader
+        let outcomes = downloader
             .download_batch(requests, DOWNLOAD_CONCURRENCY, move |done, tot| {
                 if let Some(ref cb) = prog_cb {
                     cb(done, tot, format!("Downloading mods {done}/{tot}..."));
                 }
             })
             .await?;
+        adopt_downloaded_mods(paths, &outcomes);
 
         if let Some(ref cb) = on_progress {
             cb(1, 1, "Extracting overrides...".to_string());
@@ -641,13 +661,14 @@ impl ModpackInstaller {
 
         let downloaded_files = requests.len();
         let prog_cb = on_progress.clone();
-        downloader
+        let outcomes = downloader
             .download_batch(requests, DOWNLOAD_CONCURRENCY, move |done, tot| {
                 if let Some(ref cb) = prog_cb {
                     cb(done, tot, format!("Downloading mods {done}/{tot}..."));
                 }
             })
             .await?;
+        adopt_downloaded_mods(paths, &outcomes);
 
         if let Some(ref cb) = on_progress {
             cb(1, 1, "Extracting overrides...".to_string());

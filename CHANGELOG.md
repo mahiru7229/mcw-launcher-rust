@@ -2,6 +2,33 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.2.0] - 2026-11-22
+
+### Added
+- **Download Engine v2 (`mcw-net` + Desktop)**:
+  - Enabled HTTP/2 ALPN multiplexing (`reqwest` `"http2"`), adaptive HTTP/2 stream/connection flow windows (`2 MiB` / `4 MiB`), `tcp_nodelay(true)`, `30s` socket read timeout (replacing whole-transfer timeouts so large files no longer drop on slow connections), `pool_max_idle_per_host(32)`, and `256 KiB` buffered writers (`BufWriter`), eliminating cyber-cafe ~500 KB/s single-stream stalls.
+  - Added multi-segment HTTP `Range` downloads for files `>= 4 MiB` (automatic `HEAD` probe with transparent single-stream fallback), configurable in **Launcher Settings -> Downloads** via `ComboBox` (`Off (1)` / `4` / `6 (Default)` / `8`).
+  - Added smart HTTP retry logic (skipping permanent non-408/429 4xx errors and honoring `Retry-After`) plus `ETag` / `If-None-Match` (`304 Not Modified`) caching via `DownloadClient::get_text_cached` for Mojang manifests.
+  - Displayed live `MB / MB` byte progress (`48.2 / 192.0 MB (25%) · ↓ 8.40 MB/s · ETA 17s`) for large single files (client JAR, Java JDK, Forge/NeoForge installers, modpacks, mods, and launcher updates) alongside smoothed ETA on all active tasks.
+- **Persistent Disk Caches & Shared ContentStore Auto-Hardlinking**:
+  - Persisted `VerificationCache` entries across sessions in `cache/verification_cache.json`.
+  - Added `ModScanner::scan_dir_cached` (`cache/mod_metadata/<instance_id>.json`) to eliminate redundant `.jar` ZIP parsing across restarts.
+  - Enabled automatic SHA-256 `ContentStore::try_hardlink_from_store` in `.mrpack` modpack installs and `ContentStore::adopt` for downloaded mods `>= 64 KiB`.
+- **Runtime Security, Custom Lifecycle Hooks & Real-Time Folder Watcher**:
+  - Automatically injected Log4Shell mitigation (`-Dlog4j2.formatMsgNoLookups=true`) for vulnerable Minecraft `1.7`–`1.18.1` versions.
+  - Added per-instance `Pre-launch command`, `Wrapper command`, `Post-exit command`, `KEY=VALUE` environment variables (`$INST_NAME`, `$INST_ID`, `$INST_DIR`, `$INST_MC_DIR`, `$INST_JAVA`), and Linux **GameMode** (`gamemoderun`) / **MangoHud** (`mangohud`) toggles in **Instance Settings**.
+  - Added debounced real-time directory watching (`notify`) on the active instance's visible `mods/`, `resourcepacks/`, `shaderpacks/`, or `screenshots/` folder.
+- **Bundled `JetBrains Mono` Font (`SIL OFL-1.1`)**: Embedded static `JetBrainsMono-Regular.ttf` as the default `Monospace` font across logs and paths, plus `"JetBrains Mono (Bundled)"` selectable in **Appearance -> Font**, with attribution in **About** and `assets/fonts/JetBrainsMono-OFL.txt`.
+- **Automatic Junk File Detection & Cleanup Reminder Modal**:
+  - Background startup scan checking leftover `.part` / staging files, aged logs/crash-reports, and expired caches/unused versions while strictly protecting `saves/`, `mods/`, `config/`, `backups/`, `accounts/`, and `runtimes/`.
+  - Opens an In-App Centered Modal when reclaimable junk reaches `>= 50 MB` with per-category checkboxes, `Later (Remind in 3 days)` snooze, and a two-way synced `Don't show automatic cleanup reminders` option backed by **Launcher Settings -> Storage** (`Retention days` + `Scan Junk Now`).
+
+### Fixed
+- **Linux Folder/File Browser & `open_external`**: Replaced non-Windows dialog stubs with native `rfd` (`xdg-desktop-portal`) + `zenity`/`kdialog` CLI fallbacks for `pick_file_dialog`, `pick_folder_dialog`, and `save_file_dialog`, and added a multi-launcher Linux fallback chain (`xdg-open` -> `gio` -> `kioclient` -> `kde-open` -> common file managers) with warning logging on failure.
+- **Fresh-Machine Theme & `ComboBox` Visuals**: Styled `visuals.widgets.open`, explicitly synced `ThemePreference` and `ctx.set_theme(...)`, and applied active styles across both `Theme::Dark` and `Theme::Light` so `ComboBox` and theme tokens render properly on first run on brand-new machines without needing to re-apply in Settings.
+
+---
+
 ## [1.1.1] - 2026-11-22
 
 ### Fixed

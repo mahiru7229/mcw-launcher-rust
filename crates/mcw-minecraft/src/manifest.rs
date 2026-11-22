@@ -28,7 +28,11 @@ impl<'a> VersionManifestService<'a> {
             }
         }
 
-        match self.client.get_text(MOJANG_MANIFEST_URL).await {
+        match self
+            .client
+            .get_text_cached(MOJANG_MANIFEST_URL, &cache_path)
+            .await
+        {
             Ok(raw) => {
                 let parsed: VersionManifest = serde_json::from_str(&raw)?;
                 if parsed.versions.is_empty() {

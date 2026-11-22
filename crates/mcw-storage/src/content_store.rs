@@ -182,6 +182,25 @@ impl ContentStore {
         })
     }
 
+    /// Attempts to satisfy `destination` directly from `cache/content_store/` via hardlink (or
+    /// verified copy fallback) when `sha256` already exists in the shared content store.
+    pub fn try_hardlink_from_store(
+        paths: &LauncherPaths,
+        sha256: &str,
+        destination: &Path,
+    ) -> Option<PathBuf> {
+        let clean = sha256.trim().to_ascii_lowercase();
+        if clean.len() != 64 || !clean.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let blob = paths.content_store_blob(&clean).ok()?;
+        if !blob.is_file() {
+            return None;
+        }
+        let res = Self::materialize(paths, &blob, destination, false, true).ok()?;
+        Some(res.canonical_path)
+    }
+
     /// Scans `cache/content_store/` and returns current blob count and total stored bytes.
     pub fn stats(paths: &LauncherPaths) -> ContentStoreStats {
         let dir = paths.content_store_dir();

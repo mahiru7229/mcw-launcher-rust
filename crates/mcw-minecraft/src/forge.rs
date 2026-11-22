@@ -213,6 +213,18 @@ impl<'a> ForgeLoaderService<'a> {
     }
 
     pub async fn download_installer(&self, entry: &ForgeLoaderVersion) -> Result<PathBuf> {
+        self.download_installer_with_progress(entry, |_, _| {})
+            .await
+    }
+
+    pub async fn download_installer_with_progress<F>(
+        &self,
+        entry: &ForgeLoaderVersion,
+        on_bytes: F,
+    ) -> Result<PathBuf>
+    where
+        F: Fn(u64, u64) + Send + Sync + 'static,
+    {
         let dest = self.paths.cache_root.join("installers").join(format!(
             "{}-{}-{}-installer.jar",
             entry.family.as_str(),
@@ -220,7 +232,9 @@ impl<'a> ForgeLoaderService<'a> {
             entry.loader_version
         ));
         let req = DownloadRequest::new(&entry.installer_url, &dest);
-        self.client.download_file(&req).await?;
+        self.client
+            .download_file_with_progress(&req, on_bytes)
+            .await?;
         Ok(dest)
     }
 
@@ -233,6 +247,28 @@ impl<'a> ForgeLoaderService<'a> {
         requested_version: &str,
         installer_java: Option<&Path>,
     ) -> Result<VersionMetadata> {
+        self.install_and_merge_with_progress(
+            family,
+            base,
+            requested_version,
+            installer_java,
+            |_, _| {},
+        )
+        .await
+    }
+
+    /// Install & merge Forge or NeoForge while reporting installer JAR download bytes `(done, total)`.
+    pub async fn install_and_merge_with_progress<F>(
+        &self,
+        family: ForgeFamily,
+        base: &VersionMetadata,
+        requested_version: &str,
+        installer_java: Option<&Path>,
+        on_bytes: F,
+    ) -> Result<VersionMetadata>
+    where
+        F: Fn(u64, u64) + Send + Sync + 'static,
+    {
         let entry = self
             .resolve_version(family, &base.id, requested_version)
             .await?;
@@ -258,7 +294,9 @@ impl<'a> ForgeLoaderService<'a> {
             loader = %entry.loader_version,
             "Downloading Forge/NeoForge installer"
         );
-        let installer_jar = self.download_installer(&entry).await?;
+        let installer_jar = self
+            .download_installer_with_progress(&entry, on_bytes)
+            .await?;
 
         // Check if this is a legacy (pre-1.13, e.g. 1.12.2) Forge installer with `versionInfo`
         // embedded in `install_profile.json`.

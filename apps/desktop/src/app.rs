@@ -12,9 +12,9 @@ use crate::state::{
     ModVersionChoice, ModpackChannel, ModpackVersionOption,
 };
 use crate::theme::{
-    apply_custom_accent, apply_theme_palette, configure_fonts, format_hex_color, parse_hex_color,
-    resolve_custom_font_path, scan_system_fonts, MotionMode, SystemFontEntry, ThemeCatalog,
-    ThemeMode, ThemePalette,
+    apply_custom_accent, apply_theme_palette, configure_fonts_with_spec, format_hex_color,
+    parse_hex_color, resolve_custom_font_path, scan_system_fonts, MotionMode, SystemFontEntry,
+    ThemeCatalog, ThemeMode, ThemePalette,
 };
 use eframe::egui::{
     self, Align, Button, Color32, CornerRadius, Frame, Layout, RichText, ScrollArea, Stroke,
@@ -37,7 +37,7 @@ use mcw_models::ManagedContentPolicy;
 use mcw_mods::{
     is_loader_compatible, ContentKind, ContentPackInfo, ContentPackManager, InstalledContentItem,
     InstalledContentLibrary, ModCompatibilityAnalyzer, ModCompatibilityReport, ModInfo,
-    ModIssueSeverity, ModManager,
+    ModIssueSeverity, ModManager, ModScanner,
 };
 use mcw_net::{ConnectivityMonitor, ConnectivityStatus, DownloadClient, TaskControl};
 use mcw_providers::{
@@ -53,21 +53,23 @@ use mcw_providers::{
 };
 use mcw_runtime::{
     detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
-    recommended_modpack_ram_mb, DiagnosticsExporter, DiscordRpcService, ExitClassification,
-    FirstRunRecommendation, FirstRunRecommendationService, GameWindowActivator, IssueReportBuilder,
-    IssueReportInput, JavaDiagnostic, JavaDiagnosticsManager, JavaDiscovery, JavaInstallation,
-    JavaProvisioner, JavaRecoveryDiagnostics, JvmPresetId, LanAgentManager, LaunchErrorPresenter,
-    LogLine, LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
+    recommended_modpack_ram_mb, run_lifecycle_hook, DiagnosticsExporter, DiscordRpcService,
+    ExitClassification, FirstRunRecommendation, FirstRunRecommendationService, GameWindowActivator,
+    IssueReportBuilder, IssueReportInput, JavaDiagnostic, JavaDiagnosticsManager, JavaDiscovery,
+    JavaInstallation, JavaProvisioner, JavaRecoveryDiagnostics, JvmPresetId, LanAgentManager,
+    LaunchErrorPresenter, LogLine, LogStream, McLogsClient, ProcessControl, SupervisedProcess,
+    DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
     inspect_python_launcher, migrate_from_python_launcher, BackupInfo, BackupManager,
     CachedVersionInfo, ConflictStrategy, ContentStore, ContentStoreStats, HealthSeverity,
     InstanceHealthManager, InstanceHealthReport, InstanceHealthState, InstanceRunLock,
-    InstanceStore, LauncherPaths, PythonMigrationInspection, PythonMigrationOptions,
-    PythonMigrationResult, StartupRecoveryService, StorageCleanupService, StorageSummary,
-    UnusedVersionCandidate,
+    InstanceStore, JunkScanReport, LauncherPaths, PythonMigrationInspection,
+    PythonMigrationOptions, PythonMigrationResult, StartupRecoveryService, StorageCleanupService,
+    StorageSummary, UnusedVersionCandidate,
 };
 use mcw_updater::{ReleaseInfo, UpdateChannel, UpdateCheckResult, UpdateChecker, UpdateInstaller};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -315,6 +317,7 @@ pub struct McwApp {
     edit_tags_input: String,
     edit_jvm_args_text: String,
     edit_game_args_text: String,
+    edit_env_vars_text: String,
 
     // Account modal
     show_account_modal: bool,
@@ -566,6 +569,18 @@ pub struct McwApp {
     revealed_tab_counts_instance: Option<String>,
     last_task_log_msg: HashMap<u64, String>,
     last_launch_log_msg: HashMap<String, String>,
+
+    // v1.2.0: Shared download client, auto junk cleanup reminder, real-time folder watcher
+    pub(crate) download_client: DownloadClient,
+    show_junk_cleanup_modal: bool,
+    junk_scan_report: Option<JunkScanReport>,
+    junk_clean_temp: bool,
+    junk_clean_logs: bool,
+    junk_clean_caches: bool,
+    junk_scanning: bool,
+    junk_cleaning: bool,
+    folder_watcher: Option<RecommendedWatcher>,
+    watched_folder_path: Option<PathBuf>,
 }
 
 impl McwApp {
@@ -584,13 +599,23 @@ impl McwApp {
         }
         let system_fonts = scan_system_fonts();
         let custom_font_path = resolve_custom_font_path(&prefs.custom_font_family, &system_fonts);
-        configure_fonts(&cc.egui_ctx, custom_font_path.as_deref());
+        configure_fonts_with_spec(
+            &cc.egui_ctx,
+            &prefs.custom_font_family,
+            custom_font_path.as_deref(),
+        );
         cc.egui_ctx
             .set_zoom_factor(prefs.ui_scale.clamp(0.75, 1.75));
         let pending_ui_scale_pct = (prefs.ui_scale.clamp(0.75, 1.75) * 100.0).round();
         let app_logo_texture = load_app_logo_texture(&cc.egui_ctx);
 
         mcw_net::set_global_bandwidth_limit_mbps(prefs.download_limit_mbps);
+        mcw_net::set_global_segments_per_file(prefs.download_segments_per_file);
+        mcw_net::init_persistent_verification_cache(
+            &paths.cache_root.join("verification_cache.json"),
+        );
+        let download_client = DownloadClient::new()
+            .unwrap_or_else(|e| panic!("Failed to initialize HTTP download client: {e}"));
         let cf_api_key_input =
             load_custom_curseforge_api_key(&paths.config_root).unwrap_or_default();
         let account_integrity_ok = AccountStore::new(&paths).verify_integrity();
@@ -732,6 +757,7 @@ impl McwApp {
             edit_tags_input: String::new(),
             edit_jvm_args_text: String::new(),
             edit_game_args_text: String::new(),
+            edit_env_vars_text: String::new(),
             show_account_modal: false,
             offline_username_input: String::new(),
             ms_login_in_progress: false,
@@ -941,6 +967,16 @@ impl McwApp {
             revealed_tab_counts_instance: None,
             last_task_log_msg: HashMap::new(),
             last_launch_log_msg: HashMap::new(),
+            download_client,
+            show_junk_cleanup_modal: false,
+            junk_scan_report: None,
+            junk_clean_temp: true,
+            junk_clean_logs: true,
+            junk_clean_caches: true,
+            junk_scanning: false,
+            junk_cleaning: false,
+            folder_watcher: None,
+            watched_folder_path: None,
         };
 
         app.content_store_stats = Some(ContentStore::stats(&app.paths));
@@ -984,6 +1020,11 @@ impl McwApp {
         if mcw_updater::UPDATES_ENABLED && app.prefs.auto_check_updates {
             app.start_update_check(false, &cc.egui_ctx);
         }
+        if app.prefs.auto_cleanup_reminders
+            && crate::app::platform::unix_now_secs() >= app.prefs.junk_reminder_snooze_until
+        {
+            app.start_junk_scan(false, &cc.egui_ctx);
+        }
         app
     }
 }
@@ -999,6 +1040,7 @@ impl Drop for McwApp {
             self.prefs.window_height = self.last_window_size[1];
             self.save_prefs();
         }
+        mcw_net::flush_persistent_verification_cache();
         self.discord_rpc.shutdown();
     }
 }
@@ -1034,6 +1076,7 @@ impl McwApp {
             || self.show_theme_issues_window
             || self.show_unsaved_changes_window
             || self.show_python_import_window
+            || (self.show_junk_cleanup_modal && self.junk_scan_report.is_some())
     }
 
     pub(crate) fn topmost_notice_modal(&self) -> Option<&'static str> {
@@ -1076,6 +1119,8 @@ impl McwApp {
             Some("mcw_modal_update_dialog")
         } else if self.show_python_import_window {
             Some("mcw_modal_python_import")
+        } else if self.show_junk_cleanup_modal && self.junk_scan_report.is_some() {
+            Some("mcw_modal_junk_cleanup")
         } else if self.show_first_run_wizard {
             Some("mcw_modal_first_run_setup")
         } else if self.show_repair_center_window && has_inst {
@@ -1131,6 +1176,7 @@ impl eframe::App for McwApp {
             }
         }
         self.poll_events(ctx);
+        self.sync_active_folder_watcher(ctx);
         self.ensure_account_avatars_loaded(ctx);
         self.handle_dropped_files(ctx);
 

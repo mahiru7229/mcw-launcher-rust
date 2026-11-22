@@ -173,8 +173,27 @@ impl JavaProvisioner {
         required_major: u32,
         client: &DownloadClient,
     ) -> Result<JavaInstallation> {
+        Self::ensure_managed_with_progress(runtimes_root, required_major, client, |_, _| {}).await
+    }
+
+    pub async fn ensure_managed_with_progress<F>(
+        runtimes_root: &Path,
+        required_major: u32,
+        client: &DownloadClient,
+        on_bytes: F,
+    ) -> Result<JavaInstallation>
+    where
+        F: Fn(u64, u64) + Send + Sync + 'static,
+    {
         let managed_major = JavaMajorPolicy::resolve(required_major)?;
-        Self::install_managed_exact(runtimes_root, managed_major, false, client).await
+        Self::install_managed_exact_with_progress(
+            runtimes_root,
+            managed_major,
+            false,
+            client,
+            on_bytes,
+        )
+        .await
     }
 
     pub async fn install_managed_exact(
@@ -183,6 +202,26 @@ impl JavaProvisioner {
         force: bool,
         client: &DownloadClient,
     ) -> Result<JavaInstallation> {
+        Self::install_managed_exact_with_progress(
+            runtimes_root,
+            exact_major,
+            force,
+            client,
+            |_, _| {},
+        )
+        .await
+    }
+
+    pub async fn install_managed_exact_with_progress<F>(
+        runtimes_root: &Path,
+        exact_major: u32,
+        force: bool,
+        client: &DownloadClient,
+        on_bytes: F,
+    ) -> Result<JavaInstallation>
+    where
+        F: Fn(u64, u64) + Send + Sync + 'static,
+    {
         if exact_major < 8 {
             return Err(RuntimeError::InvalidJavaMajor(exact_major.to_string()));
         }
@@ -207,7 +246,7 @@ impl JavaProvisioner {
         let archive_path = archives_dir.join(&release.filename);
 
         let req = DownloadRequest::new(&release.url, &archive_path).with_size(release.size);
-        client.download_file(&req).await?;
+        client.download_file_with_progress(&req, on_bytes).await?;
 
         let actual_sha256 = compute_sha256(&archive_path)?;
         if actual_sha256 != release.sha256 {

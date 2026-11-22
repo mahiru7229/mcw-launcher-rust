@@ -202,12 +202,18 @@ impl SupervisedProcess {
             false,
         );
 
-        let mut cmd = Command::new(&resolved_java);
+        let (program, final_args, custom_env) =
+            crate::launcher::prepare_command_invocation(spec, &resolved_java, compacted_args);
+
+        let mut cmd = Command::new(&program);
         cmd.current_dir(&spec.working_dir)
-            .args(compacted_args)
+            .args(final_args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for (k, v) in custom_env {
+            cmd.env(k, v);
+        }
         #[cfg(target_os = "linux")]
         for (k, v) in crate::gpu::GpuPreferenceManager::linux_gpu_env_vars(prefer_dedicated_gpu) {
             cmd.env(k, v);
@@ -387,6 +393,7 @@ mod tests {
                 jvm_args: vec!["/C".to_string()],
                 main_class: "echo".to_string(),
                 game_args: vec!["mcw-supervisor-ok".to_string()],
+                ..Default::default()
             }
         } else {
             LaunchSpec {
@@ -395,6 +402,7 @@ mod tests {
                 jvm_args: vec!["-c".to_string()],
                 main_class: "echo mcw-supervisor-ok".to_string(),
                 game_args: vec![],
+                ..Default::default()
             }
         };
 

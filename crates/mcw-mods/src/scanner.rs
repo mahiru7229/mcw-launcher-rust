@@ -1,9 +1,11 @@
 use mcw_runtime::detect_jar_required_java;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use zip::ZipArchive;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +34,13 @@ pub struct ModInfo {
     pub embedded_mod_ids: Vec<String>,
     #[serde(default)]
     pub depends: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedModEntry {
+    size_bytes: u64,
+    mtime_ns: u128,
+    info: ModInfo,
 }
 
 pub struct ModScanner;
@@ -70,6 +79,107 @@ impl ModScanner {
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         mods
+    }
+
+    /// Scan `mods_dir` using an on-disk `(size_bytes, mtime_ns)` metadata cache so unchanged JARs
+    /// are returned in milliseconds without re-opening ZIP archives.
+    pub fn scan_dir_cached(mods_dir: &Path, cache_file: &Path) -> Vec<ModInfo> {
+        let Ok(entries) = fs::read_dir(mods_dir) else {
+            return Vec::new();
+        };
+
+        let prev_cache: HashMap<String, CachedModEntry> = fs::read_to_string(cache_file)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
+
+        let mut reused: Vec<ModInfo> = Vec::new();
+        let mut to_inspect: Vec<(String, u64, u128, PathBuf)> = Vec::new();
+        let mut next_cache: HashMap<String, CachedModEntry> = HashMap::new();
+        let mut current_count = 0usize;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(file_name) = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let lower = file_name.to_ascii_lowercase();
+            if !(lower.ends_with(".jar") || lower.ends_with(".jar.disabled")) {
+                continue;
+            }
+            current_count += 1;
+
+            let meta = entry.metadata().ok();
+            let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let mtime_ns = meta
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+
+            if mtime_ns > 0 {
+                if let Some(hit) = prev_cache.get(&file_name) {
+                    if hit.size_bytes == size_bytes
+                        && hit.mtime_ns == mtime_ns
+                        && hit.info.path == path
+                    {
+                        next_cache.insert(file_name, hit.clone());
+                        reused.push(hit.info.clone());
+                        continue;
+                    }
+                }
+            }
+
+            to_inspect.push((file_name, size_bytes, mtime_ns, path));
+        }
+
+        let dirty = !to_inspect.is_empty() || current_count != prev_cache.len();
+        if !to_inspect.is_empty() {
+            let scanned: Vec<(String, u64, u128, ModInfo)> = to_inspect
+                .par_iter()
+                .map(|(fname, size, mtime, path)| {
+                    (fname.clone(), *size, *mtime, Self::inspect_jar(path))
+                })
+                .collect();
+            for (fname, size_bytes, mtime_ns, info) in scanned {
+                next_cache.insert(
+                    fname,
+                    CachedModEntry {
+                        size_bytes,
+                        mtime_ns,
+                        info: info.clone(),
+                    },
+                );
+                reused.push(info);
+            }
+        }
+
+        if dirty {
+            if let Some(parent) = cache_file.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(json) = serde_json::to_string(&next_cache) {
+                let tmp = cache_file.with_extension("json.tmp");
+                if fs::write(&tmp, json.as_bytes()).is_ok() {
+                    let _ = fs::remove_file(cache_file);
+                    let _ = fs::rename(&tmp, cache_file);
+                }
+            }
+        }
+
+        reused.sort_by(|a, b| {
+            b.enabled
+                .cmp(&a.enabled)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        reused
     }
 
     pub fn inspect_jar(path: &Path) -> ModInfo {
@@ -449,5 +559,14 @@ mod tests {
         assert!(!mods[1].enabled);
         assert_eq!(mods[1].loader, ModLoaderTag::Forge);
         assert!(!is_loader_compatible(mods[1].loader, "fabric"));
+
+        // Verify persistent cache hit preserves parsed ModInfo even without re-reading zip
+        let cache_file = dir.path().join("mods_cache.json");
+        let cached_1 = ModScanner::scan_dir_cached(dir.path(), &cache_file);
+        assert_eq!(cached_1.len(), 2);
+        assert!(cache_file.is_file());
+        let cached_2 = ModScanner::scan_dir_cached(dir.path(), &cache_file);
+        assert_eq!(cached_2.len(), 2);
+        assert_eq!(cached_2[0].mod_id, "sodium");
     }
 }

@@ -2137,6 +2137,7 @@ impl McwApp {
 
         self.render_install_target_dialog(ctx);
         self.render_duplicate_mod_modal(ctx);
+        self.render_junk_cleanup_modal(ctx);
     }
 
     pub(crate) fn render_modpack_install_dialog(&mut self, ctx: &egui::Context) {
@@ -3135,6 +3136,144 @@ impl McwApp {
             self.confirm_duplicate_mod_action(act, ctx);
         } else if !open {
             self.confirm_duplicate_mod_action(0, ctx);
+        }
+    }
+
+    pub(crate) fn render_junk_cleanup_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_junk_cleanup_modal {
+            return;
+        }
+        let Some(report) = self.junk_scan_report.clone() else {
+            return;
+        };
+        let p = self.palette;
+        let mut open = self.show_junk_cleanup_modal;
+        let mut clean_now = false;
+        let mut snooze_later = false;
+        let mut dont_show = !self.prefs.auto_cleanup_reminders;
+        let mut selected_bytes = 0u64;
+        if self.junk_clean_temp {
+            selected_bytes += report.temp_staging.total_bytes;
+        }
+        if self.junk_clean_logs {
+            selected_bytes += report.old_logs.total_bytes;
+        }
+        if self.junk_clean_caches {
+            selected_bytes += report.disposable_and_unused.total_bytes;
+        }
+
+        let retention_days = self.prefs.junk_retention_days;
+        let notice = self.modal_notice_for("mcw_modal_junk_cleanup");
+        let (keep_open, dismiss_notice) = render_in_app_modal(
+            ctx,
+            "mcw_modal_junk_cleanup",
+            "Junk Files & Cache Cleanup",
+            [520.0, 390.0],
+            [400.0, 300.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "Detected {} across temporary downloads, aged logs (>{} days), and expired caches. Worlds, saves, mods, configs, accounts, backups, and Java runtimes are never touched.",
+                            format_bytes(report.total_bytes),
+                            retention_days
+                        ))
+                        .size(12.0)
+                        .color(p.text_muted),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(10.0);
+
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0_f32, p.border))
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(egui::Margin::same(10))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.checkbox(
+                            &mut self.junk_clean_temp,
+                            format!(
+                                "Temp & incomplete downloads — {} item(s) ({})",
+                                report.temp_staging.file_count,
+                                format_bytes(report.temp_staging.total_bytes)
+                            ),
+                        );
+                        ui.checkbox(
+                            &mut self.junk_clean_logs,
+                            format!(
+                                "Old logs & crash reports — {} item(s) ({})",
+                                report.old_logs.file_count,
+                                format_bytes(report.old_logs.total_bytes)
+                            ),
+                        );
+                        ui.checkbox(
+                            &mut self.junk_clean_caches,
+                            format!(
+                                "Expired cache & unused versions — {} item(s) ({})",
+                                report.disposable_and_unused.file_count,
+                                format_bytes(report.disposable_and_unused.total_bytes)
+                            ),
+                        );
+                    });
+
+                ui.add_space(8.0);
+                if ui
+                    .checkbox(
+                        &mut dont_show,
+                        "Don't show automatic cleanup reminders (can re-enable in Settings → Storage)",
+                    )
+                    .changed()
+                {
+                    self.prefs.auto_cleanup_reminders = !dont_show;
+                    self.save_prefs();
+                }
+
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    let can_clean = selected_bytes > 0
+                        && !self.junk_cleaning
+                        && (self.junk_clean_temp || self.junk_clean_logs || self.junk_clean_caches);
+                    let clean_lbl = if self.junk_cleaning {
+                        "Cleaning...".to_string()
+                    } else {
+                        format!("Clean Selected ({})", format_bytes(selected_bytes))
+                    };
+                    let clean_btn =
+                        Button::new(RichText::new(clean_lbl).color(p.accent_text).strong())
+                            .fill(p.accent);
+                    if ui.add_enabled(can_clean, clean_btn).clicked() {
+                        clean_now = true;
+                    }
+                    if ui
+                        .add_enabled(!self.junk_cleaning, Button::new("Later (Remind in 3 days)"))
+                        .clicked()
+                    {
+                        snooze_later = true;
+                    }
+                });
+            },
+        );
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
+        if clean_now {
+            self.start_junk_clean(
+                self.junk_clean_temp,
+                self.junk_clean_logs,
+                self.junk_clean_caches,
+                ctx,
+            );
+        } else if snooze_later || !open {
+            self.prefs.junk_reminder_snooze_until = unix_now_secs().saturating_add(3 * 86_400);
+            self.save_prefs();
+            self.show_junk_cleanup_modal = false;
         }
     }
 }

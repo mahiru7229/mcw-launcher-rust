@@ -435,6 +435,9 @@ impl McwApp {
                                 ui.label(RichText::new("License:").color(p.text_muted));
                                 ui.label("MIT License");
                                 ui.end_row();
+                                ui.label(RichText::new("Fonts:").color(p.text_muted));
+                                ui.label("JetBrains Mono (SIL OFL-1.1)");
+                                ui.end_row();
                             });
                     });
 

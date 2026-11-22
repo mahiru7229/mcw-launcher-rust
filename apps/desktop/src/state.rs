@@ -13,13 +13,14 @@ use mcw_runtime::{
     ProcessControl, ProcessExitReport,
 };
 use mcw_storage::{
-    BackupInfo, CachedVersionInfo, ContentStoreStats, PythonMigrationInspection,
+    BackupInfo, CachedVersionInfo, ContentStoreStats, JunkScanReport, PythonMigrationInspection,
     PythonMigrationResult, RestoreOutcome, StorageCleanupReport, StorageSummary,
     UnusedVersionCandidate,
 };
 use mcw_updater::{StagedUpdate, UpdateCheckResult};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct ActiveTask {
@@ -28,6 +29,8 @@ pub struct ActiveTask {
     pub message: String,
     pub current: u64,
     pub total: u64,
+    pub started_at: Instant,
+    pub is_bytes: bool,
     pub control: Arc<TaskControl>,
 }
 
@@ -333,6 +336,12 @@ pub enum AppEvent {
         task_id: u64,
         result: Result<PythonMigrationResult, String>,
     },
+    JunkScanCompleted {
+        report: JunkScanReport,
+        manual: bool,
+    },
+    JunkCleanCompleted(Result<(usize, u64), String>),
+    WatchedFolderChanged(String),
 }
 
 pub struct ChannelProgressSink {
