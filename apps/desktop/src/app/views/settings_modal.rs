@@ -92,6 +92,8 @@ impl McwApp {
         let close_lbl = self.t("common.close").to_string();
         let search_hint = self.t("Search settings").to_string();
         let settings_q = self.settings_search.trim().to_lowercase();
+        let modal_notice = self.modal_notice_for("mcw_modal_launcher_settings");
+        let mut dismiss_notice = false;
 
         egui::Area::new(egui::Id::new("mcw_settings_backdrop"))
             .order(egui::Order::Middle)
@@ -146,6 +148,12 @@ impl McwApp {
                     });
                 });
                 ui.add_space(6.0);
+                if let Some((ref msg, is_err)) = modal_notice {
+                    if super::dialogs::render_notice_banner_box(ui, p, msg, is_err) {
+                        dismiss_notice = true;
+                    }
+                    ui.add_space(6.0);
+                }
                 let body_h = ui.available_height();
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
@@ -336,6 +344,9 @@ impl McwApp {
             });
 
         self.show_launcher_settings = open;
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
         if reload_langs {
             self.lang.reload(&self.paths);
             self.notice_banner = Some(("Reloaded language packs.".to_string(), false));

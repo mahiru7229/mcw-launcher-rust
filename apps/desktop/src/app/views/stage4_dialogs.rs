@@ -18,7 +18,7 @@ impl McwApp {
 
         let repair_lbl = self.t("workspace.action.repair").to_string();
         let close_lbl = self.t("common.close").to_string();
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_repair_center");
 
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
@@ -367,7 +367,7 @@ impl McwApp {
             p.warning
         };
 
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_about");
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
             "mcw_modal_about",

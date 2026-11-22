@@ -42,7 +42,7 @@ impl McwApp {
         let cl_empty = self.t("content_library.empty").to_string();
         let instances_snapshot = self.instances.clone();
         let items_snapshot = self.content_library_items.clone();
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_content_library");
 
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
@@ -328,7 +328,7 @@ impl McwApp {
         let mut prompt_confirm: Option<mcw_providers::ModpackUpdateCandidate> = None;
         let mut cancel_confirm = false;
         let mut backup_and_update: Option<mcw_providers::ModpackUpdateCandidate> = None;
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_modpack_update");
 
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
@@ -606,7 +606,7 @@ impl McwApp {
             .to_string();
         let cancel_lbl = self.t("common.cancel").to_string();
         let mut open = true;
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_preflight_confirm");
 
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
@@ -741,7 +741,7 @@ impl McwApp {
         let ir_github_btn = self.t("issue_report.open_github").to_string();
         let ir_copy_btn = self.t("issue_report.copy_markdown").to_string();
         let ir_export_btn = self.t("issue_report.export_zip").to_string();
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_issue_report");
 
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
@@ -882,7 +882,7 @@ impl McwApp {
         let ti_title = self.t("theme_issues.title").to_string();
         let ti_open_folder = self.t("theme_issues.open_folder").to_string();
         let ti_all_clean = self.t("theme_issues.all_clean").to_string();
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_theme_issues");
 
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
@@ -965,7 +965,7 @@ impl McwApp {
         let uc_save = self.t("unsaved_changes.save_continue").to_string();
         let uc_discard = self.t("unsaved_changes.discard_continue").to_string();
         let mut open = true;
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_unsaved_changes");
 
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
@@ -1065,7 +1065,7 @@ impl McwApp {
                 || self.python_import_runtimes
                 || self.python_import_themes);
 
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_python_import");
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
             "mcw_modal_python_import",

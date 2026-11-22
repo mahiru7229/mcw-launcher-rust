@@ -190,7 +190,7 @@ impl McwApp {
             self.java_install_selected_major = *install_choices.last().unwrap_or(&21);
         }
 
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_java_manager");
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
             "mcw_modal_java_manager",

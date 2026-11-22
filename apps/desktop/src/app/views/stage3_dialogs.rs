@@ -983,7 +983,7 @@ impl McwApp {
             .any(|s| matches!(s, LaunchState::Running { .. }));
 
         let title = format!("{} - v{}", self.t("update.dialog.title"), release.version);
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_update_dialog");
 
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
@@ -1097,7 +1097,7 @@ impl McwApp {
                                 } else {
                                     release.notes.clone()
                                 };
-                                ui.label(RichText::new(notes).size(12.0));
+                                render_release_markdown(ui, &notes, p);
                             });
                     });
             },
@@ -1167,7 +1167,7 @@ impl McwApp {
             .map(|(loc, name)| (loc.to_string(), name.to_string()))
             .collect();
 
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_first_run_setup");
         let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
             ctx,
             "mcw_modal_first_run_setup",
@@ -2186,5 +2186,288 @@ impl McwApp {
                 self.cancel_microsoft_login();
             }
         }
+    }
+}
+
+fn md_with_alpha(c: Color32, a: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+
+fn render_release_code_block(ui: &mut egui::Ui, lines: &[&str], p: ThemePalette) {
+    if lines.is_empty() {
+        return;
+    }
+    Frame::new()
+        .fill(p.canvas)
+        .stroke(Stroke::new(1.0_f32, p.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(
+                egui::Label::new(
+                    RichText::new(lines.join("\n"))
+                        .monospace()
+                        .size(11.5)
+                        .color(p.text),
+                )
+                .wrap(),
+            );
+        });
+    ui.add_space(4.0);
+}
+
+fn append_inline_markdown(
+    job: &mut egui::text::LayoutJob,
+    mut rest: &str,
+    base_size: f32,
+    base_color: Color32,
+    default_bold: bool,
+    p: ThemePalette,
+) {
+    let normal_fmt = egui::TextFormat {
+        font_id: egui::FontId::proportional(if default_bold {
+            base_size + 0.3
+        } else {
+            base_size
+        }),
+        color: base_color,
+        extra_letter_spacing: if default_bold { 0.15 } else { 0.0 },
+        ..Default::default()
+    };
+    let bold_fmt = egui::TextFormat {
+        font_id: egui::FontId::proportional(base_size + 0.4),
+        color: p.text,
+        extra_letter_spacing: 0.2,
+        ..Default::default()
+    };
+    let italic_fmt = egui::TextFormat {
+        font_id: egui::FontId::proportional(base_size),
+        color: base_color,
+        italics: true,
+        ..Default::default()
+    };
+    let code_fmt = egui::TextFormat {
+        font_id: egui::FontId::monospace((base_size - 0.5).max(10.5)),
+        color: p.accent,
+        background: md_with_alpha(p.elevated, 220),
+        ..Default::default()
+    };
+    let link_fmt = egui::TextFormat {
+        font_id: egui::FontId::proportional(base_size),
+        color: p.accent,
+        underline: Stroke::new(1.0_f32, p.accent),
+        ..Default::default()
+    };
+
+    while !rest.is_empty() {
+        let next = [
+            rest.find('`').map(|i| (i, 0u8)),
+            rest.find("**").map(|i| (i, 1u8)),
+            rest.find('[').map(|i| (i, 2u8)),
+            rest.find('*').map(|i| (i, 3u8)),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(idx, kind)| (*idx, *kind));
+
+        let Some((pos, kind)) = next else {
+            job.append(rest, 0.0, normal_fmt);
+            break;
+        };
+        if pos > 0 {
+            job.append(&rest[..pos], 0.0, normal_fmt.clone());
+            rest = &rest[pos..];
+            continue;
+        }
+
+        match kind {
+            0 => {
+                if let Some(end) = rest[1..].find('`') {
+                    let inner = &rest[1..1 + end];
+                    if !inner.is_empty() {
+                        job.append(&format!(" {inner} "), 0.0, code_fmt.clone());
+                    }
+                    rest = &rest[1 + end + 1..];
+                    continue;
+                }
+            }
+            1 => {
+                if let Some(end) = rest[2..].find("**") {
+                    let inner = &rest[2..2 + end];
+                    if !inner.is_empty() {
+                        job.append(inner, 0.0, bold_fmt.clone());
+                        rest = &rest[2 + end + 2..];
+                        continue;
+                    }
+                }
+            }
+            2 => {
+                if let Some(close_bracket) = rest[1..].find("](") {
+                    let after_paren = 1 + close_bracket + 2;
+                    if let Some(close_paren) = rest[after_paren..].find(')') {
+                        let label = &rest[1..1 + close_bracket];
+                        let url = &rest[after_paren..after_paren + close_paren];
+                        if !label.is_empty() && !url.is_empty() {
+                            job.append(label, 0.0, link_fmt.clone());
+                            rest = &rest[after_paren + close_paren + 1..];
+                            continue;
+                        }
+                    }
+                }
+            }
+            _ => {
+                if !rest.starts_with("**") {
+                    if let Some(end) = rest[1..].find('*') {
+                        let inner = &rest[1..1 + end];
+                        if !inner.is_empty() && !inner.starts_with(' ') {
+                            job.append(inner, 0.0, italic_fmt.clone());
+                            rest = &rest[1 + end + 1..];
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        let ch_len = rest.chars().next().map(char::len_utf8).unwrap_or(1);
+        job.append(&rest[..ch_len], 0.0, normal_fmt.clone());
+        rest = &rest[ch_len..];
+    }
+}
+
+fn render_inline_markdown_label(
+    ui: &mut egui::Ui,
+    text: &str,
+    base_size: f32,
+    base_color: Color32,
+    default_bold: bool,
+    p: ThemePalette,
+) {
+    let mut job = egui::text::LayoutJob::default();
+    append_inline_markdown(&mut job, text, base_size, base_color, default_bold, p);
+    ui.add(egui::Label::new(job).wrap());
+}
+
+fn parse_numbered_list_item(trimmed: &str) -> Option<(&str, &str)> {
+    let dot = trimmed.find(". ")?;
+    if dot == 0 || dot > 4 {
+        return None;
+    }
+    let prefix = &trimmed[..dot];
+    if !prefix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((prefix, &trimmed[dot + 2..]))
+}
+
+pub(crate) fn render_release_markdown(ui: &mut egui::Ui, markdown: &str, p: ThemePalette) {
+    let mut in_code = false;
+    let mut code_lines: Vec<&str> = Vec::new();
+    let body_color = md_with_alpha(p.text, 232);
+
+    for raw_line in markdown.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("```") {
+            if in_code {
+                render_release_code_block(ui, &code_lines, p);
+                code_lines.clear();
+                in_code = false;
+            } else {
+                in_code = true;
+            }
+            continue;
+        }
+        if in_code {
+            code_lines.push(line);
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            ui.add_space(4.0);
+            continue;
+        }
+
+        if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+            ui.add_space(2.0);
+            ui.separator();
+            ui.add_space(2.0);
+            continue;
+        }
+
+        if let Some(heading) = trimmed.strip_prefix("#### ") {
+            ui.add_space(3.0);
+            render_inline_markdown_label(ui, heading.trim(), 12.5, p.text, true, p);
+            continue;
+        }
+        if let Some(heading) = trimmed.strip_prefix("### ") {
+            ui.add_space(4.0);
+            render_inline_markdown_label(ui, heading.trim(), 13.5, p.text, true, p);
+            continue;
+        }
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            ui.add_space(6.0);
+            render_inline_markdown_label(ui, heading.trim(), 15.0, p.accent, true, p);
+            ui.add_space(1.0);
+            continue;
+        }
+        if let Some(heading) = trimmed.strip_prefix("# ") {
+            ui.add_space(6.0);
+            render_inline_markdown_label(ui, heading.trim(), 16.5, p.text, true, p);
+            ui.add_space(2.0);
+            continue;
+        }
+
+        if let Some(quote) = trimmed.strip_prefix('>') {
+            let quote_text = quote.trim_start();
+            Frame::new()
+                .fill(md_with_alpha(p.accent, 14))
+                .stroke(Stroke::new(1.0_f32, md_with_alpha(p.accent, 80)))
+                .corner_radius(CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(10, 5))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    render_inline_markdown_label(ui, quote_text, 12.0, p.text_muted, false, p);
+                });
+            ui.add_space(2.0);
+            continue;
+        }
+
+        let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+        let indent_level = (leading_spaces / 2).min(4) as f32;
+        if let Some(item) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("+ "))
+        {
+            ui.horizontal_top(|ui| {
+                ui.add_space(indent_level * 12.0 + 4.0);
+                ui.label(RichText::new("•").size(12.5).color(p.accent).strong());
+                render_inline_markdown_label(ui, item.trim(), 12.0, body_color, false, p);
+            });
+            continue;
+        }
+
+        if let Some((num, item)) = parse_numbered_list_item(trimmed) {
+            ui.horizontal_top(|ui| {
+                ui.add_space(indent_level * 12.0 + 4.0);
+                ui.label(
+                    RichText::new(format!("{num}."))
+                        .size(12.0)
+                        .color(p.accent)
+                        .strong(),
+                );
+                render_inline_markdown_label(ui, item.trim(), 12.0, body_color, false, p);
+            });
+            continue;
+        }
+
+        render_inline_markdown_label(ui, trimmed, 12.0, body_color, false, p);
+    }
+
+    if in_code && !code_lines.is_empty() {
+        render_release_code_block(ui, &code_lines, p);
     }
 }

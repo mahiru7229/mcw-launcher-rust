@@ -95,41 +95,6 @@ impl McwApp {
     pub(crate) fn render_modpacks_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.browser_global_mode = true;
         self.show_content_browser = false;
-        let p = self.palette;
-        if let Some((msg, is_err)) = self.notice_banner.clone() {
-            let mut dismiss = false;
-            Frame::new()
-                .fill(if is_err {
-                    with_alpha(p.danger, 26)
-                } else {
-                    with_alpha(p.accent, 22)
-                })
-                .stroke(Stroke::new(
-                    1.0_f32,
-                    if is_err { p.danger } else { p.accent },
-                ))
-                .corner_radius(CornerRadius::same(10))
-                .inner_margin(Margin::symmetric(10, 6))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(&msg).size(12.0).color(if is_err {
-                            p.danger
-                        } else {
-                            p.text
-                        }));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("Dismiss").clicked() {
-                                dismiss = true;
-                            }
-                        });
-                    });
-                });
-            if dismiss {
-                self.notice_banner = None;
-            }
-            ui.add_space(6.0);
-        }
         let entries = self.prepare_content_browser_state(ctx);
         let actions = self.render_content_browser_body(ui, ctx, &entries, false);
         self.apply_content_browser_actions(actions, ctx);

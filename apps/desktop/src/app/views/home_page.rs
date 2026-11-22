@@ -83,28 +83,13 @@ impl McwApp {
             .show(ctx, |ui| {
                 ui.set_opacity(0.35 + 0.65 * fade);
 
-                if let Some((msg, is_err)) = self.notice_banner.clone() {
-                    let banner_stroke = if is_err { p.danger } else { p.accent };
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, banner_stroke))
-                        .corner_radius(CornerRadius::same(10))
-                        .inner_margin(Margin::symmetric(12, 8))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(msg).color(if is_err {
-                                    p.danger
-                                } else {
-                                    p.text
-                                }));
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.button("Dismiss").clicked() {
-                                        self.notice_banner = None;
-                                    }
-                                });
-                            });
-                        });
-                    ui.add_space(8.0);
+                if self.topmost_notice_modal().is_none() {
+                    if let Some((msg, is_err)) = self.notice_banner.clone() {
+                        if super::dialogs::render_notice_banner_box(ui, p, &msg, is_err) {
+                            self.notice_banner = None;
+                        }
+                        ui.add_space(8.0);
+                    }
                 }
 
                 match self.active_page {
@@ -774,9 +759,51 @@ impl McwApp {
                     self.active_tab = DetailTab::Worlds;
                     self.ensure_active_tab_loaded(ctx);
                 }
+                if self.revealed_tab_counts_instance.as_deref() != Some(inst.instance_id.as_str()) {
+                    self.revealed_tab_counts.clear();
+                    self.revealed_tab_counts_instance = Some(inst.instance_id.clone());
+                }
+                match self.active_tab {
+                    DetailTab::Mods if !self.loading_mods.contains(&inst.instance_id) => {
+                        self.revealed_tab_counts
+                            .insert(DetailTab::Mods, self.selected_mods.len());
+                    }
+                    DetailTab::Worlds if !self.loading_worlds.contains(&inst.instance_id) => {
+                        self.revealed_tab_counts
+                            .insert(DetailTab::Worlds, self.selected_worlds.len());
+                    }
+                    DetailTab::ResourcePacks
+                        if !self
+                            .loading_content_packs
+                            .contains(&(inst.instance_id.clone(), ContentKind::ResourcePack)) =>
+                    {
+                        self.revealed_tab_counts
+                            .insert(DetailTab::ResourcePacks, self.selected_content_packs.len());
+                    }
+                    DetailTab::Shaders
+                        if !self
+                            .loading_content_packs
+                            .contains(&(inst.instance_id.clone(), ContentKind::ShaderPack)) =>
+                    {
+                        self.revealed_tab_counts
+                            .insert(DetailTab::Shaders, self.selected_content_packs.len());
+                    }
+                    DetailTab::Screenshots
+                        if !self.loading_screenshots.contains(&inst.instance_id) =>
+                    {
+                        self.revealed_tab_counts
+                            .insert(DetailTab::Screenshots, self.selected_screenshots.len());
+                    }
+                    DetailTab::Backups if !self.loading_backups.contains(&inst.instance_id) => {
+                        self.revealed_tab_counts
+                            .insert(DetailTab::Backups, self.selected_backups.len());
+                    }
+                    _ => {}
+                }
+
                 let mut switched_tab: Option<DetailTab> = None;
-                let tab_lbl = |base: String, active: bool, count: usize| -> String {
-                    if active {
+                let tab_lbl = |base: String, tab: DetailTab| -> String {
+                    if let Some(count) = self.revealed_tab_counts.get(&tab) {
                         format!("{base} ({count})")
                     } else {
                         base
@@ -786,54 +813,30 @@ impl McwApp {
                 if !is_vanilla {
                     tabs.push((
                         DetailTab::Mods,
-                        tab_lbl(
-                            self.t("Mods").to_string(),
-                            self.active_tab == DetailTab::Mods,
-                            self.selected_mods.len(),
-                        ),
+                        tab_lbl(self.t("Mods").to_string(), DetailTab::Mods),
                     ));
                 }
                 tabs.push((
                     DetailTab::Worlds,
-                    tab_lbl(
-                        self.t("Worlds").to_string(),
-                        self.active_tab == DetailTab::Worlds,
-                        self.selected_worlds.len(),
-                    ),
+                    tab_lbl(self.t("Worlds").to_string(), DetailTab::Worlds),
                 ));
                 tabs.push((
                     DetailTab::ResourcePacks,
-                    tab_lbl(
-                        "Resource packs".to_string(),
-                        self.active_tab == DetailTab::ResourcePacks,
-                        self.selected_content_packs.len(),
-                    ),
+                    tab_lbl("Resource packs".to_string(), DetailTab::ResourcePacks),
                 ));
                 if !is_vanilla {
                     tabs.push((
                         DetailTab::Shaders,
-                        tab_lbl(
-                            "Shaders".to_string(),
-                            self.active_tab == DetailTab::Shaders,
-                            self.selected_content_packs.len(),
-                        ),
+                        tab_lbl("Shaders".to_string(), DetailTab::Shaders),
                     ));
                 }
                 tabs.push((
                     DetailTab::Screenshots,
-                    tab_lbl(
-                        self.t("Screenshots").to_string(),
-                        self.active_tab == DetailTab::Screenshots,
-                        self.selected_screenshots.len(),
-                    ),
+                    tab_lbl(self.t("Screenshots").to_string(), DetailTab::Screenshots),
                 ));
                 tabs.push((
                     DetailTab::Backups,
-                    tab_lbl(
-                        self.t("Backups").to_string(),
-                        self.active_tab == DetailTab::Backups,
-                        self.selected_backups.len(),
-                    ),
+                    tab_lbl(self.t("Backups").to_string(), DetailTab::Backups),
                 ));
                 tabs.push((DetailTab::Logs, self.t("navigation.logs").to_string()));
                 tabs.push((DetailTab::Servers, "Servers & LAN".to_string()));

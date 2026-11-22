@@ -96,6 +96,29 @@ impl ArgumentBuilder {
             }
         }
 
+        if let Some(base_id) = version
+            .inherits_from
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let base_jar = format!("{base_id}.jar");
+            for arg in &mut jvm_args {
+                if let Some(list) = arg.strip_prefix("-DignoreList=") {
+                    let has_base = list
+                        .split(',')
+                        .any(|entry| entry.trim().eq_ignore_ascii_case(&base_jar));
+                    if !has_base {
+                        if list.trim().is_empty() {
+                            *arg = format!("-DignoreList={base_jar}");
+                        } else {
+                            *arg = format!("{arg},{base_jar}");
+                        }
+                    }
+                }
+            }
+        }
+
         if account_source == AccountSource::Offline {
             jvm_args.retain(|arg| {
                 !UNSAFE_OFFLINE_AUTH_HOST_PREFIXES
@@ -272,5 +295,53 @@ mod tests {
         assert!(!game.contains(&"--xuid".to_string()));
         assert!(game.contains(&"Player".to_string()));
         assert!(game.contains(&"1.21.4".to_string()));
+    }
+
+    #[test]
+    fn appends_inherited_base_jar_to_ignore_list() {
+        let meta = VersionMetadata {
+            id: "1.20.1-forge-47.4.0".to_string(),
+            version_type: "release".to_string(),
+            main_class: "cpw.mods.bootstraplauncher.BootstrapLauncher".to_string(),
+            inherits_from: Some("1.20.1".to_string()),
+            asset_index: None,
+            assets: Some("5".to_string()),
+            downloads: None,
+            libraries: vec![],
+            java_version: None,
+            minecraft_arguments: None,
+            arguments: Some(Arguments {
+                jvm: vec![ArgumentEntry::Simple(
+                    "-DignoreList=bootstraplauncher,${version_name}.jar".to_string(),
+                )],
+                game: vec![],
+            }),
+        };
+
+        let mut values = HashMap::new();
+        values.insert(
+            "version_name".to_string(),
+            "1.20.1-forge-47.4.0".to_string(),
+        );
+        let auth = Authentication {
+            player_name: "Player".to_string(),
+            uuid: "0123456789abcdef0123456789abcdef".to_string(),
+            access_token: "0".to_string(),
+            xuid: String::new(),
+            client_id: String::new(),
+            user_type: "legacy".to_string(),
+        };
+
+        let (jvm, _) = ArgumentBuilder::build(
+            &meta,
+            &ArgumentContext::new(values),
+            &InstanceSettings::default(),
+            &auth,
+            AccountSource::Offline,
+        );
+
+        assert!(jvm.contains(
+            &"-DignoreList=bootstraplauncher,1.20.1-forge-47.4.0.jar,1.20.1.jar".to_string()
+        ));
     }
 }

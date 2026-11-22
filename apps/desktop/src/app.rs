@@ -116,7 +116,7 @@ pub(crate) struct PendingDuplicateModPrompt {
     pub(crate) source: DuplicateModSource,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum DetailTab {
     Mods,
     Worlds,
@@ -560,6 +560,12 @@ pub struct McwApp {
     pending_duplicate_mod_prompts: Vec<PendingDuplicateModPrompt>,
     modpack_update_confirm_candidate: Option<mcw_providers::ModpackUpdateCandidate>,
     pending_backup_before_modpack_update: Option<(String, mcw_providers::ModpackUpdateCandidate)>,
+
+    // v1.1.1: Sticky tab counts per instance + deduplicated task/launch Global Log tracking
+    revealed_tab_counts: HashMap<DetailTab, usize>,
+    revealed_tab_counts_instance: Option<String>,
+    last_task_log_msg: HashMap<u64, String>,
+    last_launch_log_msg: HashMap<String, String>,
 }
 
 impl McwApp {
@@ -837,7 +843,7 @@ impl McwApp {
             storage_cleaning: false,
             storage_summary: None,
             storage_unused_versions: Vec::new(),
-            global_logs: VecDeque::with_capacity(256),
+            global_logs: VecDeque::with_capacity(2000),
             global_logs_filter: String::new(),
             show_global_logs_window: false,
             show_about_window: false,
@@ -931,6 +937,10 @@ impl McwApp {
             install_target_enable_lan_agent: false,
             startup_splash_started_at: Instant::now(),
             startup_splash_done: motion_mode == MotionMode::Off,
+            revealed_tab_counts: HashMap::new(),
+            revealed_tab_counts_instance: None,
+            last_task_log_msg: HashMap::new(),
+            last_launch_log_msg: HashMap::new(),
         };
 
         app.content_store_stats = Some(ContentStore::stats(&app.paths));
@@ -1025,6 +1035,83 @@ impl McwApp {
             || self.show_unsaved_changes_window
             || self.show_python_import_window
     }
+
+    pub(crate) fn topmost_notice_modal(&self) -> Option<&'static str> {
+        let has_inst = self.selected_instance().is_some();
+        let has_update_release = self
+            .last_update_check
+            .as_ref()
+            .and_then(|c| c.latest.as_ref())
+            .is_some();
+
+        if !self.pending_duplicate_mod_prompts.is_empty() {
+            Some("mcw_modal_duplicate_mod")
+        } else if self.install_target_open {
+            Some("mcw_modal_install_target")
+        } else if self.version_picker_open {
+            Some("mcw_modal_version_picker")
+        } else if self.modpack_dialog.open {
+            Some("mcw_modal_modpack_install")
+        } else if self.show_unsaved_changes_window {
+            Some("mcw_modal_unsaved_changes")
+        } else if self.preflight_confirm_instance_id.is_some() {
+            Some("mcw_modal_preflight_confirm")
+        } else if self.show_delete_modal && has_inst {
+            Some("mcw_modal_delete_instance")
+        } else if self.pending_restore_backup_id.is_some() {
+            Some("mcw_modal_restore_backup")
+        } else if self.pending_delete_world.is_some() {
+            Some("mcw_modal_delete_world")
+        } else if self.show_rename_modal && has_inst {
+            Some("mcw_modal_rename_instance")
+        } else if self.show_group_tags_modal && has_inst {
+            Some("mcw_modal_edit_group_tags")
+        } else if self.show_clone_modal && has_inst {
+            Some("mcw_modal_clone_instance")
+        } else if !self.open_manual_modals.is_empty() {
+            Some("mcw_modal_manual_downloads")
+        } else if self.show_all_tasks_modal && self.active_tasks.len() > 2 {
+            Some("mcw_all_tasks_modal")
+        } else if self.show_update_dialog && has_update_release {
+            Some("mcw_modal_update_dialog")
+        } else if self.show_python_import_window {
+            Some("mcw_modal_python_import")
+        } else if self.show_first_run_wizard {
+            Some("mcw_modal_first_run_setup")
+        } else if self.show_repair_center_window && has_inst {
+            Some("mcw_modal_repair_center")
+        } else if self.show_java_manager_window {
+            Some("mcw_modal_java_manager")
+        } else if self.show_content_library_window {
+            Some("mcw_modal_content_library")
+        } else if self.show_modpack_update_window {
+            Some("mcw_modal_modpack_update")
+        } else if self.show_issue_report_window {
+            Some("mcw_modal_issue_report")
+        } else if self.show_theme_issues_window {
+            Some("mcw_modal_theme_issues")
+        } else if self.show_export_modal && has_inst {
+            Some("mcw_modal_export_modpack")
+        } else if self.show_account_modal {
+            Some("mcw_modal_accounts")
+        } else if self.show_create_modal {
+            Some("mcw_modal_create_instance")
+        } else if self.show_about_window {
+            Some("mcw_modal_about")
+        } else if self.show_launcher_settings {
+            Some("mcw_modal_launcher_settings")
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn modal_notice_for(&self, modal_id: &str) -> Option<(String, bool)> {
+        if self.topmost_notice_modal() == Some(modal_id) {
+            self.notice_banner.clone()
+        } else {
+            None
+        }
+    }
 }
 
 impl eframe::App for McwApp {
@@ -1052,6 +1139,10 @@ impl eframe::App for McwApp {
         if current_notice_msg != self.notice_banner_last_text {
             self.notice_banner_last_text = current_notice_msg.clone();
             self.notice_banner_since = current_notice_msg.as_ref().map(|_| Instant::now());
+            if let Some((ref msg, is_err)) = self.notice_banner {
+                let tag = if is_err { "ERROR" } else { "NOTICE" };
+                self.push_global_log(format!("[{tag}] {msg}"));
+            }
         }
         let timeout_secs = self.prefs.notification_timeout_secs;
         if timeout_secs > 0 {

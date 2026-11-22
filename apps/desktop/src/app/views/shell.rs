@@ -255,16 +255,19 @@ impl McwApp {
                             task.control.toggle_pause();
                         }
 
+                        let task_done = task.total > 0 && task.current >= task.total;
+                        let show_speed =
+                            !speed_text.is_empty() && !is_paused && !is_cancelled && !task_done;
                         let right_text = if task.total > 0 {
                             let pct = ((task.current.min(task.total) as f64 / task.total as f64)
                                 * 100.0)
                                 .round() as u64;
-                            if speed_text.is_empty() || is_paused {
+                            if !show_speed {
                                 format!("{}/{} ({pct}%)", task.current, task.total)
                             } else {
                                 format!("{}/{} ({pct}%) · {speed_text}", task.current, task.total)
                             }
-                        } else if speed_text.is_empty() || is_paused {
+                        } else if !show_speed {
                             if is_paused {
                                 paused_badge.to_string()
                             } else {
@@ -323,7 +326,17 @@ impl McwApp {
         let paused_badge = self.t("launch.paused_badge").to_string();
         let cancelling_badge = self.t("launch.cancelling_badge").to_string();
         let motion_secs = self.motion_secs(0.15);
-        let speed_text = if self.current_download_bps >= 1.0 {
+        let any_preparing = self
+            .launch_states
+            .values()
+            .any(|s| matches!(s, LaunchState::Preparing(_)));
+        let has_active_download = any_preparing
+            || self.active_tasks.iter().any(|t| {
+                !t.control.is_paused()
+                    && !t.control.is_cancelled()
+                    && !(t.total > 0 && t.current >= t.total)
+            });
+        let speed_text = if has_active_download && self.current_download_bps >= 1024.0 {
             format!("↓ {}", format_speed(self.current_download_bps))
         } else {
             String::new()
@@ -418,7 +431,7 @@ impl McwApp {
         if self.show_all_tasks_modal && total_tasks > 2 {
             let mut open = self.show_all_tasks_modal;
             let tasks = self.active_tasks.clone();
-            let notice = self.notice_banner.clone();
+            let notice = self.modal_notice_for("mcw_all_tasks_modal");
             let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
                 ctx,
                 "mcw_all_tasks_modal",

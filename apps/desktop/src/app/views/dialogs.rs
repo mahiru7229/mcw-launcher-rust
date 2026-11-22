@@ -2,6 +2,43 @@ use crate::app::controllers::apply_lan_agent_option;
 use crate::app::platform::*;
 use crate::app::*;
 
+pub(crate) fn render_notice_banner_box(
+    ui: &mut egui::Ui,
+    p: ThemePalette,
+    msg: &str,
+    is_err: bool,
+) -> bool {
+    let mut dismiss = false;
+    Frame::new()
+        .fill(if is_err {
+            Color32::from_rgba_unmultiplied(p.danger.r(), p.danger.g(), p.danger.b(), 26)
+        } else {
+            Color32::from_rgba_unmultiplied(p.accent.r(), p.accent.g(), p.accent.b(), 22)
+        })
+        .stroke(Stroke::new(
+            1.0_f32,
+            if is_err { p.danger } else { p.accent },
+        ))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(msg).size(12.0).color(if is_err {
+                    p.danger
+                } else {
+                    p.text
+                }));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.small_button("Dismiss").clicked() {
+                        dismiss = true;
+                    }
+                });
+            });
+        });
+    dismiss
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_in_app_modal(
     ctx: &egui::Context,
@@ -78,43 +115,9 @@ pub(crate) fn render_in_app_modal(
             ui.add_space(6.0);
 
             if let Some((msg, is_err)) = notice {
-                Frame::new()
-                    .fill(if *is_err {
-                        Color32::from_rgba_unmultiplied(
-                            p.danger.r(),
-                            p.danger.g(),
-                            p.danger.b(),
-                            26,
-                        )
-                    } else {
-                        Color32::from_rgba_unmultiplied(
-                            p.accent.r(),
-                            p.accent.g(),
-                            p.accent.b(),
-                            22,
-                        )
-                    })
-                    .stroke(Stroke::new(
-                        1.0_f32,
-                        if *is_err { p.danger } else { p.accent },
-                    ))
-                    .corner_radius(CornerRadius::same(8))
-                    .inner_margin(egui::Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new(msg).size(12.0).color(if *is_err {
-                                p.danger
-                            } else {
-                                p.text
-                            }));
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button("Dismiss").clicked() {
-                                    dismiss_notice = true;
-                                }
-                            });
-                        });
-                    });
+                if render_notice_banner_box(ui, p, msg, *is_err) {
+                    dismiss_notice = true;
+                }
                 ui.add_space(8.0);
             }
 
@@ -133,7 +136,7 @@ impl McwApp {
             let mut open = self.show_create_modal;
             let mut browse_modpacks_clicked = false;
             let mut open_py_import = false;
-            let notice = self.notice_banner.clone();
+            let notice = self.modal_notice_for("mcw_modal_create_instance");
             let (keep_open, dismiss_notice) = render_in_app_modal(
                 ctx,
                 "mcw_modal_create_instance",
@@ -551,7 +554,7 @@ impl McwApp {
                 let title = self.t("modpack_package.export.title").to_string();
                 let mut trigger_export: Option<ModpackExportOptions> = None;
                 let mut open = self.show_export_modal;
-                let notice = self.notice_banner.clone();
+                let notice = self.modal_notice_for("mcw_modal_export_modpack");
                 let (keep_open, dismiss_notice) = render_in_app_modal(
                     ctx,
                     "mcw_modal_export_modpack",
@@ -825,7 +828,7 @@ impl McwApp {
             let filtered_items: Vec<ModVersionChoice> =
                 self.filtered_mod_versions().into_iter().cloned().collect();
 
-            let notice = self.notice_banner.clone();
+            let notice = self.modal_notice_for("mcw_modal_version_picker");
             let (keep_open, dismiss_notice) = render_in_app_modal(
                 ctx,
                 "mcw_modal_version_picker",
@@ -1246,7 +1249,7 @@ impl McwApp {
         if self.show_rename_modal {
             if let Some(inst) = self.selected_instance().cloned() {
                 let mut open = self.show_rename_modal;
-                let notice = self.notice_banner.clone();
+                let notice = self.modal_notice_for("mcw_modal_rename_instance");
                 let (keep_open, dismiss_notice) = render_in_app_modal(
                     ctx,
                     "mcw_modal_rename_instance",
@@ -1304,7 +1307,7 @@ impl McwApp {
         if self.show_group_tags_modal {
             if let Some(inst) = self.selected_instance().cloned() {
                 let mut open = self.show_group_tags_modal;
-                let notice = self.notice_banner.clone();
+                let notice = self.modal_notice_for("mcw_modal_edit_group_tags");
                 let (keep_open, dismiss_notice) = render_in_app_modal(
                     ctx,
                     "mcw_modal_edit_group_tags",
@@ -1387,7 +1390,7 @@ impl McwApp {
                 let include_saves_lbl = self.t("workspace.clone.include_saves").to_string();
                 let clone_act_lbl = self.t("workspace.clone.action").to_string();
                 let cancel_lbl = self.t("common.cancel").to_string();
-                let notice = self.notice_banner.clone();
+                let notice = self.modal_notice_for("mcw_modal_clone_instance");
                 let (keep_open, dismiss_notice) = render_in_app_modal(
                     ctx,
                     "mcw_modal_clone_instance",
@@ -1449,7 +1452,7 @@ impl McwApp {
         if self.show_delete_modal {
             if let Some(inst) = self.selected_instance().cloned() {
                 let mut open = self.show_delete_modal;
-                let notice = self.notice_banner.clone();
+                let notice = self.modal_notice_for("mcw_modal_delete_instance");
                 let (keep_open, dismiss_notice) = render_in_app_modal(
                     ctx,
                     "mcw_modal_delete_instance",
@@ -1516,7 +1519,7 @@ impl McwApp {
         // 4. Account Manager In-App Modal (Centered)
         if self.show_account_modal {
             let mut open = self.show_account_modal;
-            let notice = self.notice_banner.clone();
+            let notice = self.modal_notice_for("mcw_modal_accounts");
             let (keep_open, dismiss_notice) = render_in_app_modal(
                 ctx,
                 "mcw_modal_accounts",
@@ -1749,7 +1752,7 @@ impl McwApp {
         if let Some(backup_id) = self.pending_restore_backup_id.clone() {
             let mut open = true;
             let mut confirm_restore = false;
-            let notice = self.notice_banner.clone();
+            let notice = self.modal_notice_for("mcw_modal_restore_backup");
             let (keep_open, dismiss_notice) = render_in_app_modal(
                 ctx,
                 "mcw_modal_restore_backup",
@@ -1806,7 +1809,7 @@ impl McwApp {
         if let Some((inst_id, folder_name)) = self.pending_delete_world.clone() {
             let mut open = true;
             let mut confirm_delete = false;
-            let notice = self.notice_banner.clone();
+            let notice = self.modal_notice_for("mcw_modal_delete_world");
             let (keep_open, dismiss_notice) = render_in_app_modal(
                 ctx,
                 "mcw_modal_delete_world",
@@ -1873,11 +1876,12 @@ impl McwApp {
 
         // 7. Dedicated Per-Instance Manual Downloads Isolated OS Windows (CurseForge opt-out mods)
         let open_ids = self.open_manual_modals.clone();
+        let open_manual_count = open_ids.len();
         let mut to_close: Vec<String> = Vec::new();
         let mut to_scan: Vec<String> = Vec::new();
         let mut launch_anyway_id: Option<String> = None;
 
-        for inst_id in open_ids {
+        for (manual_idx, inst_id) in open_ids.into_iter().enumerate() {
             let inst_name = self
                 .instances
                 .iter()
@@ -1913,7 +1917,11 @@ impl McwApp {
             let close_lbl = self.t("common.close").to_string();
             let launch_anyway_lbl = self.t("manual_downloads.launch_anyway").to_string();
             let launch_anyway_hint = self.t("manual_downloads.launch_anyway_hint").to_string();
-            let notice = self.notice_banner.clone();
+            let notice = if manual_idx + 1 == open_manual_count {
+                self.modal_notice_for("mcw_modal_manual_downloads")
+            } else {
+                None
+            };
 
             let (keep_open, dismiss_notice) = render_in_app_modal(
                 ctx,
@@ -2164,7 +2172,7 @@ impl McwApp {
         let java_custom_lbl = self.t("java.selection.mode.custom").to_string();
         let java_browse_lbl = self.t("java.selection.browse").to_string();
         let cancel_lbl = self.t("common.cancel").to_string();
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_modpack_install");
 
         let (keep_open, dismiss_notice) = render_in_app_modal(
             ctx,
@@ -2680,7 +2688,7 @@ impl McwApp {
             )
         };
 
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_install_target");
         let (keep_open, dismiss_notice) = render_in_app_modal(
             ctx,
             "mcw_modal_install_target",
@@ -3031,7 +3039,7 @@ impl McwApp {
         let p = self.palette;
         let mut open = true;
         let mut chosen_action: Option<u8> = None;
-        let notice = self.notice_banner.clone();
+        let notice = self.modal_notice_for("mcw_modal_duplicate_mod");
 
         let (keep_open, dismiss_notice) = render_in_app_modal(
             ctx,

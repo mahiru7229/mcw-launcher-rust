@@ -2,6 +2,18 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.1.1] - 2026-11-22
+
+### Fixed
+- **Forge 1.17+ / NeoForge `BootstrapLauncher` Split-Package Launch Crash (`_1._20._1` vs `minecraft`)**: Updated `ClasspathBuilder::build` in `mcw-minecraft` to omit the base vanilla `client_jar` when `main_class` is `BootstrapLauncher` (e.g., Forge 1.20.1 / NeoForge), and updated `ArgumentBuilder::build` to automatically ensure `<inherits_from>.jar` is present in `-DignoreList=`. Resolves `java.lang.module.ResolutionException` on modpacks such as *DeceasedCraft* (`1.20.1-forge-47.4.0` + `customnpcs` + Sinytra `Connector`).
+- **Sticky Tab Counts Across Instance Tabs**: Preserved loaded item counts (`Mods (306)`, `Worlds (...)`, `Resource packs (...)`, `Shaders (...)`, `Screenshots (...)`, `Backups (...)`) when switching to other tabs within the same instance, updating live on asynchronous tab reloads and clearing automatically when switching to a different instance.
+- **Single Active-Window Notification Banner**: Removed duplicate notice rendering in `Mod & Modpacks`, gated the main `CentralPanel` banner when any modal is open, scoped in-app modal notice display to the single highest-priority active modal (`topmost_notice_modal`), and added unified notice display inside *Launcher Settings* so notifications only appear once in the currently active window.
+- **Immediate Download Speed Hiding When Idle**: Snapped `current_download_bps` immediately to `0.0` when sampled network byte delta is zero and suppressed the speed indicator whenever no unpaused/unfinished download task is actively running.
+- **Rendered Markdown Release Notes in Update Dialog**: Replaced raw Markdown text in the Update Dialog with formatted rich-text Markdown rendering supporting headings (`#`–`####`), horizontal rules, fenced code blocks, blockquotes, nested bullet/numbered lists, bold, italic, inline code, and styled links.
+- **Comprehensive Global Launcher Event Log**: Expanded Global Log retention to 2,000 entries with `[HH:MM:SS]` UTC timestamps and recorded full lifecycle diagnostics (version manifest loads, deduplicated download/launch stages, update checks & installs, modpack/mod/content pack operations, Java/repair/backup actions, and notification banners).
+
+---
+
 ## [1.1.0] - 2026-11-22
 
 ### Added

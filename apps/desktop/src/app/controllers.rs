@@ -560,20 +560,30 @@ impl McwApp {
     ) -> (u64, Arc<TaskControl>) {
         let id = self.next_task_id;
         self.next_task_id += 1;
+        let label_str = label.into();
+        let msg_str = message.into();
         let control = TaskControl::new();
         self.active_tasks.push(ActiveTask {
             id,
-            label: label.into(),
-            message: message.into(),
+            label: label_str.clone(),
+            message: msg_str.clone(),
             current: 0,
             total: 0,
             control: Arc::clone(&control),
         });
+        if !msg_str.trim().is_empty() {
+            self.last_task_log_msg.insert(id, msg_str.clone());
+        }
+        self.push_global_log(format!("[TASK] Started #{id} '{label_str}': {msg_str}"));
         (id, control)
     }
 
     pub(crate) fn finish_task(&mut self, task_id: u64) {
-        self.active_tasks.retain(|t| t.id != task_id);
+        if let Some(pos) = self.active_tasks.iter().position(|t| t.id == task_id) {
+            let task = self.active_tasks.remove(pos);
+            self.push_global_log(format!("[TASK] Finished #{task_id} '{}'.", task.label));
+        }
+        self.last_task_log_msg.remove(&task_id);
     }
 
     pub(crate) fn latest_mc_version(&self, include_snapshots: bool) -> String {
@@ -597,6 +607,7 @@ impl McwApp {
             return;
         }
         self.versions_loading = true;
+        self.push_global_log("[INFO] Loading Minecraft version manifest...");
         let paths = self.paths.clone();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
@@ -710,6 +721,11 @@ impl McwApp {
         // Lesson #8: Clear previous launch errors & logs for the new run.
         self.notice_banner = None;
         self.instance_logs.insert(instance_id.clone(), Vec::new());
+        self.last_launch_log_msg.remove(&instance_id);
+        self.push_global_log(format!(
+            "[LAUNCH] Starting launch pipeline for '{}' (MC {}, loader: {}).",
+            inst.name, inst.version_id, inst.mod_loader.name
+        ));
         let (launch_task_id, task_ctrl) =
             self.begin_task_with_control(format!("Launch {}", inst.name), "Preparing launch...");
         self.launch_task_ids
@@ -2643,19 +2659,59 @@ impl McwApp {
             ctx.request_repaint();
         });
     }
+}
 
+fn progress_log_line(message: &str, current: u64, total: u64) -> Option<String> {
+    if message.trim().is_empty() {
+        return None;
+    }
+    if total > 20
+        && (message.starts_with("Assets ")
+            || message.starts_with("Libraries ")
+            || message.starts_with("Downloading update ("))
+    {
+        let pct = current.saturating_mul(100) / total.max(1);
+        let bucket = if current == 0 {
+            0
+        } else if current >= total {
+            100
+        } else {
+            (pct / 25) * 25
+        };
+        if message.starts_with("Downloading update (") {
+            return Some(format!("Downloading update ({bucket}%)"));
+        }
+        if let Some((prefix, _)) = message.split_once(' ') {
+            return Some(format!("{prefix}: {bucket}% ({total} total)"));
+        }
+    }
+    Some(message.to_string())
+}
+
+impl McwApp {
     pub(crate) fn poll_events(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
                 AppEvent::VersionsLoaded(res) => {
                     self.versions_loading = false;
-                    if let Ok(list) = res {
-                        self.available_versions = list;
-                        let latest = self.latest_mc_version(self.create_show_snapshots);
-                        if !latest.is_empty()
-                            && (self.create_version.is_empty() || !self.show_create_modal)
-                        {
-                            self.create_version = latest;
+                    match res {
+                        Ok(list) => {
+                            self.push_global_log(format!(
+                                "[INFO] Loaded Minecraft version manifest ({} versions).",
+                                list.len()
+                            ));
+                            self.available_versions = list;
+                            let latest = self.latest_mc_version(self.create_show_snapshots);
+                            if !latest.is_empty()
+                                && (self.create_version.is_empty() || !self.show_create_modal)
+                            {
+                                self.create_version = latest;
+                            }
+                        }
+                        Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] Failed to load Minecraft version manifest: {err}"
+                            ));
                         }
                     }
                 }
@@ -2667,11 +2723,18 @@ impl McwApp {
                         self.modpack_dialog.loading_versions = false;
                         match versions {
                             Ok(list) => {
+                                self.push_global_log(format!(
+                                    "[NET] Loaded {} modpack version(s) (req #{request_id}).",
+                                    list.len()
+                                ));
                                 self.modpack_dialog.error = None;
                                 self.modpack_dialog.versions = list;
                                 self.sync_modpack_dialog_selection();
                             }
                             Err(err) => {
+                                self.push_global_log(format!(
+                                    "[ERROR] Failed to load modpack versions (req #{request_id}): {err}"
+                                ));
                                 self.modpack_dialog.error = Some(err);
                             }
                         }
@@ -2702,11 +2765,18 @@ impl McwApp {
                         self.version_picker_loading = false;
                         match versions {
                             Ok(list) => {
+                                self.push_global_log(format!(
+                                    "[NET] Loaded {} file version(s) for '{target_key}'.",
+                                    list.len()
+                                ));
                                 self.version_picker_items = list;
                                 self.version_picker_error = None;
                                 self.sync_mod_version_picker_selection();
                             }
                             Err(err) => {
+                                self.push_global_log(format!(
+                                    "[ERROR] Failed to load versions for '{target_key}': {err}"
+                                ));
                                 self.version_picker_error = Some(err);
                             }
                         }
@@ -2722,13 +2792,21 @@ impl McwApp {
                         Ok(file_name) => {
                             self.mods_cache.remove(&instance_id);
                             if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
-                                && self.active_tab == DetailTab::Mods
+                                && (self.active_tab == DetailTab::Mods
+                                    || (self.revealed_tab_counts_instance.as_deref()
+                                        == Some(instance_id.as_str())
+                                        && self.revealed_tab_counts.contains_key(&DetailTab::Mods)))
                             {
                                 self.load_mods_async(&instance_id, ctx, true);
                             }
+                            let msg = format!("Installed '{file_name}' into '{instance_id}'.");
+                            self.push_global_log(format!("[MOD] {msg}"));
                             self.notice_banner = Some((format!("Installed '{file_name}'."), false));
                         }
                         Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] Mod install failed for '{instance_id}': {err}"
+                            ));
                             self.notice_banner = Some((format!("Mod install failed: {err}"), true));
                         }
                     }
@@ -2738,8 +2816,12 @@ impl McwApp {
                     candidates,
                 } => {
                     self.checking_mod_updates = false;
+                    let avail = candidates.iter().filter(|c| c.update_available).count();
+                    self.push_global_log(format!(
+                        "[MOD] Checked tracked mods for '{instance_id}': {avail}/{} update(s) available.",
+                        candidates.len()
+                    ));
                     if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
-                        let avail = candidates.iter().filter(|c| c.update_available).count();
                         self.mod_update_candidates = candidates;
                         self.notice_banner = Some((
                             format!("Checked tracked mods: {avail} update(s) available."),
@@ -2760,10 +2842,16 @@ impl McwApp {
                             if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
                                 self.load_mods_async(&instance_id, ctx, true);
                             }
+                            self.push_global_log(format!(
+                                "[MOD] Updated {count} mod(s) in '{instance_id}'."
+                            ));
                             self.notice_banner =
                                 Some((format!("Updated {count} mod(s) successfully."), false));
                         }
                         Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] Mod update failed in '{instance_id}': {err}"
+                            ));
                             self.notice_banner = Some((format!("Mod update failed: {err}"), true));
                         }
                     }
@@ -2772,6 +2860,13 @@ impl McwApp {
                     self.loading_mods.remove(&instance_id);
                     if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
                         self.selected_mods = mods.clone();
+                        if self.revealed_tab_counts_instance.as_deref()
+                            == Some(instance_id.as_str())
+                            && (self.active_tab == DetailTab::Mods
+                                || self.revealed_tab_counts.contains_key(&DetailTab::Mods))
+                        {
+                            self.revealed_tab_counts.insert(DetailTab::Mods, mods.len());
+                        }
                     }
                     self.mods_cache.insert(instance_id, mods);
                     self.refresh_mod_compat_report();
@@ -2783,6 +2878,14 @@ impl McwApp {
                     self.loading_backups.remove(&instance_id);
                     if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
                         self.selected_backups = backups.clone();
+                        if self.revealed_tab_counts_instance.as_deref()
+                            == Some(instance_id.as_str())
+                            && (self.active_tab == DetailTab::Backups
+                                || self.revealed_tab_counts.contains_key(&DetailTab::Backups))
+                        {
+                            self.revealed_tab_counts
+                                .insert(DetailTab::Backups, backups.len());
+                        }
                     }
                     self.backups_cache.insert(instance_id, backups);
                 }
@@ -2793,6 +2896,14 @@ impl McwApp {
                     self.loading_worlds.remove(&instance_id);
                     if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
                         self.selected_worlds = worlds.clone();
+                        if self.revealed_tab_counts_instance.as_deref()
+                            == Some(instance_id.as_str())
+                            && (self.active_tab == DetailTab::Worlds
+                                || self.revealed_tab_counts.contains_key(&DetailTab::Worlds))
+                        {
+                            self.revealed_tab_counts
+                                .insert(DetailTab::Worlds, worlds.len());
+                        }
                     }
                     self.worlds_cache.insert(instance_id, worlds);
                 }
@@ -2803,6 +2914,16 @@ impl McwApp {
                     self.loading_screenshots.remove(&instance_id);
                     if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
                         self.selected_screenshots = screenshots.clone();
+                        if self.revealed_tab_counts_instance.as_deref()
+                            == Some(instance_id.as_str())
+                            && (self.active_tab == DetailTab::Screenshots
+                                || self
+                                    .revealed_tab_counts
+                                    .contains_key(&DetailTab::Screenshots))
+                        {
+                            self.revealed_tab_counts
+                                .insert(DetailTab::Screenshots, screenshots.len());
+                        }
                     }
                     self.screenshots_cache.insert(instance_id, screenshots);
                 }
@@ -2813,10 +2934,24 @@ impl McwApp {
                 } => {
                     self.loading_content_packs
                         .remove(&(instance_id.clone(), kind));
-                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
-                        && self.active_tab.content_kind() == Some(kind)
-                    {
-                        self.selected_content_packs = packs.clone();
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                        if self.active_tab.content_kind() == Some(kind) {
+                            self.selected_content_packs = packs.clone();
+                        }
+                        let pack_tab = match kind {
+                            ContentKind::ResourcePack => Some(DetailTab::ResourcePacks),
+                            ContentKind::ShaderPack => Some(DetailTab::Shaders),
+                            _ => None,
+                        };
+                        if let Some(tab) = pack_tab {
+                            if self.revealed_tab_counts_instance.as_deref()
+                                == Some(instance_id.as_str())
+                                && (self.active_tab == tab
+                                    || self.revealed_tab_counts.contains_key(&tab))
+                            {
+                                self.revealed_tab_counts.insert(tab, packs.len());
+                            }
+                        }
                     }
                     self.content_packs_cache.insert((instance_id, kind), packs);
                 }
@@ -2833,14 +2968,31 @@ impl McwApp {
                         Ok(file_name) => {
                             self.content_packs_cache
                                 .remove(&(instance_id.clone(), kind));
+                            let pack_tab = match kind {
+                                ContentKind::ResourcePack => Some(DetailTab::ResourcePacks),
+                                ContentKind::ShaderPack => Some(DetailTab::Shaders),
+                                _ => None,
+                            };
                             if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
-                                && self.active_tab.content_kind() == Some(kind)
+                                && (self.active_tab.content_kind() == Some(kind)
+                                    || pack_tab.is_some_and(|t| {
+                                        self.revealed_tab_counts_instance.as_deref()
+                                            == Some(instance_id.as_str())
+                                            && self.revealed_tab_counts.contains_key(&t)
+                                    }))
                             {
                                 self.load_content_packs_async(&instance_id, kind, ctx, true);
                             }
+                            self.push_global_log(format!(
+                                "[CONTENT] Installed {:?} '{file_name}' into '{instance_id}'.",
+                                kind
+                            ));
                             self.notice_banner = Some((format!("Installed '{file_name}'."), false));
                         }
                         Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] Pack install failed for '{instance_id}': {err}"
+                            ));
                             self.notice_banner =
                                 Some((format!("Pack install failed: {err}"), true));
                         }
@@ -2852,6 +3004,10 @@ impl McwApp {
                         Ok(res) => {
                             ctx.copy_text(res.url.clone());
                             self.last_mclogs_url = Some(res.url.clone());
+                            self.push_global_log(format!(
+                                "[INFO] Uploaded sanitized log to {}.",
+                                res.url
+                            ));
                             self.notice_banner = Some((
                                 format!(
                                     "Uploaded sanitized log to {} (copied to clipboard).",
@@ -2861,6 +3017,7 @@ impl McwApp {
                             ));
                         }
                         Err(err) => {
+                            self.push_global_log(format!("[ERROR] mclo.gs upload failed: {err}"));
                             self.notice_banner =
                                 Some((format!("mclo.gs upload failed: {err}"), true));
                         }
@@ -2872,6 +3029,12 @@ impl McwApp {
                     current,
                     total,
                 } => {
+                    if let Some(log_line) = progress_log_line(&message, current, total) {
+                        if self.last_task_log_msg.get(&task_id) != Some(&log_line) {
+                            self.last_task_log_msg.insert(task_id, log_line.clone());
+                            self.push_global_log(format!("[TASK] #{task_id}: {log_line}"));
+                        }
+                    }
                     if let Some(task) = self.active_tasks.iter_mut().find(|t| t.id == task_id) {
                         task.message = message;
                         task.current = current;
@@ -2879,6 +3042,16 @@ impl McwApp {
                     }
                 }
                 AppEvent::LaunchProgress { instance_id, event } => {
+                    if let Some(log_line) =
+                        progress_log_line(&event.message, event.current, event.total)
+                    {
+                        let formatted = format!("[{:?}] {log_line}", event.stage);
+                        if self.last_launch_log_msg.get(&instance_id) != Some(&formatted) {
+                            self.last_launch_log_msg
+                                .insert(instance_id.clone(), formatted.clone());
+                            self.push_global_log(format!("[LAUNCH:{instance_id}] {formatted}"));
+                        }
+                    }
                     if let Some(&tid) = self.launch_task_ids.get(&instance_id) {
                         if let Some(task) = self.active_tasks.iter_mut().find(|t| t.id == tid) {
                             task.message = format!("[{:?}] {}", event.stage, event.message);
@@ -2894,6 +3067,7 @@ impl McwApp {
                     pid,
                     control,
                 } => {
+                    self.last_launch_log_msg.remove(&instance_id);
                     if let Some(tid) = self.launch_task_ids.remove(&instance_id) {
                         self.finish_task(tid);
                     }
@@ -2925,6 +3099,7 @@ impl McwApp {
                     instance_id,
                     report,
                 } => {
+                    self.last_launch_log_msg.remove(&instance_id);
                     if let Some(tid) = self.launch_task_ids.remove(&instance_id) {
                         self.finish_task(tid);
                     }
@@ -3001,12 +3176,19 @@ impl McwApp {
                             self.account_avatars_loading.remove(&acc.uuid);
                             self.reload_accounts();
                             self.ensure_account_avatars_loaded(ctx);
+                            self.push_global_log(format!(
+                                "[AUTH] Signed in as Microsoft account '{}'.",
+                                acc.username
+                            ));
                             self.notice_banner = Some((
                                 format!("Signed in as Microsoft account '{}'.", acc.username),
                                 false,
                             ));
                         }
                         Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] Microsoft sign-in failed: {err}"
+                            ));
                             self.notice_banner =
                                 Some((format!("Microsoft sign-in failed: {err}"), true));
                             self.open_accounts_window(ctx);
@@ -3024,6 +3206,10 @@ impl McwApp {
                         Ok(java) => {
                             self.reload_java();
                             self.start_java_diagnostics_scan(ctx);
+                            self.push_global_log(format!(
+                                "[JAVA] Installed managed Temurin Java {} ({}).",
+                                java.major, java.version_string
+                            ));
                             self.notice_banner = Some((
                                 format!(
                                     "Installed managed Temurin Java {} ({}).",
@@ -3045,6 +3231,10 @@ impl McwApp {
                     self.launch_states.insert(instance_id, LaunchState::Idle);
                     match report {
                         Ok(rep) => {
+                            self.push_global_log(format!(
+                                "[REPAIR] Completed for '{}' ({}); client repaired: {}.",
+                                rep.instance_id, rep.version_id, rep.client_repaired
+                            ));
                             self.notice_banner = Some((
                                 format!(
                                     "Repair complete for '{}' ({}). Client repaired: {}.",
@@ -3077,10 +3267,20 @@ impl McwApp {
                             self.backup_note_input.clear();
                             self.backups_cache.remove(&instance_id);
                             if self.selected_instance_id.as_deref() == Some(instance_id.as_str())
-                                && self.active_tab == DetailTab::Backups
+                                && (self.active_tab == DetailTab::Backups
+                                    || (self.revealed_tab_counts_instance.as_deref()
+                                        == Some(instance_id.as_str())
+                                        && self
+                                            .revealed_tab_counts
+                                            .contains_key(&DetailTab::Backups)))
                             {
                                 self.load_backups_async(&instance_id, ctx, true);
                             }
+                            self.push_global_log(format!(
+                                "[BACKUP] Created '{}' for '{instance_id}' ({}).",
+                                info.id,
+                                format_bytes(info.size_bytes)
+                            ));
                             self.notice_banner = Some((
                                 format!(
                                     "Backup '{}' created ({}).",
@@ -3144,9 +3344,15 @@ impl McwApp {
                     }
                     match result {
                         Ok(rep) => {
-                            // Keep Create/Modpack install window open so user can keep interacting.
-                            // Missing manual mods are flagged on the instance and shown when the user launches it.
                             self.reload_instances();
+                            self.push_global_log(format!(
+                                "[MODPACK] Installed modpack '{}' (MC {}, {}, {} files, {} overrides).",
+                                rep.instance_id,
+                                rep.game_version,
+                                rep.loader.name,
+                                rep.downloaded_files,
+                                rep.extracted_overrides
+                            ));
                             self.notice_banner = Some((
                                 format!(
                                     "Installed modpack '{}' (MC {}, {} - {} files, {} overrides{}).",
@@ -3183,6 +3389,13 @@ impl McwApp {
                     match result {
                         Ok(rep) => {
                             self.reload_instances();
+                            self.push_global_log(format!(
+                                "[MODPACK] Installed external modpack '{}' (MC {}, {}, {} files).",
+                                rep.instance_id,
+                                rep.game_version,
+                                rep.loader.name,
+                                rep.downloaded_files
+                            ));
                             self.notice_banner = Some((
                                 format!(
                                     "Installed modpack '{}' (MC {}, {} - {} files).",
@@ -3242,6 +3455,7 @@ impl McwApp {
                                     res.channel.as_str()
                                 )
                             };
+                            self.push_global_log(format!("[UPDATE] {status}"));
                             self.update_status_text = status.clone();
                             self.last_update_check = Some(res);
                             if avail {
@@ -3253,6 +3467,7 @@ impl McwApp {
                         }
                         Err(err) => {
                             let msg = format!("Update check failed: {err}");
+                            self.push_global_log(format!("[ERROR] {msg}"));
                             self.update_status_text = msg.clone();
                             if manual {
                                 self.notice_banner = Some((msg, true));
@@ -3274,6 +3489,10 @@ impl McwApp {
                                         std::process::id(),
                                     ) {
                                         Ok(()) => {
+                                            self.push_global_log(format!(
+                                                "[UPDATE] Staged v{}; launching self-updater and restarting.",
+                                                staged.version
+                                            ));
                                             self.show_update_dialog = false;
                                             self.update_status_text = format!(
                                                 "Installing v{} and restarting...",
@@ -3359,6 +3578,10 @@ impl McwApp {
                 }
                 AppEvent::JavaDiagnosticsScanned(diags) => {
                     self.java_scanning = false;
+                    self.push_global_log(format!(
+                        "[INFO] Java runtime diagnostics scan complete ({} installation(s) checked).",
+                        diags.len()
+                    ));
                     self.java_diagnostics = diags;
                 }
                 AppEvent::OptiFineInstallFinished {
@@ -3487,6 +3710,10 @@ impl McwApp {
                     match provider {
                         BrowserProvider::Modrinth => match modrinth {
                             Ok(hits) => {
+                                self.push_global_log(format!(
+                                    "[NET] Modrinth search ({category:?}) returned {} items (total {total_hits}).",
+                                    hits.len()
+                                ));
                                 let first = hits.first().map(|h| format!("mr:{}", h.slug));
                                 self.browser_mr_results = hits;
                                 if self.browser_selected_key.is_none() {
@@ -3500,6 +3727,10 @@ impl McwApp {
                         },
                         BrowserProvider::CurseForge => match curseforge {
                             Ok(mods) => {
+                                self.push_global_log(format!(
+                                    "[NET] CurseForge search ({category:?}) returned {} items (total {total_hits}).",
+                                    mods.len()
+                                ));
                                 let first = mods.first().map(|m| format!("cf:{}", m.id));
                                 self.browser_cf_results = mods;
                                 if self.browser_selected_key.is_none() {
@@ -3513,6 +3744,10 @@ impl McwApp {
                         },
                         BrowserProvider::Ftb => match ftb {
                             Ok(packs) => {
+                                self.push_global_log(format!(
+                                    "[NET] FTB search ({category:?}) returned {} items (total {total_hits}).",
+                                    packs.len()
+                                ));
                                 let first = packs.first().map(|p| format!("ftb:{}", p.id));
                                 self.browser_ftb_results = packs;
                                 if self.browser_selected_key.is_none() {
@@ -3526,6 +3761,10 @@ impl McwApp {
                         },
                         BrowserProvider::AtLauncher => match atl {
                             Ok(packs) => {
+                                self.push_global_log(format!(
+                                    "[NET] ATLauncher search ({category:?}) returned {} items (total {total_hits}).",
+                                    packs.len()
+                                ));
                                 let first = packs
                                     .first()
                                     .map(|p| format!("atl:{}", p.effective_safe_name()));
@@ -3542,6 +3781,7 @@ impl McwApp {
                     }
                 }
                 AppEvent::ConnectivityChecked(status) => {
+                    self.push_global_log(format!("[NET] Connectivity check: {:?}.", status));
                     self.connectivity_checking = false;
                     self.connectivity_status = status;
                 }
@@ -3557,6 +3797,10 @@ impl McwApp {
                         self.modpack_update_loading = false;
                         match result {
                             Ok(check) => {
+                                self.push_global_log(format!(
+                                    "[MODPACK] Checked updates for '{instance_id}': {} candidate(s).",
+                                    check.versions.len()
+                                ));
                                 self.modpack_update_error = None;
                                 if let Some(first) = check.versions.first() {
                                     self.modpack_update_selected_version = first.version_id.clone();
@@ -3566,6 +3810,9 @@ impl McwApp {
                                 self.modpack_update_check = Some(check);
                             }
                             Err(err) => {
+                                self.push_global_log(format!(
+                                    "[ERROR] Modpack update check failed for '{instance_id}': {err}"
+                                ));
                                 self.modpack_update_error = Some(err);
                                 self.modpack_update_check = None;
                             }
@@ -3585,6 +3832,13 @@ impl McwApp {
                             self.reload_instances();
                             self.sync_selected_from_cache();
                             self.ensure_active_tab_loaded(ctx);
+                            self.push_global_log(format!(
+                                "[MODPACK] Updated '{}' to {} (MC {} - {}).",
+                                rep.instance_id,
+                                rep.new_version_number,
+                                rep.game_version,
+                                rep.loader.name
+                            ));
                             self.notice_banner = Some((
                                 format!(
                                     "Updated '{}' to {} (MC {} - {}). Preserved saves & options.",
@@ -3597,6 +3851,9 @@ impl McwApp {
                             ));
                         }
                         Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] Modpack update failed for '{instance_id}': {err}"
+                            ));
                             self.notice_banner =
                                 Some((format!("Modpack update failed: {err}"), true));
                         }
@@ -3608,9 +3865,14 @@ impl McwApp {
                     quick_play_server,
                     issues,
                 } => {
+                    self.last_launch_log_msg.remove(&instance_id);
                     if let Some(tid) = self.launch_task_ids.remove(&instance_id) {
                         self.finish_task(tid);
                     }
+                    self.push_global_log(format!(
+                        "[WARN] Forge preflight check found {} issue(s) for '{instance_id}'; awaiting confirmation.",
+                        issues.len()
+                    ));
                     self.launch_states
                         .insert(instance_id.clone(), LaunchState::Idle);
                     self.preflight_confirm_instance_id = Some(instance_id);
@@ -3708,13 +3970,17 @@ impl McwApp {
         if elapsed >= 0.5 {
             let now_bytes = mcw_net::total_downloaded_bytes();
             let delta = now_bytes.saturating_sub(self.last_net_sample_bytes);
-            let instant_bps = delta as f64 / elapsed;
-            // Smooth exponential moving average so speed readout doesn't jitter wildly
-            self.current_download_bps = if self.current_download_bps <= 1.0 {
-                instant_bps
+            if delta == 0 {
+                self.current_download_bps = 0.0;
             } else {
-                self.current_download_bps * 0.4 + instant_bps * 0.6
-            };
+                let instant_bps = delta as f64 / elapsed;
+                // Smooth exponential moving average so speed readout doesn't jitter wildly
+                self.current_download_bps = if self.current_download_bps <= 1.0 {
+                    instant_bps
+                } else {
+                    self.current_download_bps * 0.4 + instant_bps * 0.6
+                };
+            }
             self.last_net_sample_bytes = now_bytes;
             self.last_net_sample_at = Instant::now();
         }
@@ -4380,6 +4646,10 @@ impl McwApp {
         self.update_checking = true;
         self.update_status_text = "Checking for updates...".to_string();
         let channel = UpdateChannel::parse(&self.prefs.update_channel);
+        self.push_global_log(format!(
+            "[UPDATE] Checking for launcher updates on '{}' channel (manual: {manual}).",
+            channel.as_str()
+        ));
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
 
@@ -4422,6 +4692,10 @@ impl McwApp {
 
         self.update_downloading = true;
         self.update_status_text = format!("Downloading v{}...", release.version);
+        self.push_global_log(format!(
+            "[UPDATE] Downloading update v{} (source: {}).",
+            release.version, release.source
+        ));
         let task_id = self.begin_task(
             format!("Launcher Update v{}", release.version),
             "Downloading release package...",
@@ -4637,10 +4911,34 @@ impl McwApp {
     // -------------------------------------------------------------------------
 
     pub(crate) fn push_global_log(&mut self, entry: impl Into<String>) {
-        if self.global_logs.len() >= 500 {
+        let raw = entry.into();
+        let has_hms_ts = {
+            let b = raw.as_bytes();
+            b.len() >= 10
+                && b[0] == b'['
+                && b[3] == b':'
+                && b[6] == b':'
+                && b[9] == b']'
+                && b[1..3].iter().all(u8::is_ascii_digit)
+                && b[4..6].iter().all(u8::is_ascii_digit)
+                && b[7..9].iter().all(u8::is_ascii_digit)
+        };
+        let line = if has_hms_ts {
+            raw
+        } else {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() % 86_400)
+                .unwrap_or(0);
+            let h = secs / 3600;
+            let m = (secs % 3600) / 60;
+            let s = secs % 60;
+            format!("[{h:02}:{m:02}:{s:02}] {raw}")
+        };
+        if self.global_logs.len() >= 2000 {
             self.global_logs.pop_front();
         }
-        self.global_logs.push_back(entry.into());
+        self.global_logs.push_back(line);
     }
 
     pub(crate) fn refresh_mod_compat_report(&mut self) {

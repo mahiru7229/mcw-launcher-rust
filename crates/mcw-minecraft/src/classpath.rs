@@ -34,7 +34,12 @@ impl ClasspathBuilder {
             }
         }
 
-        entries.push(client_jar.to_string_lossy().to_string());
+        let main_class = version.main_class.trim();
+        let uses_bootstrap_launcher = main_class == "cpw.mods.bootstraplauncher.BootstrapLauncher"
+            || main_class.ends_with(".BootstrapLauncher");
+        if !uses_bootstrap_launcher {
+            entries.push(client_jar.to_string_lossy().to_string());
+        }
         let sep = if cfg!(windows) { ";" } else { ":" };
         entries.join(sep)
     }
@@ -161,5 +166,48 @@ mod tests {
         assert!(!cp.contains("asm-9.6.jar"));
         assert!(cp.contains("asm-9.7.1.jar"));
         assert!(cp.ends_with("client.jar"));
+    }
+
+    #[test]
+    fn omits_vanilla_client_jar_for_bootstrap_launcher() {
+        let meta = VersionMetadata {
+            id: "1.20.1-forge-47.4.0".to_string(),
+            version_type: "release".to_string(),
+            main_class: "cpw.mods.bootstraplauncher.BootstrapLauncher".to_string(),
+            inherits_from: Some("1.20.1".to_string()),
+            asset_index: None,
+            assets: None,
+            downloads: None,
+            java_version: None,
+            arguments: None,
+            minecraft_arguments: None,
+            libraries: vec![LibraryEntry {
+                name: "cpw.mods:bootstraplauncher:1.1.2".to_string(),
+                url: None,
+                downloads: Some(LibraryDownloads {
+                    artifact: Some(DownloadArtifact {
+                        path: Some(
+                            "cpw/mods/bootstraplauncher/1.1.2/bootstraplauncher-1.1.2.jar"
+                                .to_string(),
+                        ),
+                        sha1: None,
+                        size: 0,
+                        url: String::new(),
+                    }),
+                    classifiers: HashMap::new(),
+                }),
+                rules: vec![],
+                natives: None,
+                clientreq: None,
+            }],
+        };
+
+        let cp = ClasspathBuilder::build(
+            &meta,
+            Path::new("/mc/versions/1.20.1/1.20.1.jar"),
+            Path::new("/mc/libs"),
+        );
+        assert!(cp.contains("bootstraplauncher-1.1.2.jar"));
+        assert!(!cp.contains("1.20.1.jar"));
     }
 }
