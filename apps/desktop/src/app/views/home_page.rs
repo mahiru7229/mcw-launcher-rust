@@ -97,6 +97,7 @@ impl McwApp {
                     AppPage::Modpacks => self.render_modpacks_page(ui, ctx),
                     AppPage::Versions => self.render_versions_page(ui, ctx),
                     AppPage::Logs => self.render_logs_page(ui, ctx),
+                    AppPage::Changelog => self.render_changelog_page(ui, ctx),
                 }
             });
     }

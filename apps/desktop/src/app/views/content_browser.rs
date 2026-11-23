@@ -322,7 +322,7 @@ impl McwApp {
                                 .width(lw)
                                 .truncate()
                                 .show_ui(ui, |ui| {
-                                    for l in ["fabric", "forge", "neoforge", "quilt", "all"] {
+                                    for l in ["all", "fabric", "forge", "neoforge", "quilt"] {
                                         ui.selectable_value(
                                             &mut self.browser_loader_filter,
                                             l.to_string(),
@@ -337,7 +337,6 @@ impl McwApp {
                     }
 
                     if self.browser_global_mode
-                        && cat != BrowserCategory::Modpacks
                         && matches!(
                             prov,
                             BrowserProvider::Modrinth | BrowserProvider::CurseForge

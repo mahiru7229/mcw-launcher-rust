@@ -265,6 +265,8 @@ pub struct LauncherPrefs {
     pub auto_check_updates: bool,
     #[serde(default)]
     pub auto_update_v110_migrated: bool,
+    #[serde(default)]
+    pub v121_defaults_migrated: bool,
     #[serde(default = "default_update_channel")]
     pub update_channel: String,
     #[serde(default)]
@@ -311,7 +313,7 @@ pub struct LauncherPrefs {
     pub background_dim: f32,
     #[serde(default)]
     pub window_size_schema_version: u32,
-    #[serde(default)]
+    #[serde(default = "default_font_family")]
     pub custom_font_family: String,
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
@@ -392,7 +394,11 @@ fn default_notification_timeout() -> u32 {
 }
 
 fn default_update_channel() -> String {
-    "beta".to_string()
+    "stable".to_string()
+}
+
+fn default_font_family() -> String {
+    crate::theme::BUNDLED_JETBRAINS_MONO_OPTION.to_string()
 }
 
 fn default_retention_days() -> u32 {
@@ -430,6 +436,7 @@ impl Default for LauncherPrefs {
             notification_timeout_secs: default_notification_timeout(),
             auto_check_updates: true,
             auto_update_v110_migrated: true,
+            v121_defaults_migrated: true,
             update_channel: default_update_channel(),
             first_run_completed: false,
             discord_rpc_enabled: true,
@@ -453,7 +460,7 @@ impl Default for LauncherPrefs {
             panel_opacity: default_panel_opacity(),
             background_dim: default_background_dim(),
             window_size_schema_version: 2,
-            custom_font_family: String::new(),
+            custom_font_family: default_font_family(),
             ui_scale: default_ui_scale(),
             font_size: default_font_size(),
             download_segments_per_file: default_segments_per_file(),
@@ -471,9 +478,19 @@ impl LauncherPrefs {
             .ok()
             .and_then(|raw| serde_json::from_str::<Self>(&raw).ok())
         {
+            let mut needs_save = false;
             if !loaded.auto_update_v110_migrated {
                 loaded.auto_check_updates = true;
                 loaded.auto_update_v110_migrated = true;
+                needs_save = true;
+            }
+            if !loaded.v121_defaults_migrated {
+                loaded.custom_font_family = default_font_family();
+                loaded.update_channel = default_update_channel();
+                loaded.v121_defaults_migrated = true;
+                needs_save = true;
+            }
+            if needs_save {
                 loaded.save(paths);
             }
             loaded
@@ -550,5 +567,46 @@ mod tests {
         let reloaded = LauncherPrefs::load(&paths);
         assert!(!reloaded.auto_check_updates);
         assert!(reloaded.auto_update_v110_migrated);
+    }
+
+    #[test]
+    fn defaults_and_migrates_font_and_stable_channel_for_v121() {
+        let tmp = tempdir().unwrap();
+        let paths = LauncherPaths::portable(tmp.path());
+        paths.initialize().unwrap();
+
+        let fresh = LauncherPrefs::default();
+        assert_eq!(
+            fresh.custom_font_family,
+            crate::theme::BUNDLED_JETBRAINS_MONO_OPTION
+        );
+        assert_eq!(fresh.update_channel, "stable");
+        assert!(fresh.v121_defaults_migrated);
+
+        // Simulate existing v1.2.0 config with beta channel, blank font, and no v121 flag.
+        let legacy_path = paths.config_root.join("launcher_settings.json");
+        fs::write(
+            &legacy_path,
+            r#"{"auto_update_v110_migrated": true, "update_channel": "beta", "custom_font_family": ""}"#,
+        )
+        .unwrap();
+
+        let migrated = LauncherPrefs::load(&paths);
+        assert_eq!(
+            migrated.custom_font_family,
+            crate::theme::BUNDLED_JETBRAINS_MONO_OPTION
+        );
+        assert_eq!(migrated.update_channel, "stable");
+        assert!(migrated.v121_defaults_migrated);
+
+        // Subsequent explicit user changes stay respected.
+        let mut custom = migrated;
+        custom.update_channel = "beta".to_string();
+        custom.custom_font_family = "Segoe UI".to_string();
+        custom.save(&paths);
+        let reloaded = LauncherPrefs::load(&paths);
+        assert_eq!(reloaded.update_channel, "beta");
+        assert_eq!(reloaded.custom_font_family, "Segoe UI");
+        assert!(reloaded.v121_defaults_migrated);
     }
 }

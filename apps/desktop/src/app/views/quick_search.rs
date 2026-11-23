@@ -124,6 +124,11 @@ impl McwApp {
                 self.t("navigation.logs").to_string(),
                 "Global launcher & instance logs",
             ),
+            (
+                AppPage::Changelog,
+                "Changelog".to_string(),
+                "Release notes & changelog from repo",
+            ),
         ]
         .into_iter()
         .filter(|(_, label, sub)| matches_quick_query(&q, &[label, sub, "page"]))

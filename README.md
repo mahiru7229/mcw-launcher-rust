@@ -1,6 +1,6 @@
 # MCW Launcher: Rust Edition
 
-[![Status](https://img.shields.io/badge/status-v1.2.0-7C3AED?style=flat-square)](#)
+[![Status](https://img.shields.io/badge/status-v1.2.1-7C3AED?style=flat-square)](#)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue?style=flat-square)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -23,7 +23,7 @@
 
 - **UI v2.0 Native Desktop Interface (`egui` / `eframe`)**
   - **Native App Icon, Polished Startup Splash & Typography Controls**: Embedded Windows `.ico` + window/taskbar icon (`assets/icons/`), `2.40s` animated startup splash screen (`MotionMode`-aware with pulsing glow rings, staggered title reveal, and click/key skip), pure `#000000` black backdrop by default in Dark mode, or asynchronous user PNG/JPEG/WebP wallpaper; 6 built-in presets (**Violet** default, **Sunrise**, **Neon**, **Ocean**, **Emerald**, **Light**), custom `#RRGGBB` accent, `themes/*.json` pack loading + validation diagnostics, installed system font selector, staged **UI Scale** (`75%-175%`), **Font Size** (`10-22 px`), responsive `1024x640` minimum bounds, and DPI-aware screen sizing.
-  - **Clean Shell, Nav History & In-App Centered Modals**: Clickable top-left MCW logo (`Home`), Back/Forward `<` / `>` history buttons (`Alt+Left` / `Alt+Right`) tracking pages, instances, detail tabs (including Gear -> Settings), global categories, and per-instance inline browsers; floating top pill bar (**Home**, **Mod & Modpacks**, **Versions**, **Logs**); slim left instance rail; **`Ctrl+K` Global Quick Search**; **In-App Centered Modals** across all dialogs & **6-step First-Run Setup Wizard** (showing in-modal action notices and non-clipping controls), while **Global Logs** and **LAN Agent Log** keep dedicated OS viewports.
+  - **Clean Shell, Nav History & In-App Centered Modals**: Clickable top-left MCW logo (`Home`), Back/Forward `<` / `>` history buttons (`Alt+Left` / `Alt+Right`) tracking pages, instances, detail tabs (including Gear -> Settings), global categories, and per-instance inline browsers; floating top pill bar (**Home**, **Mod & Modpacks**, **Versions**, **Logs**, **Changelog**); live **`Online`/`Offline`** connectivity pill; slim left instance rail; **`Ctrl+K` Global Quick Search**; **In-App Centered Modals** across all dialogs & **6-step First-Run Setup Wizard** (showing in-modal action notices and non-clipping controls), while **Global Logs** and **LAN Agent Log** keep dedicated OS viewports.
   - **Focused Instance Workspace & Inline Tab Browsing**: Home hero header (`Play`, `...` Actions menu, Gear **Instance Settings** toggle); Vanilla instances hide `Mods` and `Shaders` tabs automatically; item counts `(N)` render only on the active tab; clicking `+ Add Mod`, `+ Add Resource Pack`, or `+ Add Shader Pack` opens an **inline single-category browser** locked to that resource type and instance right inside the active tab with `← Back to Installed`.
 - **Full Mod Loader Support & Protection**
   - **Vanilla**, **Fabric**, **Quilt**, **Forge** (legacy `1.12.2` + modern `--installClient`), **NeoForge**, and managed **OptiFine** validation/install.

@@ -78,12 +78,22 @@ use std::time::{Duration, Instant};
 
 const MAX_LOG_LINES_PER_INSTANCE: usize = 1500;
 
+#[derive(Debug, Clone)]
+pub(crate) struct StorageRelocationPrompt {
+    pub(crate) old_root: PathBuf,
+    pub(crate) new_root: PathBuf,
+    pub(crate) has_user_data: bool,
+    pub(crate) opened_at: Instant,
+    pub(crate) error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppPage {
     Home,
     Modpacks,
     Versions,
     Logs,
+    Changelog,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,6 +298,12 @@ pub struct McwApp {
     export_portable_full: bool,
     export_include_saves: bool,
     export_disable_repair_and_updates: bool,
+    export_disable_launch_checking: bool,
+    last_connectivity_check_at: Instant,
+    changelog_markdown: String,
+    changelog_refreshing: bool,
+    relocated_storage_prompt: Option<StorageRelocationPrompt>,
+    relocating_storage_busy: bool,
 
     // Manual Downloads dedicated per-instance windows (CurseForge opt-out mods)
     pending_manual_counts: HashMap<String, usize>,
@@ -588,6 +604,7 @@ impl McwApp {
         cc: &eframe::CreationContext<'_>,
         paths: LauncherPaths,
         init_size: [f32; 2],
+        relocated_from: Option<(PathBuf, bool)>,
     ) -> Self {
         let mut prefs = LauncherPrefs::load(&paths);
         if prefs.window_size_schema_version < 2 {
@@ -618,6 +635,14 @@ impl McwApp {
             .unwrap_or_else(|e| panic!("Failed to initialize HTTP download client: {e}"));
         let cf_api_key_input =
             load_custom_curseforge_api_key(&paths.config_root).unwrap_or_default();
+        let relocated_storage_prompt =
+            relocated_from.map(|(old_root, has_user_data)| StorageRelocationPrompt {
+                old_root,
+                new_root: paths.project_root.clone(),
+                has_user_data,
+                opened_at: Instant::now(),
+                error: None,
+            });
         let account_integrity_ok = AccountStore::new(&paths).verify_integrity();
         let last_window_size = init_size;
         let theme_catalog = ThemeCatalog::load(&paths.theme_root);
@@ -736,6 +761,12 @@ impl McwApp {
             export_portable_full: false,
             export_include_saves: false,
             export_disable_repair_and_updates: true,
+            export_disable_launch_checking: true,
+            last_connectivity_check_at: Instant::now(),
+            changelog_markdown: include_str!("../../../CHANGELOG.md").to_string(),
+            changelog_refreshing: false,
+            relocated_storage_prompt,
+            relocating_storage_busy: false,
             pending_manual_counts: HashMap::new(),
             open_manual_modals: Vec::new(),
             manual_downloads_cache: HashMap::new(),
@@ -769,7 +800,7 @@ impl McwApp {
             browser_provider: BrowserProvider::Modrinth,
             browser_query: String::new(),
             browser_sort: "relevance".to_string(),
-            browser_loader_filter: "fabric".to_string(),
+            browser_loader_filter: "all".to_string(),
             browser_searching: false,
             browser_request_id: 0,
             browser_initialized_key: None,
@@ -780,7 +811,7 @@ impl McwApp {
             browser_atl_results: Vec::new(),
             browser_datapack_world: String::new(),
             browser_global_mode: true,
-            browser_mc_version_filter: "all".to_string(),
+            browser_mc_version_filter: String::new(),
             browser_page: 0,
             browser_total_hits: 0,
             selected_servers: Vec::new(),
@@ -985,6 +1016,13 @@ impl McwApp {
             "MCW Launcher: Rust Edition v{} started.",
             mcw_models::APP_VERSION
         ));
+        if let Some(prompt) = &app.relocated_storage_prompt {
+            app.push_global_log(format!(
+                "[WARN] Launch folder {} is not writable; using safe storage at {}",
+                prompt.old_root.display(),
+                prompt.new_root.display()
+            ));
+        }
         let rec = StartupRecoveryService::reconcile(&app.paths);
         if rec.recovered_count() > 0 {
             app.push_global_log(format!(
@@ -1047,7 +1085,8 @@ impl Drop for McwApp {
 
 impl McwApp {
     pub(crate) fn has_open_in_app_modal(&self) -> bool {
-        self.show_launcher_settings
+        self.relocated_storage_prompt.is_some()
+            || self.show_launcher_settings
             || self.show_quick_search
             || self.show_create_modal
             || self.show_export_modal
@@ -1087,7 +1126,9 @@ impl McwApp {
             .and_then(|c| c.latest.as_ref())
             .is_some();
 
-        if !self.pending_duplicate_mod_prompts.is_empty() {
+        if self.relocated_storage_prompt.is_some() {
+            Some("mcw_modal_storage_relocated")
+        } else if !self.pending_duplicate_mod_prompts.is_empty() {
             Some("mcw_modal_duplicate_mod")
         } else if self.install_target_open {
             Some("mcw_modal_install_target")
@@ -1178,6 +1219,20 @@ impl eframe::App for McwApp {
         self.poll_events(ctx);
         self.sync_active_folder_watcher(ctx);
         self.ensure_account_avatars_loaded(ctx);
+
+        if !self.connectivity_checking {
+            let probe_interval = if self.connectivity_status == ConnectivityStatus::Offline {
+                Duration::from_secs(15)
+            } else {
+                Duration::from_secs(45)
+            };
+            let elapsed = self.last_connectivity_check_at.elapsed();
+            if elapsed >= probe_interval {
+                self.start_connectivity_check(ctx);
+            } else {
+                ctx.request_repaint_after(probe_interval - elapsed);
+            }
+        }
         self.handle_dropped_files(ctx);
 
         // Auto-dismiss notice_banner after `notification_timeout_secs` (default 8s; 0 = disabled)

@@ -266,6 +266,8 @@ impl FtbClient {
         let mut base_name = pack_name.trim().to_string();
         if base_name.is_empty() {
             base_name = format!("ftb-{pack_id}");
+        } else {
+            base_name = crate::modpack::suggest_short_instance_name(&base_name, 36);
         }
         let candidate_name = store
             .resolve_unique_instance_name(&base_name)
@@ -274,6 +276,7 @@ impl FtbClient {
             .create_instance(&candidate_name, &game_version, loader.clone())
             .map_err(|e| ProviderError::Io(std::io::Error::other(e.to_string())))?;
         inst_settings.disable_mod_repair_and_updates = Some(true);
+        inst_settings.disable_launch_checking = Some(true);
         let _ = store.save_settings(&inst.instance_id, &inst_settings);
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
         fs::create_dir_all(&mc_dir)?;

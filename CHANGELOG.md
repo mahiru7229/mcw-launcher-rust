@@ -2,6 +2,30 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.2.1] - 2026-11-23
+
+### Added
+- **In-App `Changelog` Tab (Next to `Logs`)**: Added a dedicated `Changelog` tab to the top navigation bar and `Ctrl+K` quick search, rendering the bundled `CHANGELOG.md` directly via Markdown formatting with an optional `"Refresh from GitHub"` button (with Offline guard).
+- **Pre-Launch Dependency Check Toggle Across All Modloaders**:
+  - Disabled pre-launch dependency warning modals (`Launch Anyway`) and blocking prompts across **all modloaders** on official modpacks (`Modrinth`, `CurseForge`, `FTB`, `ATLauncher`) and `.mcwpack` archives where enabled, while continuing to record all findings silently into Instance & Global Launcher Logs (`[LaunchCheck]`).
+  - Added an independent **`Disable pre-launch dependency checking`** option (checked by default) when exporting `.mcwpack` archives and in per-instance *Instance Settings* (`disable_launch_checking`).
+- **Safe `C:` / `os error 5` Handling & World Migration in `mcw-updater.exe` & Desktop**:
+  - Updated standalone `mcw-updater.exe` (`apps/updater`) to detect non-writable install folders (such as protected `C:` locations) and `os error 5 (Access is Denied)` during binary replacement, redirecting into `%LOCALAPPDATA%\MCWLauncher` (`~/.local/share/mcw-launcher` on Linux).
+  - Added a 5-second safety countdown dialog before actions unlock, offering **`Backup & Move (Recommended)`** (ZIP backup + user data & `saves/` worlds migration), **`Move Directly (Faster, risky)`**, and **`Cancel (Move Manually)`** when existing user data/worlds are found, or a single **`OK`** button when clean — mirrored by a startup write-probe In-App Modal guard in `mcw-desktop`.
+- **Thorough Online / Offline Detection (`ConnectivityMonitor` v2)**:
+  - Upgraded connectivity probing to race 4 independent endpoints concurrently (`api.modrinth.com`, `sessionserver.mojang.com`, `piston-meta.mojang.com`, `api.adoptium.net`) with a `3.5s` timeout and periodic background polling (`15s` while `Offline`, `45s` while `Online`).
+  - Added an always-visible clickable **`Online`** / **`Offline`** indicator pill in the top bar and guarded network-only actions (manual update check, Microsoft login, Changelog refresh) when offline while allowing offline-account launches.
+
+### Changed
+- **New `v1.2.1` Defaults (`JetBrains Mono` & `Stable` Update Channel)**: Defaulted UI font to `"JetBrains Mono (Bundled)"` and launcher `update_channel` to `"stable"` for all fresh installs and existing users via a one-time `v121_defaults_migrated` migration (still user-editable afterward in Settings).
+- **Default Global Browser Filters (`Relevance`, `All Loaders`, `All Versions`)**: Set global **Mod & Modpacks** searches to default to `Relevance`, `All Loaders`, and `All Versions` across Modrinth, CurseForge, FTB, and ATLauncher, showing the `All Versions` filter alongside `All Loaders` on Modpacks while keeping auto-filtered instance context for inline `+ Add` tabs.
+- **Smart Short Modpack Naming on Import**: Added `suggest_short_instance_name` and `inspect_archive_name` across archive/online modpack imports so normal names stay exact (`<= 36` chars) and overly long titles (e.g., long suffixes/brackets) cleanly condense without filesystem/path issues.
+
+### Fixed
+- **Batch Progress ETA (`ETA 1s` on `35/567` Files)**: Reset phase timing, baseline count, and smoothed throughput EMA whenever tasks switch between byte-streaming transfers and discrete item-count batches (`ActiveTask::record_progress` + `estimated_remaining_secs`), ensuring accurate total remaining time across **Modrinth**, **CurseForge**, **FTB**, and **ATLauncher** modpack installations.
+
+---
+
 ## [1.2.0] - 2026-11-22
 
 ### Added

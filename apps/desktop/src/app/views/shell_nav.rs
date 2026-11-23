@@ -15,6 +15,7 @@ enum NavTarget {
     Mods,
     Versions,
     Logs,
+    Changelog,
 }
 
 fn with_alpha(c: Color32, a: u8) -> Color32 {
@@ -173,6 +174,7 @@ impl McwApp {
             (NavTarget::Mods, mods_lbl),
             (NavTarget::Versions, self.t("Versions").to_string()),
             (NavTarget::Logs, logs_lbl),
+            (NavTarget::Changelog, "Changelog".to_string()),
         ];
         let mut clicked: Option<NavTarget> = None;
         let mut go_back = false;
@@ -259,6 +261,9 @@ impl McwApp {
                                             self.active_page == AppPage::Versions
                                         }
                                         NavTarget::Logs => self.active_page == AppPage::Logs,
+                                        NavTarget::Changelog => {
+                                            self.active_page == AppPage::Changelog
+                                        }
                                     };
                                     if self.nav_pill(ui, label, active).clicked() {
                                         clicked = Some(*target);
@@ -274,27 +279,46 @@ impl McwApp {
                             .size(11.0)
                             .color(p.text_muted),
                     );
-                    if self.connectivity_status == ConnectivityStatus::Offline {
-                        ui.add_space(6.0);
-                        let offline_btn = Button::new(
-                            RichText::new(if self.connectivity_checking {
-                                "Checking..."
-                            } else {
-                                "Offline"
-                            })
-                            .size(10.5)
-                            .strong()
-                            .color(Color32::BLACK),
+                    ui.add_space(6.0);
+                    let (conn_lbl, conn_fill, conn_fg, conn_tip) = if self.connectivity_checking {
+                        (
+                            "Checking...",
+                            p.elevated,
+                            p.text_muted,
+                            "Checking internet reachability. Please wait...",
                         )
-                        .fill(p.warning)
-                        .corner_radius(CornerRadius::same(10));
-                        if ui
-                            .add_enabled(!self.connectivity_checking, offline_btn)
-                            .on_hover_text("No internet reachability detected. Click to re-check.")
-                            .clicked()
-                        {
-                            check_connectivity = true;
+                    } else {
+                        match self.connectivity_status {
+                            ConnectivityStatus::Offline => (
+                                "Offline",
+                                p.warning,
+                                Color32::BLACK,
+                                "No internet reachability detected. Click to re-check.",
+                            ),
+                            ConnectivityStatus::Online => (
+                                "Online",
+                                p.accent.gamma_multiply(0.22),
+                                p.accent,
+                                "Internet reachable. Click to re-check.",
+                            ),
+                            ConnectivityStatus::Unknown => (
+                                "Checking...",
+                                p.elevated,
+                                p.text_muted,
+                                "Connectivity not verified yet. Click to check.",
+                            ),
                         }
+                    };
+                    let conn_btn =
+                        Button::new(RichText::new(conn_lbl).size(10.5).strong().color(conn_fg))
+                            .fill(conn_fill)
+                            .corner_radius(CornerRadius::same(10));
+                    if ui
+                        .add_enabled(!self.connectivity_checking, conn_btn)
+                        .on_hover_text(conn_tip)
+                        .clicked()
+                    {
+                        check_connectivity = true;
                     }
                     if mcw_updater::UPDATES_ENABLED {
                         if let Some(ref upd) = self.last_update_check {
@@ -446,6 +470,9 @@ impl McwApp {
                 }
                 NavTarget::Logs => {
                     self.navigate_to_page(AppPage::Logs, ctx);
+                }
+                NavTarget::Changelog => {
+                    self.navigate_to_page(AppPage::Changelog, ctx);
                 }
             }
         }

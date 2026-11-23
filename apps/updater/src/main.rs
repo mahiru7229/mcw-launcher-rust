@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use eframe::egui::{self, Align, Button, Color32, CornerRadius, Frame, Layout, RichText, Vec2};
+use eframe::egui::{
+    self, Align, Button, Color32, CornerRadius, Frame, Layout, RichText, ScrollArea, Vec2,
+};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
@@ -9,7 +11,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static STAGE_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -25,6 +27,23 @@ const PROTECTED_DIRS: &[&str] = &[
     "lang",
 ];
 
+const MIGRATION_USER_DIRS: &[&str] = &[
+    "instances",
+    "accounts",
+    "config",
+    "themes",
+    "backups",
+    "logs",
+    "runtimes",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MigrationChoice {
+    BackupAndMove,
+    DirectMove,
+    DirectInstallEmpty,
+}
+
 #[derive(Debug, Clone)]
 pub struct UpdaterArgs {
     pub wait_pid: u32,
@@ -36,15 +55,41 @@ pub struct UpdaterArgs {
 
 #[derive(Debug, Clone)]
 enum WorkerMsg {
-    Progress { fraction: f32, status: String },
-    Success,
+    Progress {
+        fraction: f32,
+        status: String,
+    },
+    Success(Option<UpdaterArgs>),
+    PermissionDenied {
+        error: String,
+        source_dir: PathBuf,
+        target_dir: PathBuf,
+        has_user_data: bool,
+    },
     RolledBackError(String),
 }
 
 enum UpdaterUiState {
-    Running { fraction: f32, status: String },
+    Running {
+        fraction: f32,
+        status: String,
+    },
     Done,
-    Failed { error: String, status: String },
+    PermissionMigrationRequired {
+        error: String,
+        source_dir: PathBuf,
+        target_dir: PathBuf,
+        has_user_data: bool,
+        shown_at: Instant,
+    },
+    ManualCancelled {
+        source_dir: PathBuf,
+        target_dir: PathBuf,
+    },
+    Failed {
+        error: String,
+        status: String,
+    },
 }
 
 fn parse_args_from(args: &[String]) -> Result<UpdaterArgs, String> {
@@ -461,8 +506,251 @@ fn spawn_target_launcher(args: &UpdaterArgs) {
     let _ = cmd.spawn();
 }
 
+fn default_safe_launcher_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local).join("MCWLauncher");
+        }
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            return PathBuf::from(profile)
+                .join("AppData")
+                .join("Local")
+                .join("MCWLauncher");
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(xdg).join("mcw-launcher");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("mcw-launcher");
+        }
+    }
+    std::env::temp_dir().join("MCWLauncher")
+}
+
+fn probe_install_writable(dir: &Path, target_exe: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        fs::create_dir_all(dir)
+            .map_err(|e| format!("Cannot create directory {}: {e}", dir.display()))?;
+    }
+    let probe = dir.join(format!(".mcw-write-probe-{}", std::process::id()));
+    let file =
+        fs::File::create(&probe).map_err(|e| format!("Cannot write in {}: {e}", dir.display()))?;
+    drop(file);
+    let _ = fs::remove_file(&probe);
+
+    if target_exe.is_file() {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(target_exe)
+            .map_err(|e| format!("Cannot overwrite {}: {e}", target_exe.display()))?;
+    }
+    Ok(())
+}
+
+fn is_permission_denied_err(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("os error 5")
+        || lower.contains("access is denied")
+        || lower.contains("permission denied")
+        || lower.contains("read-only file system")
+}
+
+fn dir_has_user_data(dir: &Path) -> bool {
+    ["instances", "accounts", "config", "themes", "backups"]
+        .iter()
+        .any(|sub| {
+            let p = dir.join(sub);
+            p.is_dir()
+                && fs::read_dir(&p)
+                    .map(|mut rd| rd.next().is_some())
+                    .unwrap_or(false)
+        })
+}
+
+fn add_dir_to_zip(
+    zip: &mut zip::ZipWriter<File>,
+    root_dir: &Path,
+    rel_prefix: &str,
+    skip_zip_name: Option<&str>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(root_dir).map_err(|e| e.to_string())?;
+    let opts = zip::write::SimpleFileOptions::default();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if skip_zip_name.is_some_and(|skip| skip == name) {
+            continue;
+        }
+        let path = entry.path();
+        let entry_rel = if rel_prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
+        if path.is_dir() {
+            add_dir_to_zip(zip, &path, &entry_rel, None)?;
+        } else if path.is_file() {
+            zip.start_file(&entry_rel, opts)
+                .map_err(|e| e.to_string())?;
+            let mut f = File::open(&path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut f, zip).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn create_user_data_backup_zip(source_dir: &Path, target_dir: &Path) -> Result<PathBuf, String> {
+    let backups_dir = target_dir.join("backups");
+    fs::create_dir_all(&backups_dir)
+        .map_err(|e| format!("mkdir {}: {e}", backups_dir.display()))?;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let zip_name = format!("pre-migration-backup-{ts}.zip");
+    let zip_path = backups_dir.join(&zip_name);
+    let file = File::create(&zip_path).map_err(|e| format!("create backup zip: {e}"))?;
+    let mut zw = zip::ZipWriter::new(file);
+
+    for sub in [
+        "instances",
+        "accounts",
+        "config",
+        "themes",
+        "backups",
+        "logs",
+    ] {
+        let src_sub = source_dir.join(sub);
+        if src_sub.is_dir() {
+            add_dir_to_zip(&mut zw, &src_sub, sub, Some(&zip_name))?;
+        }
+    }
+    if let Ok(entries) = fs::read_dir(source_dir) {
+        let opts = zip::write::SimpleFileOptions::default();
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if p.is_file() && name.to_ascii_lowercase().ends_with(".json") {
+                zw.start_file(&name, opts).map_err(|e| e.to_string())?;
+                let mut f = File::open(&p).map_err(|e| e.to_string())?;
+                std::io::copy(&mut f, &mut zw).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    zw.finish()
+        .map_err(|e| format!("finalize backup zip: {e}"))?;
+    Ok(zip_path)
+}
+
+fn copy_user_data_to_target(source_dir: &Path, target_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(target_dir).map_err(|e| format!("mkdir {}: {e}", target_dir.display()))?;
+    for sub in MIGRATION_USER_DIRS {
+        let src_sub = source_dir.join(sub);
+        if src_sub.is_dir() {
+            copy_dir_recursive(&src_sub, &target_dir.join(sub))?;
+        }
+    }
+    if let Ok(entries) = fs::read_dir(source_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if p.is_file() && name.to_ascii_lowercase().ends_with(".json") {
+                copy_with_retry(&p, &target_dir.join(&name))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn open_folder(path: &Path) {
+    #[cfg(windows)]
+    {
+        let _ = Command::new("explorer.exe").arg(path).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("open").arg(path).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if Command::new("xdg-open").arg(path).spawn().is_err() {
+            let _ = Command::new("gio").arg("open").arg(path).spawn();
+        }
+    }
+}
+
+fn spawn_migration_worker(
+    args: UpdaterArgs,
+    source_dir: PathBuf,
+    target_dir: PathBuf,
+    choice: MigrationChoice,
+    tx: mpsc::Sender<WorkerMsg>,
+    ctx: egui::Context,
+) {
+    thread::spawn(move || {
+        let work = (|| -> Result<UpdaterArgs, String> {
+            if choice == MigrationChoice::BackupAndMove {
+                let _ = tx.send(WorkerMsg::Progress {
+                    fraction: 0.15,
+                    status: "Creating safety backup ZIP of all instances & worlds...".to_string(),
+                });
+                ctx.request_repaint();
+                create_user_data_backup_zip(&source_dir, &target_dir)?;
+            }
+            if matches!(
+                choice,
+                MigrationChoice::BackupAndMove | MigrationChoice::DirectMove
+            ) {
+                let _ = tx.send(WorkerMsg::Progress {
+                    fraction: 0.40,
+                    status: format!("Moving user data & worlds to {}...", target_dir.display()),
+                });
+                ctx.request_repaint();
+                copy_user_data_to_target(&source_dir, &target_dir)?;
+            }
+            let exe_name = args
+                .target_exe
+                .file_name()
+                .map(|n| n.to_os_string())
+                .unwrap_or_else(|| "mcw-desktop".into());
+            let new_args = UpdaterArgs {
+                wait_pid: 0,
+                staged: args.staged.clone(),
+                install_dir: target_dir.clone(),
+                target_exe: target_dir.join(exe_name),
+                version: args.version.clone(),
+            };
+            apply_transactional_update(&new_args, false, |fraction, status| {
+                let scaled = 0.55 + fraction * 0.45;
+                let _ = tx.send(WorkerMsg::Progress {
+                    fraction: scaled,
+                    status: status.to_string(),
+                });
+                ctx.request_repaint();
+            })?;
+            Ok(new_args)
+        })();
+        match work {
+            Ok(new_args) => {
+                let _ = tx.send(WorkerMsg::Success(Some(new_args)));
+            }
+            Err(err) => {
+                let _ = tx.send(WorkerMsg::RolledBackError(err));
+            }
+        }
+        ctx.request_repaint();
+    });
+}
+
 struct UpdaterApp {
     args: UpdaterArgs,
+    tx: mpsc::Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
     state: UpdaterUiState,
     logo_texture: Option<egui::TextureHandle>,
@@ -482,12 +770,32 @@ impl UpdaterApp {
 
         let logo_texture = load_logo_texture(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
+        let tx_worker = tx.clone();
         let worker_args = args.clone();
         let ctx_w = cc.egui_ctx.clone();
 
         thread::spawn(move || {
-            let res = apply_transactional_update(&worker_args, false, |fraction, status| {
-                let _ = tx.send(WorkerMsg::Progress {
+            wait_for_pid_exit(worker_args.wait_pid, Duration::from_secs(60));
+            let safe_dir = default_safe_launcher_dir();
+            if let Err(perm_err) =
+                probe_install_writable(&worker_args.install_dir, &worker_args.target_exe)
+            {
+                if worker_args.install_dir != safe_dir {
+                    let _ = tx_worker.send(WorkerMsg::PermissionDenied {
+                        error: perm_err,
+                        source_dir: worker_args.install_dir.clone(),
+                        target_dir: safe_dir,
+                        has_user_data: dir_has_user_data(&worker_args.install_dir),
+                    });
+                    ctx_w.request_repaint();
+                    return;
+                }
+            }
+
+            let mut exec_args = worker_args.clone();
+            exec_args.wait_pid = 0;
+            let res = apply_transactional_update(&exec_args, false, |fraction, status| {
+                let _ = tx_worker.send(WorkerMsg::Progress {
                     fraction,
                     status: status.to_string(),
                 });
@@ -495,10 +803,19 @@ impl UpdaterApp {
             });
             match res {
                 Ok(()) => {
-                    let _ = tx.send(WorkerMsg::Success);
+                    let _ = tx_worker.send(WorkerMsg::Success(None));
                 }
                 Err(err) => {
-                    let _ = tx.send(WorkerMsg::RolledBackError(err));
+                    if is_permission_denied_err(&err) && worker_args.install_dir != safe_dir {
+                        let _ = tx_worker.send(WorkerMsg::PermissionDenied {
+                            error: err,
+                            source_dir: worker_args.install_dir.clone(),
+                            target_dir: safe_dir,
+                            has_user_data: dir_has_user_data(&worker_args.install_dir),
+                        });
+                    } else {
+                        let _ = tx_worker.send(WorkerMsg::RolledBackError(err));
+                    }
                 }
             }
             ctx_w.request_repaint();
@@ -506,6 +823,7 @@ impl UpdaterApp {
 
         Self {
             args,
+            tx,
             rx,
             state: UpdaterUiState::Running {
                 fraction: 0.05,
@@ -525,13 +843,33 @@ impl eframe::App for UpdaterApp {
                 WorkerMsg::Progress { fraction, status } => {
                     self.state = UpdaterUiState::Running { fraction, status };
                 }
-                WorkerMsg::Success => {
+                WorkerMsg::Success(relocated_args) => {
+                    if let Some(new_args) = relocated_args {
+                        self.args = new_args;
+                    }
                     self.state = UpdaterUiState::Done;
                     self.done_at = Some(Instant::now());
                     if !self.relaunched {
                         self.relaunched = true;
                         spawn_target_launcher(&self.args);
                     }
+                }
+                WorkerMsg::PermissionDenied {
+                    error,
+                    source_dir,
+                    target_dir,
+                    has_user_data,
+                } => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
+                        560.0, 390.0,
+                    )));
+                    self.state = UpdaterUiState::PermissionMigrationRequired {
+                        error,
+                        source_dir,
+                        target_dir,
+                        has_user_data,
+                        shown_at: Instant::now(),
+                    };
                 }
                 WorkerMsg::RolledBackError(err) => {
                     self.state = UpdaterUiState::Failed {
@@ -552,12 +890,22 @@ impl eframe::App for UpdaterApp {
             }
         } else if matches!(self.state, UpdaterUiState::Running { .. }) {
             ctx.request_repaint_after(Duration::from_millis(40));
+        } else if let UpdaterUiState::PermissionMigrationRequired { shown_at, .. } = self.state {
+            if shown_at.elapsed() < Duration::from_secs(5) {
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                }
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
         }
 
         let accent = Color32::from_rgb(0x7c, 0x3a, 0xed);
         let warning = Color32::from_rgb(0xf5, 0x9e, 0x0b);
         let text = Color32::from_rgb(0xf4, 0xf4, 0xf8);
         let muted = Color32::from_rgb(0xa1, 0xa1, 0xb5);
+
+        let mut pending_migration: Option<(PathBuf, PathBuf, MigrationChoice)> = None;
+        let mut cancel_migration: Option<(PathBuf, PathBuf)> = None;
 
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Color32::BLACK).inner_margin(18.0))
@@ -609,6 +957,193 @@ impl eframe::App for UpdaterApp {
                         ui.add_space(8.0);
                         ui.add(egui::ProgressBar::new(1.0).desired_height(8.0).fill(accent));
                     }
+                    UpdaterUiState::PermissionMigrationRequired {
+                        error,
+                        source_dir,
+                        target_dir,
+                        has_user_data,
+                        shown_at,
+                    } => {
+                        let elapsed = shown_at.elapsed().as_secs();
+                        let remaining = 5u64.saturating_sub(elapsed);
+                        let unlocked = remaining == 0;
+                        ScrollArea::vertical().show(ui, |ui| {
+                            ui.label(
+                                RichText::new("Write Permission Required (os error 5 / C: Drive)")
+                                    .size(13.5)
+                                    .strong()
+                                    .color(warning),
+                            );
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(
+                                        "Windows denied write permission while updating in the current folder (common when the launcher is placed directly on C:\\ or Program Files). Moving to a user-writable folder prevents update failures.",
+                                    )
+                                    .size(11.5)
+                                    .color(text),
+                                )
+                                .wrap(),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new(format!("Current folder: {}", source_dir.display()))
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(muted),
+                            );
+                            ui.label(
+                                RichText::new(format!("New safe folder: {}", target_dir.display()))
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(accent),
+                            );
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("Detail: {error}"))
+                                        .size(10.5)
+                                        .color(muted),
+                                )
+                                .wrap(),
+                            );
+                            ui.add_space(10.0);
+
+                            if *has_user_data {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(
+                                            "Existing launcher data (instances, worlds/saves, accounts, configs) was detected in the current folder:",
+                                        )
+                                        .size(11.5)
+                                        .color(warning),
+                                    )
+                                    .wrap(),
+                                );
+                                ui.add_space(8.0);
+                                let suffix = if unlocked {
+                                    String::new()
+                                } else {
+                                    format!(" ({remaining}s)")
+                                };
+                                ui.horizontal_wrapped(|ui| {
+                                    let b1 = Button::new(
+                                        RichText::new(format!(
+                                            "Backup & Move (Recommended){suffix}"
+                                        ))
+                                        .color(Color32::WHITE)
+                                        .strong(),
+                                    )
+                                    .fill(accent);
+                                    if ui
+                                        .add_enabled(unlocked, b1)
+                                        .on_hover_text(
+                                            "Creates a safety .zip backup of all instances & worlds first, then copies your data and installs the update.",
+                                        )
+                                        .clicked()
+                                    {
+                                        pending_migration = Some((
+                                            source_dir.clone(),
+                                            target_dir.clone(),
+                                            MigrationChoice::BackupAndMove,
+                                        ));
+                                    }
+                                    let b2 = Button::new(
+                                        RichText::new(format!("Move Directly (Faster, risky){suffix}"))
+                                            .color(warning),
+                                    );
+                                    if ui
+                                        .add_enabled(unlocked, b2)
+                                        .on_hover_text(
+                                            "Copies files directly without creating a backup archive first (faster, higher risk if interrupted).",
+                                        )
+                                        .clicked()
+                                    {
+                                        pending_migration = Some((
+                                            source_dir.clone(),
+                                            target_dir.clone(),
+                                            MigrationChoice::DirectMove,
+                                        ));
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            unlocked,
+                                            Button::new(format!("Cancel (Move Manually){suffix}")),
+                                        )
+                                        .clicked()
+                                    {
+                                        cancel_migration =
+                                            Some((source_dir.clone(), target_dir.clone()));
+                                    }
+                                });
+                            } else {
+                                let ok_lbl = if unlocked {
+                                    "OK — Install in New Safe Folder".to_string()
+                                } else {
+                                    format!("OK ({remaining}s)")
+                                };
+                                let ok_btn = Button::new(
+                                    RichText::new(ok_lbl).color(Color32::WHITE).strong(),
+                                )
+                                .fill(accent);
+                                if ui.add_enabled(unlocked, ok_btn).clicked() {
+                                    pending_migration = Some((
+                                        source_dir.clone(),
+                                        target_dir.clone(),
+                                        MigrationChoice::DirectInstallEmpty,
+                                    ));
+                                }
+                            }
+                        });
+                    }
+                    UpdaterUiState::ManualCancelled {
+                        source_dir,
+                        target_dir,
+                    } => {
+                        ui.label(
+                            RichText::new("Automatic migration cancelled — no files were moved.")
+                                .size(13.0)
+                                .strong()
+                                .color(warning),
+                        );
+                        ui.add_space(6.0);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "Please move the launcher folder (and your instances/worlds) out of C:\\ manually, then run the update again.",
+                                )
+                                .size(11.5)
+                                .color(text),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(format!("Old folder: {}", source_dir.display()))
+                                .monospace()
+                                .size(11.0)
+                                .color(muted),
+                        );
+                        ui.label(
+                            RichText::new(format!("Suggested safe folder: {}", target_dir.display()))
+                                .monospace()
+                                .size(11.0)
+                                .color(accent),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Open Old Folder").clicked() {
+                                open_folder(source_dir);
+                            }
+                            if ui.button("Open New Folder").clicked() {
+                                let _ = fs::create_dir_all(target_dir);
+                                open_folder(target_dir);
+                            }
+                            if ui.button("Close").clicked() {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        });
+                    }
                     UpdaterUiState::Failed { status, error } => {
                         ui.label(RichText::new(status).size(13.0).strong().color(warning));
                         ui.add_space(4.0);
@@ -634,6 +1169,26 @@ impl eframe::App for UpdaterApp {
                     }
                 }
             });
+
+        if let Some((src, dst, choice)) = pending_migration {
+            self.state = UpdaterUiState::Running {
+                fraction: 0.10,
+                status: "Preparing migration to safe folder...".to_string(),
+            };
+            spawn_migration_worker(
+                self.args.clone(),
+                src,
+                dst,
+                choice,
+                self.tx.clone(),
+                ctx.clone(),
+            );
+        } else if let Some((src, dst)) = cancel_migration {
+            self.state = UpdaterUiState::ManualCancelled {
+                source_dir: src,
+                target_dir: dst,
+            };
+        }
     }
 }
 
@@ -668,9 +1223,9 @@ fn main() -> eframe::Result {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("MCW Launcher Updater")
-        .with_inner_size([460.0, 210.0])
-        .with_min_inner_size([420.0, 190.0])
-        .with_resizable(false);
+        .with_inner_size([480.0, 230.0])
+        .with_min_inner_size([420.0, 210.0])
+        .with_resizable(true);
     if let Some(icon) = load_icon_data() {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
@@ -782,5 +1337,31 @@ mod tests {
             b"good-previous-exe"
         );
         assert!(!install.join("extra-new-file.dll").exists());
+    }
+
+    #[test]
+    fn backup_and_move_preserves_worlds_and_detects_permission_errors() {
+        assert!(is_permission_denied_err("Access is denied. (os error 5)"));
+        assert!(is_permission_denied_err("Permission denied"));
+        assert!(!is_permission_denied_err("Unexpected EOF"));
+
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("old_c_drive");
+        let dst = dir.path().join("safe_appdata");
+        fs::create_dir_all(src.join("instances/Survival/saves/World1")).unwrap();
+        fs::write(
+            src.join("instances/Survival/saves/World1/level.dat"),
+            b"world-nbt",
+        )
+        .unwrap();
+        assert!(dir_has_user_data(&src));
+
+        let backup_zip = create_user_data_backup_zip(&src, &dst).unwrap();
+        assert!(backup_zip.is_file());
+        copy_user_data_to_target(&src, &dst).unwrap();
+        assert_eq!(
+            fs::read(dst.join("instances/Survival/saves/World1/level.dat")).unwrap(),
+            b"world-nbt"
+        );
     }
 }

@@ -368,6 +368,7 @@ impl McwApp {
                                                 "MCW & Modpack Archives (*.mcwpack;*.mrpack;*.zip)|*.mcwpack;*.mrpack;*.zip|All Files (*.*)|*.*",
                                             ) {
                                                 self.modpack_path_input = p.display().to_string();
+                                                self.modpack_name_input.clear();
                                                 self.inspect_local_archive_optional_files();
                                             }
                                         }
@@ -741,6 +742,13 @@ impl McwApp {
                                     .on_hover_text(
                                         "When imported from .mcwpack, per-mod updates and dependency repair checks default to disabled so curated mods stay intact.",
                                     );
+                                    ui.checkbox(
+                                        &mut self.export_disable_launch_checking,
+                                        "Disable pre-launch dependency checking (Recommended for modpacks)",
+                                    )
+                                    .on_hover_text(
+                                        "When imported from .mcwpack, skips pre-launch dependency warning dialogs across all modloaders (findings remain logged silently).",
+                                    );
                                 }
 
                                 ui.add_space(6.0);
@@ -773,6 +781,11 @@ impl McwApp {
                                                 && self.export_include_saves,
                                             disable_mod_repair_and_updates: if is_portable {
                                                 self.export_disable_repair_and_updates
+                                            } else {
+                                                true
+                                            },
+                                            disable_launch_checking: if is_portable {
+                                                self.export_disable_launch_checking
                                             } else {
                                                 true
                                             },
@@ -2138,6 +2151,7 @@ impl McwApp {
         self.render_install_target_dialog(ctx);
         self.render_duplicate_mod_modal(ctx);
         self.render_junk_cleanup_modal(ctx);
+        self.render_storage_relocated_modal(ctx);
     }
 
     pub(crate) fn render_modpack_install_dialog(&mut self, ctx: &egui::Context) {
@@ -3274,6 +3288,155 @@ impl McwApp {
             self.prefs.junk_reminder_snooze_until = unix_now_secs().saturating_add(3 * 86_400);
             self.save_prefs();
             self.show_junk_cleanup_modal = false;
+        }
+    }
+
+    pub(crate) fn render_storage_relocated_modal(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = self.relocated_storage_prompt.clone() else {
+            return;
+        };
+        let p = self.palette;
+        let notice = self.modal_notice_for("mcw_modal_storage_relocated");
+        let elapsed = prompt.opened_at.elapsed().as_secs_f32();
+        let remaining_secs = (5.0 - elapsed).ceil().max(0.0) as u32;
+        if remaining_secs > 0 {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        let buttons_unlocked = remaining_secs == 0 && !self.relocating_storage_busy;
+
+        let mut action: Option<u8> = None; // 0 = Backup&Move, 1 = DirectMove, 2 = Cancel/Manual, 3 = Empty OK
+        let (_keep_open, dismiss_notice) = render_in_app_modal(
+            ctx,
+            "mcw_modal_storage_relocated",
+            "Install Location Not Writable (Safe Storage Active)",
+            [620.0, 410.0],
+            [460.0, 310.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                ui.label(
+                    RichText::new(
+                        "The launch folder does not allow writing files (Windows permission / C: protection, os error 5).",
+                    )
+                    .color(p.text),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!("Previous folder: {}", prompt.old_root.display()))
+                        .monospace()
+                        .size(11.0)
+                        .color(p.text_muted),
+                );
+                ui.label(
+                    RichText::new(format!("New safe folder: {}", prompt.new_root.display()))
+                        .monospace()
+                        .size(11.0)
+                        .color(p.accent),
+                );
+                ui.add_space(8.0);
+                if prompt.has_user_data {
+                    ui.label(
+                        RichText::new(
+                            "Existing instances, saves/worlds, accounts, and config were found in the previous folder. Choose how to migrate your worlds and data:",
+                        )
+                        .color(p.warning),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(
+                            "No existing data was found in the previous folder. Future downloads and instances will be stored in the new safe folder.",
+                        )
+                        .color(p.text_muted),
+                    );
+                }
+                if let Some(ref err) = prompt.error {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(format!("Error: {err}")).color(p.danger));
+                }
+                if self.relocating_storage_busy {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new("Backing up / moving data and worlds...").color(p.accent),
+                        );
+                    });
+                } else if remaining_secs > 0 {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "Actions unlock in {remaining_secs}s so you can verify paths safely..."
+                        ))
+                        .size(11.5)
+                        .color(p.warning),
+                    );
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal_wrapped(|ui| {
+                    if prompt.has_user_data {
+                        let rec_btn = Button::new(
+                            RichText::new("Backup & Move (Recommended)")
+                                .strong()
+                                .color(p.accent_text),
+                        )
+                        .fill(p.accent);
+                        if ui.add_enabled(buttons_unlocked, rec_btn).clicked() {
+                            action = Some(0);
+                        }
+                        if ui
+                            .add_enabled(
+                                buttons_unlocked,
+                                Button::new("Move Directly (Faster, risky)"),
+                            )
+                            .clicked()
+                        {
+                            action = Some(1);
+                        }
+                        if ui
+                            .add_enabled(buttons_unlocked, Button::new("Cancel (Move Manually)"))
+                            .clicked()
+                        {
+                            action = Some(2);
+                        }
+                        if ui.button("Open Old Folder").clicked() {
+                            open_external(&prompt.old_root.display().to_string());
+                        }
+                        if ui.button("Open New Folder").clicked() {
+                            open_external(&prompt.new_root.display().to_string());
+                        }
+                    } else {
+                        let ok_btn = Button::new(RichText::new("OK").strong().color(p.accent_text))
+                            .fill(p.accent);
+                        if ui.add_enabled(buttons_unlocked, ok_btn).clicked() {
+                            action = Some(3);
+                        }
+                    }
+                });
+            },
+        );
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
+        match action {
+            Some(0) => self.start_desktop_storage_relocation(true, ctx),
+            Some(1) => self.start_desktop_storage_relocation(false, ctx),
+            Some(2) => {
+                open_external(&prompt.old_root.display().to_string());
+                open_external(&prompt.new_root.display().to_string());
+                self.relocated_storage_prompt = None;
+                self.notice_banner = Some((
+                    format!(
+                        "Using safe folder {}. Move your instances/saves manually if needed.",
+                        prompt.new_root.display()
+                    ),
+                    false,
+                ));
+            }
+            Some(3) => {
+                self.relocated_storage_prompt = None;
+            }
+            _ => {}
         }
     }
 }

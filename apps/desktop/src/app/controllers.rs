@@ -577,16 +577,12 @@ impl McwApp {
         let label_str = label.into();
         let msg_str = message.into();
         let control = TaskControl::new();
-        self.active_tasks.push(ActiveTask {
+        self.active_tasks.push(ActiveTask::new(
             id,
-            label: label_str.clone(),
-            message: msg_str.clone(),
-            current: 0,
-            total: 0,
-            started_at: Instant::now(),
-            is_bytes: false,
-            control: Arc::clone(&control),
-        });
+            label_str.clone(),
+            msg_str.clone(),
+            Arc::clone(&control),
+        ));
         if !msg_str.trim().is_empty() {
             self.last_task_log_msg.insert(id, msg_str.clone());
         }
@@ -762,7 +758,11 @@ impl McwApp {
         let paths = self.paths.clone();
         let prefer_dedicated_gpu = self.prefs.prefer_dedicated_gpu;
         let forge_policy_str = self.prefs.forge_preflight_failure_policy.clone();
-        let always_allow_preflight = bypass_preflight || settings.forge_preflight_always_allow;
+        let is_official_pack =
+            detect_installed_pack(&self.paths.instance_dir(&inst.instance_id)).is_some();
+        let launch_check_disabled = settings.is_launch_checking_disabled(is_official_pack);
+        let always_allow_preflight =
+            bypass_preflight || settings.forge_preflight_always_allow || launch_check_disabled;
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         let client = self.download_client.with_task_control(task_ctrl);
@@ -808,15 +808,14 @@ impl McwApp {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                // Forge/NeoForge Preflight Check + Policy Enforcement
+                // Pre-launch dependency & compatibility check across modloaders:
+                // Official modpacks (Modrinth/CurseForge/FTB/ATLauncher) and .mcwpack packs
+                // with `disable_launch_checking` silently log findings to launcher logs without dialogs.
                 let forge_policy = mcw_models::FailurePolicy::parse_global(&forge_policy_str);
                 let preflight =
                     ForgePreflightManager::scan(&paths, &inst, &prepared.metadata, false);
-                let wants_ask = forge_policy_str.trim().eq_ignore_ascii_case("ask")
-                    || (forge_policy == mcw_models::FailurePolicy::Warn
-                        && preflight.error_count() > 0);
-                if !always_allow_preflight && wants_ask && !preflight.issues.is_empty() {
-                    let issue_lines: Vec<String> = preflight
+                if launch_check_disabled || always_allow_preflight {
+                    let mut silent_notes: Vec<String> = preflight
                         .issues
                         .iter()
                         .map(|i| {
@@ -828,31 +827,77 @@ impl McwApp {
                             )
                         })
                         .collect();
-                    drop(lock);
-                    let _ = tx.send(AppEvent::PreflightConfirmationRequired {
-                        instance_id: inst.instance_id.clone(),
-                        quick_play_world: quick_play_world.clone(),
-                        quick_play_server: quick_play_server.clone(),
-                        issues: issue_lines,
-                    });
-                    ctx.request_repaint();
-                    return Ok(None);
-                }
-                let effective_policy = if always_allow_preflight {
-                    mcw_models::FailurePolicy::Allow
+                    let loader_low = inst.mod_loader.name.trim().to_ascii_lowercase();
+                    if !matches!(loader_low.as_str(), "vanilla" | "forge" | "neoforge") {
+                        let mods_dir = paths.minecraft_dir(&inst.instance_id).join("mods");
+                        if mods_dir.is_dir() {
+                            let mods = ModManager::new(&mods_dir).list();
+                            let compat =
+                                ModCompatibilityAnalyzer::analyze(&inst.mod_loader.name, &mods);
+                            for issue in compat.issues {
+                                let sev = match issue.severity {
+                                    ModIssueSeverity::Error => "ERROR",
+                                    ModIssueSeverity::Warning => "WARNING",
+                                    ModIssueSeverity::Info => "INFO",
+                                };
+                                silent_notes
+                                    .push(format!("[{sev}] {}: {}", issue.code, issue.message));
+                            }
+                        }
+                    }
+                    if launch_check_disabled && silent_notes.is_empty() {
+                        silent_notes.push(format!(
+                            "Dependency check dialog disabled for modpack ({} loader).",
+                            inst.mod_loader.name
+                        ));
+                    }
+                    for note in silent_notes {
+                        let _ = tx.send(AppEvent::LogReceived {
+                            instance_id: inst.instance_id.clone(),
+                            line: LogLine {
+                                stream: LogStream::Stdout,
+                                text: format!("[LaunchCheck] {note}"),
+                            },
+                        });
+                    }
                 } else {
-                    forge_policy
-                };
-                let preflight_notes = ForgePreflightManager::enforce(&preflight, effective_policy)
-                    .map_err(|e| e.to_string())?;
-                for note in preflight_notes {
-                    let _ = tx.send(AppEvent::LogReceived {
-                        instance_id: inst.instance_id.clone(),
-                        line: LogLine {
-                            stream: LogStream::Stderr,
-                            text: format!("[ForgePreflight] {note}"),
-                        },
-                    });
+                    let wants_ask = forge_policy_str.trim().eq_ignore_ascii_case("ask")
+                        || (forge_policy == mcw_models::FailurePolicy::Warn
+                            && preflight.error_count() > 0);
+                    if wants_ask && !preflight.issues.is_empty() {
+                        let issue_lines: Vec<String> = preflight
+                            .issues
+                            .iter()
+                            .map(|i| {
+                                format!(
+                                    "[{}] {}: {}",
+                                    i.severity.to_ascii_uppercase(),
+                                    i.code,
+                                    i.message
+                                )
+                            })
+                            .collect();
+                        drop(lock);
+                        let _ = tx.send(AppEvent::PreflightConfirmationRequired {
+                            instance_id: inst.instance_id.clone(),
+                            quick_play_world: quick_play_world.clone(),
+                            quick_play_server: quick_play_server.clone(),
+                            issues: issue_lines,
+                        });
+                        ctx.request_repaint();
+                        return Ok(None);
+                    }
+                    let preflight_notes = ForgePreflightManager::enforce(&preflight, forge_policy)
+                        .map_err(|e| e.to_string())?;
+                    for note in preflight_notes {
+                        let _ = tx.send(AppEvent::LogReceived {
+                            instance_id: inst.instance_id.clone(),
+                            line: LogLine {
+                                stream: LogStream::Stderr,
+                                text: format!("[ForgePreflight] {note}"),
+                            },
+                        });
+                    }
                 }
 
                 prepared.spec.jvm_args =
@@ -1021,6 +1066,15 @@ impl McwApp {
 
     pub(crate) fn start_microsoft_login(&mut self, browser_pkce: bool, ctx: &egui::Context) {
         if self.ms_login_in_progress {
+            return;
+        }
+        if self.connectivity_status == ConnectivityStatus::Offline {
+            self.notice_banner = Some((
+                "Offline mode: connect to the internet before signing in with Microsoft."
+                    .to_string(),
+                true,
+            ));
+            self.push_global_log("[AUTH] Microsoft login skipped while offline.".to_string());
             return;
         }
         self.ms_login_in_progress = true;
@@ -3118,12 +3172,8 @@ impl McwApp {
                         }
                     }
                     if let Some(task) = self.active_tasks.iter_mut().find(|t| t.id == task_id) {
-                        task.message = message;
-                        task.current = current;
-                        task.total = total;
-                        if total >= 16_384 {
-                            task.is_bytes = true;
-                        }
+                        let next_is_bytes = total >= 16_384 || message.contains(" MB)");
+                        task.record_progress(message, current, total, next_is_bytes);
                     }
                 }
                 AppEvent::LaunchProgress { instance_id, event } => {
@@ -3139,15 +3189,18 @@ impl McwApp {
                     }
                     if let Some(&tid) = self.launch_task_ids.get(&instance_id) {
                         if let Some(task) = self.active_tasks.iter_mut().find(|t| t.id == tid) {
-                            task.message = format!("[{:?}] {}", event.stage, event.message);
-                            task.current = event.current;
-                            task.total = event.total;
-                            task.is_bytes = matches!(
+                            let next_is_bytes = matches!(
                                 event.stage,
                                 mcw_models::progress::ProgressStage::DownloadingClient
                                     | mcw_models::progress::ProgressStage::InstallingJava
                                     | mcw_models::progress::ProgressStage::InstallingModLoader
                             ) && event.total >= 16_384;
+                            task.record_progress(
+                                format!("[{:?}] {}", event.stage, event.message),
+                                event.current,
+                                event.total,
+                                next_is_bytes,
+                            );
                         }
                     }
                     self.launch_states
@@ -3180,6 +3233,11 @@ impl McwApp {
                         .insert(instance_id, LaunchState::Running { pid, control });
                 }
                 AppEvent::LogReceived { instance_id, line } => {
+                    if line.text.starts_with("[LaunchCheck]")
+                        || line.text.starts_with("[ForgePreflight]")
+                    {
+                        self.push_global_log(format!("[{instance_id}] {}", line.text));
+                    }
                     let entry = self.instance_logs.entry(instance_id).or_default();
                     if entry.len() >= MAX_LOG_LINES_PER_INSTANCE {
                         entry.remove(0);
@@ -3872,9 +3930,15 @@ impl McwApp {
                     }
                 }
                 AppEvent::ConnectivityChecked(status) => {
-                    self.push_global_log(format!("[NET] Connectivity check: {:?}.", status));
+                    let prev = self.connectivity_status;
                     self.connectivity_checking = false;
                     self.connectivity_status = status;
+                    if prev != status {
+                        self.push_global_log(format!(
+                            "[NET] Connectivity changed: {:?} -> {:?}.",
+                            prev, status
+                        ));
+                    }
                 }
                 AppEvent::ContentLibraryLoaded(items) => {
                     self.content_library_loading = false;
@@ -4110,6 +4174,56 @@ impl McwApp {
                         }
                     }
                 }
+                AppEvent::ChangelogRefreshed(res) => {
+                    self.changelog_refreshing = false;
+                    match res {
+                        Ok(md) => {
+                            self.changelog_markdown = md;
+                            self.notice_banner =
+                                Some(("Changelog updated from GitHub.".to_string(), false));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Failed to fetch changelog: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::StorageRelocationFinished(res) => {
+                    self.relocating_storage_busy = false;
+                    match res {
+                        Ok((backed_up, new_root)) => {
+                            self.relocated_storage_prompt = None;
+                            self.prefs = LauncherPrefs::load(&self.paths);
+                            self.apply_typography_and_scale(ctx);
+                            self.theme_catalog = ThemeCatalog::load(&self.paths.theme_root);
+                            self.apply_current_theme(ctx);
+                            self.reload_instances();
+                            self.reload_accounts();
+                            self.reload_java();
+                            let msg = if backed_up {
+                                format!(
+                                    "Backed up & moved existing instances/worlds to {}.",
+                                    new_root.display()
+                                )
+                            } else {
+                                format!(
+                                    "Moved existing instances/worlds to {}.",
+                                    new_root.display()
+                                )
+                            };
+                            self.push_global_log(format!("[STORAGE] {msg}"));
+                            self.notice_banner = Some((msg, false));
+                        }
+                        Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] Storage migration failed: {err}"
+                            ));
+                            if let Some(prompt) = &mut self.relocated_storage_prompt {
+                                prompt.error = Some(err);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -4150,10 +4264,7 @@ impl McwApp {
         self.next_modpack_req_id += 1;
 
         let (min_ram, max_ram) = recommended_modpack_ram_mb(default_loader, self.pc_ram_mb);
-        let mut candidate_name = pack_title.trim().to_string();
-        if candidate_name.is_empty() {
-            candidate_name = "Modpack".to_string();
-        }
+        let mut candidate_name = mcw_providers::suggest_short_instance_name(&pack_title, 36);
         let store = InstanceStore::new(&self.paths);
         let base_name = candidate_name.clone();
         let mut idx = 2usize;
@@ -4804,6 +4915,18 @@ impl McwApp {
         if self.update_checking {
             return;
         }
+        if self.connectivity_status == ConnectivityStatus::Offline {
+            self.update_status_text = "Offline: update check skipped.".to_string();
+            if manual {
+                self.notice_banner = Some((
+                    "Offline mode: connect to the internet to check for launcher updates."
+                        .to_string(),
+                    true,
+                ));
+                self.push_global_log("[UPDATE] Update check skipped while offline.".to_string());
+            }
+            return;
+        }
         self.update_checking = true;
         self.update_status_text = "Checking for updates...".to_string();
         let channel = UpdateChannel::parse(&self.prefs.update_channel);
@@ -5274,6 +5397,8 @@ impl McwApp {
 
         if let Some(archive) = modpack_archives.into_iter().next() {
             self.modpack_path_input = archive.display().to_string();
+            self.modpack_name_input.clear();
+            self.inspect_local_archive_optional_files();
             self.create_tab = CreateInstanceTab::ImportArchive;
             self.start_modpack_install(ctx);
             return;
@@ -5305,6 +5430,7 @@ impl McwApp {
                 }
             } else if let Some(archive) = zip_files.into_iter().next() {
                 self.modpack_path_input = archive.display().to_string();
+                self.modpack_name_input.clear();
                 self.inspect_local_archive_optional_files();
                 self.create_tab = CreateInstanceTab::ImportArchive;
                 self.start_modpack_install(ctx);
@@ -5324,6 +5450,19 @@ impl McwApp {
         let path = PathBuf::from(self.modpack_path_input.trim());
         if !path.is_file() {
             return;
+        }
+        if self.modpack_name_input.trim().is_empty() {
+            if let Some(raw_name) = mcw_providers::inspect_archive_name(&path) {
+                let mut candidate_name = mcw_providers::suggest_short_instance_name(&raw_name, 36);
+                let store = InstanceStore::new(&self.paths);
+                let base_name = candidate_name.clone();
+                let mut idx = 2usize;
+                while store.load_instance(&candidate_name).is_ok() {
+                    candidate_name = format!("{base_name} ({idx})");
+                    idx += 1;
+                }
+                self.modpack_name_input = candidate_name;
+            }
         }
         if let Ok(list) = ModpackInstaller::inspect_optional_files(&path) {
             for item in &list {
@@ -5617,6 +5756,7 @@ impl McwApp {
             return;
         }
         self.connectivity_checking = true;
+        self.last_connectivity_check_at = Instant::now();
         let client = self.download_client.clone();
         let tx = self.tx.clone();
         let ctx_c = ctx.clone();
@@ -6261,6 +6401,64 @@ impl McwApp {
                 }
             }
         }
+    }
+
+    pub(crate) fn start_changelog_refresh(&mut self, ctx: &egui::Context) {
+        if self.changelog_refreshing {
+            return;
+        }
+        if self.connectivity_status == ConnectivityStatus::Offline {
+            self.notice_banner = Some((
+                "Offline mode: showing bundled changelog. Connect to the internet to fetch latest notes."
+                    .to_string(),
+                true,
+            ));
+            return;
+        }
+        self.changelog_refreshing = true;
+        let client = self.download_client.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+        let url = format!(
+            "https://raw.githubusercontent.com/{}/main/CHANGELOG.md",
+            mcw_models::GITHUB_REPOSITORY
+        );
+        self.runtime.spawn(async move {
+            let res = client.get_text(&url).await.map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::ChangelogRefreshed(res));
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_desktop_storage_relocation(
+        &mut self,
+        backup_first: bool,
+        ctx: &egui::Context,
+    ) {
+        if self.relocating_storage_busy {
+            return;
+        }
+        let Some(prompt) = self.relocated_storage_prompt.as_mut() else {
+            return;
+        };
+        prompt.error = None;
+        let old_root = prompt.old_root.clone();
+        let new_root = prompt.new_root.clone();
+        self.relocating_storage_busy = true;
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                LauncherPaths::relocate_user_data(&old_root, &new_root, backup_first)
+                    .map(|()| (backup_first, new_root))
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(AppEvent::StorageRelocationFinished(res));
+            ctx_c.request_repaint();
+        });
     }
 }
 

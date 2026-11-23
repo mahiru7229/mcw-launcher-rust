@@ -306,4 +306,66 @@ impl McwApp {
                     });
             });
     }
+
+    pub(crate) fn render_changelog_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let p = self.palette;
+        Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .corner_radius(CornerRadius::same(14))
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.set_height(ui.available_height());
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.heading(RichText::new("Changelog").color(p.text));
+                    ui.label(
+                        RichText::new(format!("v{}", mcw_models::APP_VERSION))
+                            .monospace()
+                            .strong()
+                            .color(p.accent),
+                    );
+                    let refresh_lbl = if self.changelog_refreshing {
+                        "Refreshing..."
+                    } else {
+                        "Refresh from GitHub"
+                    };
+                    if ui
+                        .add_enabled(!self.changelog_refreshing, Button::new(refresh_lbl))
+                        .clicked()
+                    {
+                        self.start_changelog_refresh(ctx);
+                    }
+                    if ui.button("Open on GitHub").clicked() {
+                        open_external(&format!(
+                            "https://github.com/{}/blob/main/CHANGELOG.md",
+                            mcw_models::GITHUB_REPOSITORY
+                        ));
+                    }
+                    if self.connectivity_status == ConnectivityStatus::Offline {
+                        ui.label(
+                            RichText::new("(Offline — showing bundled changelog)")
+                                .size(11.5)
+                                .color(p.warning),
+                        );
+                    }
+                });
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                ScrollArea::vertical()
+                    .id_salt("changelog_page_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        crate::app::views::stage3_dialogs::render_release_markdown(
+                            ui,
+                            &self.changelog_markdown,
+                            p,
+                        );
+                    });
+            });
+    }
 }

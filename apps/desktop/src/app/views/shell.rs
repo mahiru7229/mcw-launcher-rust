@@ -261,25 +261,13 @@ impl McwApp {
                             !speed_text.is_empty() && !is_paused && !is_cancelled && !task_done;
                         let eta_text =
                             if task.total > 0 && !is_paused && !is_cancelled && !task_done {
-                                let rem = task.total.saturating_sub(task.current) as f64;
                                 if task.is_bytes && current_download_bps >= 1024.0 {
+                                    let rem = task.total.saturating_sub(task.current) as f64;
                                     let secs = (rem / current_download_bps).round().max(1.0) as u64;
                                     Some(format!("ETA {}", format_duration(secs)))
-                                } else if !task.is_bytes && task.current > 0 {
-                                    let elapsed = task.started_at.elapsed().as_secs_f64();
-                                    if elapsed >= 0.8 {
-                                        let rate = task.current as f64 / elapsed;
-                                        if rate > 0.01 {
-                                            let secs = (rem / rate).round().max(1.0) as u64;
-                                            Some(format!("ETA {}", format_duration(secs)))
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
                                 } else {
-                                    None
+                                    task.estimated_remaining_secs()
+                                        .map(|secs| format!("ETA {}", format_duration(secs)))
                                 }
                             } else {
                                 None

@@ -158,6 +158,12 @@ pub struct ModpackExportOptions {
     pub mode: ModpackExportMode,
     pub include_saves: bool,
     pub disable_mod_repair_and_updates: bool,
+    #[serde(default = "default_true_opt")]
+    pub disable_launch_checking: bool,
+}
+
+fn default_true_opt() -> bool {
+    true
 }
 
 impl Default for ModpackExportOptions {
@@ -166,8 +172,167 @@ impl Default for ModpackExportOptions {
             mode: ModpackExportMode::Mrpack,
             include_saves: false,
             disable_mod_repair_and_updates: true,
+            disable_launch_checking: true,
         }
     }
+}
+
+/// Keeps exact source modpack names untouched whenever they already fit cleanly (`<= max_len`),
+/// and applies smart shortening (removing invalid Windows characters, bracketed tags, and
+/// trailing loader/version suffixes on word boundaries) only when the raw name is too long.
+pub fn suggest_short_instance_name(raw_name: &str, max_len: usize) -> String {
+    let sanitize_win = |s: &str| -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut prev_space = false;
+        for ch in s.chars() {
+            if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            {
+                if !prev_space && !out.is_empty() {
+                    out.push(' ');
+                    prev_space = true;
+                }
+                continue;
+            }
+            if ch.is_whitespace() {
+                if !prev_space && !out.is_empty() {
+                    out.push(' ');
+                    prev_space = true;
+                }
+            } else {
+                out.push(ch);
+                prev_space = false;
+            }
+        }
+        out.trim_matches(|c: char| c == ' ' || c == '.').to_string()
+    };
+
+    let clean_exact = sanitize_win(raw_name);
+    if clean_exact.is_empty() {
+        return "Modpack".to_string();
+    }
+    if max_len == 0 || clean_exact.chars().count() <= max_len {
+        return clean_exact;
+    }
+
+    // Strip [...] and (...) tags when shortening long names
+    let mut stripped = String::with_capacity(clean_exact.len());
+    let mut sq_depth = 0usize;
+    let mut paren_depth = 0usize;
+    for ch in clean_exact.chars() {
+        match ch {
+            '[' => sq_depth += 1,
+            ']' => sq_depth = sq_depth.saturating_sub(1),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            _ if sq_depth == 0 && paren_depth == 0 => stripped.push(ch),
+            _ => {}
+        }
+    }
+    let mut candidate = sanitize_win(&stripped);
+    if candidate.is_empty() {
+        candidate = clean_exact.clone();
+    }
+
+    // Drop common trailing edition/loader tags if still too long
+    for suffix in [
+        " - forge",
+        " - fabric",
+        " - neoforge",
+        " - quilt",
+        " forge",
+        " fabric",
+        " neoforge",
+        " quilt",
+        " release",
+        " modpack",
+    ] {
+        if candidate.chars().count() <= max_len {
+            break;
+        }
+        let lower = candidate.to_ascii_lowercase();
+        if lower.ends_with(suffix) && candidate.len() > suffix.len() {
+            let cut = candidate.len() - suffix.len();
+            if candidate.is_char_boundary(cut) {
+                candidate = sanitize_win(&candidate[..cut]);
+            }
+        }
+    }
+
+    if candidate.chars().count() <= max_len && !candidate.is_empty() {
+        return candidate;
+    }
+
+    // Truncate cleanly along word boundaries
+    let mut truncated = String::new();
+    for word in candidate.split_whitespace() {
+        let next_len = if truncated.is_empty() {
+            word.chars().count()
+        } else {
+            truncated.chars().count() + 1 + word.chars().count()
+        };
+        if next_len > max_len {
+            break;
+        }
+        if !truncated.is_empty() {
+            truncated.push(' ');
+        }
+        truncated.push_str(word);
+    }
+    if truncated.is_empty() {
+        truncated = candidate.chars().take(max_len).collect();
+    }
+    let final_clean = truncated
+        .trim_matches(|c: char| c == ' ' || c == '.' || c == '-' || c == ':')
+        .to_string();
+    if final_clean.is_empty() {
+        "Modpack".to_string()
+    } else {
+        final_clean
+    }
+}
+
+/// Inspects a local `.mrpack`, CurseForge `.zip`, or `.mcwpack` archive and returns its
+/// exact source name (or shortened fallback when exceeding 36 characters).
+pub fn inspect_archive_name(archive_path: &Path) -> Option<String> {
+    if !archive_path.is_file() {
+        return None;
+    }
+    let file = File::open(archive_path).ok()?;
+    let mut archive = ZipArchive::new(file).ok()?;
+
+    if let Ok(entry) = archive.by_name("modrinth.index.json") {
+        if let Ok(idx) = serde_json::from_reader::<_, MrpackIndex>(entry) {
+            if !idx.name.trim().is_empty() {
+                return Some(suggest_short_instance_name(&idx.name, 36));
+            }
+        }
+    }
+    if let Ok(entry) = archive.by_name("manifest.json") {
+        if let Ok(manifest) = serde_json::from_reader::<_, CurseForgeManifest>(entry) {
+            if !manifest.name.trim().is_empty() {
+                return Some(suggest_short_instance_name(&manifest.name, 36));
+            }
+        }
+    }
+    if let Ok(entry) = archive.by_name("mcw_package.json") {
+        if let Ok(pkg_val) = serde_json::from_reader::<_, serde_json::Value>(entry) {
+            if let Some(name) = pkg_val
+                .get("instance")
+                .and_then(|i| i.get("name"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(suggest_short_instance_name(name, 36));
+            }
+        }
+    }
+    archive_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| suggest_short_instance_name(s, 36))
 }
 
 pub struct ModpackInstaller;
@@ -342,13 +507,13 @@ impl ModpackInstaller {
             .cloned()
             .and_then(|v| serde_json::from_value(v).ok());
 
-        let base_name = name_override
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&inst_meta.name);
+        let raw_base = match name_override.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(explicit) => explicit.to_string(),
+            None => suggest_short_instance_name(&inst_meta.name, 36),
+        };
         let store = InstanceStore::new(paths);
         let target_name = store
-            .resolve_unique_instance_name(base_name)
+            .resolve_unique_instance_name(&raw_base)
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
 
         let disable_flag = pkg_val
@@ -358,6 +523,15 @@ impl ModpackInstaller {
                 pkg_settings
                     .as_ref()
                     .and_then(|s| s.disable_mod_repair_and_updates)
+            })
+            .unwrap_or(true);
+        let disable_launch_checking = pkg_val
+            .get("disable_launch_checking")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                pkg_settings
+                    .as_ref()
+                    .and_then(|s| s.disable_launch_checking)
             })
             .unwrap_or(true);
 
@@ -371,9 +545,11 @@ impl ModpackInstaller {
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
         if let Some(mut settings) = pkg_settings {
             settings.disable_mod_repair_and_updates = Some(disable_flag);
+            settings.disable_launch_checking = Some(disable_launch_checking);
             let _ = store.save_settings(&inst.instance_id, &settings);
         } else {
             inst_settings.disable_mod_repair_and_updates = Some(disable_flag);
+            inst_settings.disable_launch_checking = Some(disable_launch_checking);
             let _ = store.save_settings(&inst.instance_id, &inst_settings);
         }
 
@@ -385,6 +561,7 @@ impl ModpackInstaller {
             &serde_json::json!({
                 "source": "mcwpack",
                 "disable_mod_repair_and_updates": disable_flag,
+                "disable_launch_checking": disable_launch_checking,
             }),
         );
 
@@ -430,19 +607,20 @@ impl ModpackInstaller {
             .cloned()
             .unwrap_or_else(|| "1.21.4".to_string());
         let loader = parse_mrpack_loader(&index.dependencies, &game_version);
-        let base_name = name_override
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(index.name.trim());
+        let base_name = match name_override.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(explicit) => explicit.to_string(),
+            None => suggest_short_instance_name(&index.name, 36),
+        };
 
         let store = InstanceStore::new(paths);
         let target_name = store
-            .resolve_unique_instance_name(base_name)
+            .resolve_unique_instance_name(&base_name)
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
         let (inst, mut inst_settings) = store
             .create_instance(&target_name, &game_version, loader.clone())
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
         inst_settings.disable_mod_repair_and_updates = Some(true);
+        inst_settings.disable_launch_checking = Some(true);
         let _ = store.save_settings(&inst.instance_id, &inst_settings);
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
 
@@ -555,19 +733,20 @@ impl ModpackInstaller {
             }
         }
         let loader = parse_cf_loader(&cf_loaders, &game_version);
-        let base_name = name_override
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(manifest.name.trim());
+        let base_name = match name_override.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(explicit) => explicit.to_string(),
+            None => suggest_short_instance_name(&manifest.name, 36),
+        };
 
         let store = InstanceStore::new(paths);
         let target_name = store
-            .resolve_unique_instance_name(base_name)
+            .resolve_unique_instance_name(&base_name)
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
         let (inst, mut inst_settings) = store
             .create_instance(&target_name, &game_version, loader.clone())
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
         inst_settings.disable_mod_repair_and_updates = Some(true);
+        inst_settings.disable_launch_checking = Some(true);
         let _ = store.save_settings(&inst.instance_id, &inst_settings);
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
         let mods_dir = mc_dir.join("mods");
@@ -1085,12 +1264,14 @@ impl ModpackInstaller {
                 let mut export_settings = settings;
                 export_settings.disable_mod_repair_and_updates =
                     Some(options.disable_mod_repair_and_updates);
+                export_settings.disable_launch_checking = Some(options.disable_launch_checking);
                 let pkg_meta = serde_json::json!({
                     "format": "mcwpack",
                     "version": 2,
                     "portable_mode": if full { "full" } else { "smart" },
                     "include_saves": options.include_saves,
                     "disable_mod_repair_and_updates": options.disable_mod_repair_and_updates,
+                    "disable_launch_checking": options.disable_launch_checking,
                     "instance": inst,
                     "settings": export_settings,
                 });
@@ -1607,6 +1788,7 @@ mod tests {
                 mode: ModpackExportMode::Portable { full: false },
                 include_saves: false,
                 disable_mod_repair_and_updates: true,
+                disable_launch_checking: false,
             },
         )
         .unwrap();
@@ -1627,6 +1809,10 @@ mod tests {
             .minecraft_dir("portable-imported")
             .join("mods/sodium.jar")
             .is_file());
+        let imported_settings = mcw_storage::InstanceStore::new(&paths)
+            .load_settings(&rep.instance_id)
+            .unwrap();
+        assert_eq!(imported_settings.disable_launch_checking, Some(false));
     }
 
     #[test]
@@ -1675,5 +1861,23 @@ mod tests {
         let cf_opts = ModpackInstaller::inspect_optional_files(&cf_zip).unwrap();
         assert_eq!(cf_opts.len(), 1);
         assert_eq!(cf_opts[0].id, "20:200");
+        assert_eq!(inspect_archive_name(&mrpack).as_deref(), Some("Opt Pack"));
+        assert_eq!(inspect_archive_name(&cf_zip).as_deref(), Some("CF Opt"));
+    }
+
+    #[test]
+    fn shortens_long_modpack_names_only_when_needed() {
+        assert_eq!(
+            suggest_short_instance_name("DeceasedCraft", 36),
+            "DeceasedCraft"
+        );
+        assert_eq!(
+            suggest_short_instance_name("Cobblemon: Star Academy", 36),
+            "Cobblemon Star Academy"
+        );
+        let long = "DeceasedCraft - Urban Zombie Apocalypse [v5.5.10] (Forge 1.20.1)";
+        let short = suggest_short_instance_name(long, 36);
+        assert!(short.chars().count() <= 36);
+        assert!(short.contains("DeceasedCraft"));
     }
 }

@@ -22,7 +22,14 @@ fn main() -> eframe::Result {
 
     app::platform::enable_windows_dpi_awareness();
 
-    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let raw_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let (root, relocated_from) = if LauncherPaths::probe_dir_writable(&raw_root) {
+        (raw_root, None)
+    } else {
+        let has_data = LauncherPaths::dir_has_user_data(&raw_root);
+        let safe_root = LauncherPaths::default_safe_data_dir();
+        (safe_root, Some((raw_root, has_data)))
+    };
     let paths = LauncherPaths::portable(root);
     let _ = paths.initialize();
     let prefs = i18n::LauncherPrefs::load(&paths);
@@ -61,7 +68,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "MCW Launcher: Rust Edition",
         options,
-        Box::new(move |cc| Ok(Box::new(McwApp::new(cc, paths, init_size)))),
+        Box::new(move |cc| Ok(Box::new(McwApp::new(cc, paths, init_size, relocated_from)))),
     )
 }
 

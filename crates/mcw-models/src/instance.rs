@@ -119,6 +119,8 @@ pub struct InstanceSettings {
     #[serde(default)]
     pub forge_preflight_always_allow: bool,
     #[serde(default)]
+    pub disable_launch_checking: Option<bool>,
+    #[serde(default)]
     pub disable_mod_repair_and_updates: Option<bool>,
     #[serde(default)]
     pub pre_launch_command: String,
@@ -138,6 +140,10 @@ impl InstanceSettings {
     pub fn is_mod_repair_and_update_disabled(&self, is_modpack_origin: bool) -> bool {
         self.disable_mod_repair_and_updates
             .unwrap_or(is_modpack_origin)
+    }
+
+    pub fn is_launch_checking_disabled(&self, is_modpack_origin: bool) -> bool {
+        self.disable_launch_checking.unwrap_or(is_modpack_origin)
     }
 }
 
@@ -186,6 +192,7 @@ impl Default for InstanceSettings {
             modrinth_failure_policy: default_inherit(),
             curseforge_failure_policy: default_inherit(),
             forge_preflight_always_allow: false,
+            disable_launch_checking: None,
             disable_mod_repair_and_updates: None,
             pre_launch_command: String::new(),
             post_exit_command: String::new(),

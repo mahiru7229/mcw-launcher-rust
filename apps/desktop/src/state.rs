@@ -18,6 +18,7 @@ use mcw_storage::{
     UnusedVersionCandidate,
 };
 use mcw_updater::{StagedUpdate, UpdateCheckResult};
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Instant;
@@ -29,9 +30,113 @@ pub struct ActiveTask {
     pub message: String,
     pub current: u64,
     pub total: u64,
-    pub started_at: Instant,
     pub is_bytes: bool,
+    pub eta_base_at: Instant,
+    pub eta_base_current: u64,
+    pub rate_ema: f64,
+    pub last_prog_at: Instant,
+    pub last_prog_current: u64,
     pub control: Arc<TaskControl>,
+}
+
+impl ActiveTask {
+    pub fn new(
+        id: u64,
+        label: impl Into<String>,
+        message: impl Into<String>,
+        control: Arc<TaskControl>,
+    ) -> Self {
+        let now = Instant::now();
+        Self {
+            id,
+            label: label.into(),
+            message: message.into(),
+            current: 0,
+            total: 0,
+            is_bytes: false,
+            eta_base_at: now,
+            eta_base_current: 0,
+            rate_ema: 0.0,
+            last_prog_at: now,
+            last_prog_current: 0,
+            control,
+        }
+    }
+
+    pub fn record_progress(
+        &mut self,
+        message: String,
+        current: u64,
+        total: u64,
+        next_is_bytes: bool,
+    ) {
+        let now = Instant::now();
+        let phase_changed = self.is_bytes != next_is_bytes
+            || (self.total == 0 && total > 0 && current <= total)
+            || (!next_is_bytes && total > 0 && self.total > 0 && total != self.total)
+            || (total > 0 && self.total > 0 && current < self.current);
+
+        if phase_changed {
+            self.is_bytes = next_is_bytes;
+            self.eta_base_at = now;
+            self.eta_base_current = current;
+            self.rate_ema = 0.0;
+            self.last_prog_at = now;
+            self.last_prog_current = current;
+        } else if current > self.last_prog_current {
+            let dt = now.duration_since(self.last_prog_at).as_secs_f64();
+            let min_dt = if next_is_bytes { 0.15 } else { 0.25 };
+            if dt >= min_dt {
+                let inst_rate = (current - self.last_prog_current) as f64 / dt;
+                self.rate_ema = if self.rate_ema <= 0.0 {
+                    inst_rate
+                } else {
+                    self.rate_ema * 0.72 + inst_rate * 0.28
+                };
+                self.last_prog_at = now;
+                self.last_prog_current = current;
+            }
+        }
+
+        self.message = message;
+        self.current = current;
+        self.total = total;
+    }
+
+    /// Estimate remaining seconds for the current phase; returns `None` during short warmup.
+    pub fn estimated_remaining_secs(&self) -> Option<u64> {
+        if self.total == 0 || self.current >= self.total || self.current <= self.eta_base_current {
+            return None;
+        }
+        let elapsed = self.eta_base_at.elapsed().as_secs_f64();
+        let min_warmup = if self.is_bytes { 0.8 } else { 1.5 };
+        if elapsed < min_warmup {
+            return None;
+        }
+        let delta = self.current.saturating_sub(self.eta_base_current) as f64;
+        let avg_rate = if delta > 0.0 { delta / elapsed } else { 0.0 };
+        let blended_rate = if self.rate_ema > 0.0 && avg_rate > 0.0 {
+            if self.is_bytes {
+                self.rate_ema * 0.55 + avg_rate * 0.45
+            } else {
+                self.rate_ema * 0.7 + avg_rate * 0.3
+            }
+        } else if self.rate_ema > 0.0 {
+            self.rate_ema
+        } else {
+            avg_rate
+        };
+        if blended_rate <= 0.000_001 {
+            return None;
+        }
+        let remaining_units = self.total.saturating_sub(self.current) as f64;
+        let rem_secs = (remaining_units / blended_rate).ceil();
+        if rem_secs.is_finite() && rem_secs >= 0.0 {
+            Some((rem_secs as u64).max(1))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,6 +447,8 @@ pub enum AppEvent {
     },
     JunkCleanCompleted(Result<(usize, u64), String>),
     WatchedFolderChanged(String),
+    ChangelogRefreshed(Result<String, String>),
+    StorageRelocationFinished(Result<(bool, PathBuf), String>),
 }
 
 pub struct ChannelProgressSink {
@@ -373,5 +480,38 @@ impl LogSink for ChannelLogSink {
             line,
         });
         self.ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn active_task_resets_phase_and_eta_from_bytes_to_batch_items() {
+        let mut task = ActiveTask::new(1, "CurseForge Modpack", "Downloading", TaskControl::new());
+
+        // Phase 1: archive byte download sets `is_bytes = true`
+        task.record_progress(
+            "Downloading zip (2.0 / 10.0 MB)".to_string(),
+            2_000_000,
+            10_000_000,
+            true,
+        );
+        assert!(task.is_bytes);
+
+        // Phase 2: mod batch items 35/567 clears `is_bytes` and avoids stale byte ETA (1s)
+        task.record_progress("Downloading mods (35/567)".to_string(), 0, 567, false);
+        assert!(!task.is_bytes);
+        task.eta_base_at = Instant::now() - Duration::from_secs(7);
+        task.last_prog_at = Instant::now() - Duration::from_secs(7);
+        task.record_progress("Downloading mods (35/567)".to_string(), 35, 567, false);
+
+        let eta = task
+            .estimated_remaining_secs()
+            .expect("batch ETA should be present");
+        // At 5 items/sec (35 items / 7s), 532 remaining items should take ~106s, never 1s!
+        assert!(eta >= 50, "expected realistic batch ETA, got {eta}s");
     }
 }

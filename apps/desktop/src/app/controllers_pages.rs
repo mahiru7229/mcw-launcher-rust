@@ -127,22 +127,16 @@ impl McwApp {
         }
         let provider_changed = self.browser_provider != prev_provider;
 
-        // Modpacks default loader filter: Fabric for Modrinth, Forge for CurseForge / ATLauncher / FTB.
-        if category == BrowserCategory::Modpacks
-            && (!was_open || category_changed || provider_changed)
+        // Global Mod & Modpacks defaults: Relevance, All Loaders, All Versions.
+        if (category == BrowserCategory::Modpacks
+            && (!was_open || category_changed || provider_changed))
+            || (global_mode && (category_changed || !prev_global || !was_open))
         {
-            self.browser_loader_filter = match self.browser_provider {
-                BrowserProvider::Modrinth => "fabric".to_string(),
-                BrowserProvider::CurseForge
-                | BrowserProvider::Ftb
-                | BrowserProvider::AtLauncher => "forge".to_string(),
-            };
-        } else if category == BrowserCategory::Mods {
-            if global_mode {
-                if category_changed || !prev_global {
-                    self.browser_loader_filter = "all".to_string();
-                }
-            } else if let Some(inst) = self.selected_instance() {
+            self.browser_sort = "relevance".to_string();
+            self.browser_loader_filter = "all".to_string();
+            self.browser_mc_version_filter.clear();
+        } else if !global_mode && category == BrowserCategory::Mods {
+            if let Some(inst) = self.selected_instance() {
                 if !inst.mod_loader.name.is_empty() && !inst.mod_loader.is_vanilla() {
                     self.browser_loader_filter = inst.mod_loader.name.to_ascii_lowercase();
                 }
@@ -219,9 +213,7 @@ impl McwApp {
         let query = self.browser_query.clone();
         let sort = self.browser_sort.clone();
         let inst = self.selected_instance().cloned();
-        let game_version = if category == BrowserCategory::Modpacks {
-            None
-        } else if self.browser_global_mode {
+        let game_version = if self.browser_global_mode {
             let v = self.browser_mc_version_filter.trim();
             if v.is_empty() || v.eq_ignore_ascii_case("all") {
                 None
@@ -435,6 +427,13 @@ impl McwApp {
                 self.clear_remote_thumbs_if_idle();
                 self.record_nav_location();
             }
+            AppPage::Changelog => {
+                self.active_page = AppPage::Changelog;
+                self.instance_inline_browser = None;
+                self.browser_global_mode = false;
+                self.clear_remote_thumbs_if_idle();
+                self.record_nav_location();
+            }
         }
     }
 
@@ -501,6 +500,12 @@ impl McwApp {
             }
             AppPage::Logs => {
                 self.active_page = AppPage::Logs;
+                self.instance_inline_browser = None;
+                self.browser_global_mode = false;
+                self.clear_remote_thumbs_if_idle();
+            }
+            AppPage::Changelog => {
+                self.active_page = AppPage::Changelog;
                 self.instance_inline_browser = None;
                 self.browser_global_mode = false;
                 self.clear_remote_thumbs_if_idle();

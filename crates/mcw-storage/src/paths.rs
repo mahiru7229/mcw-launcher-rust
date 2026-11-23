@@ -161,6 +161,174 @@ impl LauncherPaths {
         }
         Ok(out)
     }
+
+    /// Safe user-writable data directory when the portable location (e.g. `C:\` / `Program Files`)
+    /// refuses write access (`os error 5`).
+    pub fn default_safe_data_dir() -> PathBuf {
+        #[cfg(windows)]
+        {
+            if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+                return PathBuf::from(local).join("MCWLauncher");
+            }
+            if let Some(profile) = std::env::var_os("USERPROFILE") {
+                return PathBuf::from(profile)
+                    .join("AppData")
+                    .join("Local")
+                    .join("MCWLauncher");
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+                return PathBuf::from(xdg).join("mcw-launcher");
+            }
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home)
+                    .join(".local")
+                    .join("share")
+                    .join("mcw-launcher");
+            }
+        }
+        std::env::temp_dir().join("MCWLauncher")
+    }
+
+    /// Tests whether the process can create and write files inside `dir`.
+    pub fn probe_dir_writable(dir: &Path) -> bool {
+        if fs::create_dir_all(dir).is_err() {
+            return false;
+        }
+        let probe = dir.join(format!(".mcw-write-probe-{}", std::process::id()));
+        match fs::File::create(&probe) {
+            Ok(f) => {
+                drop(f);
+                let _ = fs::remove_file(&probe);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Returns `true` if `dir` already contains user data (instances/worlds, accounts, config, themes, backups).
+    pub fn dir_has_user_data(dir: &Path) -> bool {
+        ["instances", "accounts", "config", "themes", "backups"]
+            .iter()
+            .any(|sub| {
+                let p = dir.join(sub);
+                p.is_dir()
+                    && fs::read_dir(&p)
+                        .map(|mut rd| rd.next().is_some())
+                        .unwrap_or(false)
+            })
+    }
+
+    /// Backs up (optional ZIP into `new_root/backups/`) and copies user data & worlds from `old_root` into `new_root`.
+    pub fn relocate_user_data(old_root: &Path, new_root: &Path, backup_first: bool) -> Result<()> {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        const USER_SUBDIRS: [&str; 5] = ["instances", "accounts", "config", "themes", "backups"];
+        fs::create_dir_all(new_root).map_err(|source| StorageError::Io {
+            path: new_root.display().to_string(),
+            source,
+        })?;
+
+        if backup_first {
+            let backups_dir = new_root.join("backups");
+            fs::create_dir_all(&backups_dir).map_err(|source| StorageError::Io {
+                path: backups_dir.display().to_string(),
+                source,
+            })?;
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let backup_path = backups_dir.join(format!("pre_relocation_{ts}.zip"));
+            let file = fs::File::create(&backup_path).map_err(|source| StorageError::Io {
+                path: backup_path.display().to_string(),
+                source,
+            })?;
+            let mut zip = ZipWriter::new(file);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            for sub in USER_SUBDIRS {
+                let src = old_root.join(sub);
+                if !src.is_dir() {
+                    continue;
+                }
+                for entry in walkdir::WalkDir::new(&src)
+                    .follow_links(false)
+                    .into_iter()
+                    .flatten()
+                {
+                    let path = entry.path();
+                    let rel = match path.strip_prefix(old_root) {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    let rel_posix = rel.to_string_lossy().replace('\\', "/");
+                    if rel_posix.is_empty() || rel_posix.ends_with(".lock") {
+                        continue;
+                    }
+                    if entry.file_type().is_dir() {
+                        let _ = zip.add_directory(format!("{rel_posix}/"), opts);
+                    } else if entry.file_type().is_file()
+                        && zip.start_file(&rel_posix, opts).is_ok()
+                    {
+                        if let Ok(mut f) = fs::File::open(path) {
+                            let _ = std::io::copy(&mut f, &mut zip);
+                        }
+                    }
+                }
+            }
+            zip.flush().map_err(|source| StorageError::Io {
+                path: backup_path.display().to_string(),
+                source,
+            })?;
+            zip.finish().map_err(|e| {
+                StorageError::Backup(format!("Failed to finalize relocation backup: {e}"))
+            })?;
+        }
+
+        for sub in USER_SUBDIRS {
+            let src = old_root.join(sub);
+            if !src.is_dir() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(&src)
+                .follow_links(false)
+                .into_iter()
+                .flatten()
+            {
+                let path = entry.path();
+                let rel = match path.strip_prefix(old_root) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                if path.extension().and_then(|e| e.to_str()) == Some("lock") {
+                    continue;
+                }
+                let dest = new_root.join(rel);
+                if entry.file_type().is_dir() {
+                    fs::create_dir_all(&dest).map_err(|source| StorageError::Io {
+                        path: dest.display().to_string(),
+                        source,
+                    })?;
+                } else if entry.file_type().is_file() {
+                    if let Some(parent) = dest.parent() {
+                        fs::create_dir_all(parent).map_err(|source| StorageError::Io {
+                            path: parent.display().to_string(),
+                            source,
+                        })?;
+                    }
+                    fs::copy(path, &dest).map_err(|source| StorageError::Io {
+                        path: dest.display().to_string(),
+                        source,
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

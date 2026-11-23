@@ -322,22 +322,26 @@ impl AtLauncherClient {
         let loader = parse_atlauncher_loader(&cfg, &game_version);
 
         let store = InstanceStore::new(paths);
-        let base_name = name_override
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| pack.name.trim());
-        let raw_base = if base_name.is_empty() {
-            safe_name.as_str()
-        } else {
-            base_name
+        let raw_base = match name_override.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(explicit) => explicit.to_string(),
+            None => {
+                let raw = pack.name.trim();
+                let source = if raw.is_empty() {
+                    safe_name.as_str()
+                } else {
+                    raw
+                };
+                crate::modpack::suggest_short_instance_name(source, 36)
+            }
         };
         let candidate_name = store
-            .resolve_unique_instance_name(raw_base)
+            .resolve_unique_instance_name(&raw_base)
             .map_err(|e| ProviderError::Io(std::io::Error::other(e.to_string())))?;
         let (inst, mut inst_settings) = store
             .create_instance(&candidate_name, &game_version, loader.clone())
             .map_err(|e| ProviderError::Io(std::io::Error::other(e.to_string())))?;
         inst_settings.disable_mod_repair_and_updates = Some(true);
+        inst_settings.disable_launch_checking = Some(true);
         let _ = store.save_settings(&inst.instance_id, &inst_settings);
         let mc_dir = paths.minecraft_dir(&inst.instance_id);
         let mods_dir = mc_dir.join("mods");

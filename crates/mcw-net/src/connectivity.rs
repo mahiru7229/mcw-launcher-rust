@@ -23,13 +23,15 @@ impl ConnectivityStatus {
 pub struct ConnectivityMonitor;
 
 impl ConnectivityMonitor {
-    const PROBE_URLS: [&'static str; 2] = [
+    const PROBE_URLS: [&'static str; 4] = [
         "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json",
         "https://api.modrinth.com/v2/tag/loader",
+        "https://mcw-download.pages.dev/releases/rust/manifest.json",
+        "https://api.github.com/zen",
     ];
 
     pub async fn probe(client: &DownloadClient) -> ConnectivityStatus {
-        Self::probe_urls(client, &Self::PROBE_URLS, Duration::from_secs(3)).await
+        Self::probe_urls(client, &Self::PROBE_URLS, Duration::from_millis(3500)).await
     }
 
     pub async fn probe_urls(
@@ -37,15 +39,24 @@ impl ConnectivityMonitor {
         urls: &[&str],
         timeout: Duration,
     ) -> ConnectivityStatus {
-        for &url in urls {
-            let req = client.http().head(url).timeout(timeout);
-            if let Ok(resp) = req.send().await {
-                if resp.status().is_success() || resp.status().is_redirection() {
-                    return ConnectivityStatus::Online;
-                }
-            }
+        if urls.is_empty() {
+            return ConnectivityStatus::Offline;
         }
-        ConnectivityStatus::Offline
+        let checks = urls.iter().map(|&url| {
+            let req = client.http().head(url).timeout(timeout);
+            Box::pin(async move {
+                match req.send().await {
+                    Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
+                        Ok(())
+                    }
+                    _ => Err(()),
+                }
+            })
+        });
+        match futures::future::select_ok(checks).await {
+            Ok(((), _)) => ConnectivityStatus::Online,
+            Err(_) => ConnectivityStatus::Offline,
+        }
     }
 }
 

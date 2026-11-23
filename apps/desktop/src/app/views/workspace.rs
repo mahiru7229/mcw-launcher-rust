@@ -1272,6 +1272,24 @@ impl McwApp {
                             settings.disable_mod_repair_and_updates = Some(disable_prot);
                         }
 
+                        let is_official_for_check =
+                            detect_installed_pack(&self.paths.instance_dir(&inst.instance_id))
+                                .is_some();
+                        let mut disable_launch_chk =
+                            settings.is_launch_checking_disabled(is_official_for_check);
+                        if ui
+                            .checkbox(
+                                &mut disable_launch_chk,
+                                "Disable pre-launch dependency checking (Recommended for modpacks)",
+                            )
+                            .on_hover_text(
+                                "Skips pre-launch dependency warning modals across all modloaders while still writing findings to the Launcher Logs.",
+                            )
+                            .changed()
+                        {
+                            settings.disable_launch_checking = Some(disable_launch_chk);
+                        }
+
                         ui.add_space(10.0);
                         ui.separator();
                         ui.add_space(10.0);
