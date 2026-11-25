@@ -776,6 +776,39 @@ impl McwApp {
             if ui.add(add_btn).clicked() {
                 self.open_content_browser(browser_cat, None, ctx);
             }
+            if matches!(kind, ContentKind::ResourcePack | ContentKind::ShaderPack) {
+                let is_checking_this =
+                    self.checking_pack_updates && self.pack_updates_kind == Some(kind);
+                let check_lbl = if is_checking_this {
+                    "Checking Pack Updates..."
+                } else {
+                    "Check Pack Updates"
+                };
+                if ui
+                    .add_enabled(!self.checking_pack_updates, Button::new(check_lbl))
+                    .clicked()
+                {
+                    self.start_check_content_pack_updates(kind, ctx);
+                }
+                if self.pack_updates_kind == Some(kind) {
+                    let pack_updatable = self
+                        .pack_update_candidates
+                        .iter()
+                        .filter(|c| c.update_available)
+                        .count();
+                    if pack_updatable > 0 {
+                        let upd_btn = Button::new(
+                            RichText::new(format!("Update Packs ({pack_updatable})"))
+                                .color(p.accent_text)
+                                .strong(),
+                        )
+                        .fill(p.accent);
+                        if ui.add(upd_btn).clicked() {
+                            self.start_apply_content_pack_updates(kind, ctx);
+                        }
+                    }
+                }
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let folder_dir = mc_dir.join(kind.folder_name());
                 if ui.button("Open Folder").clicked() {
@@ -813,12 +846,22 @@ impl McwApp {
 
         let mut toggle_action: Option<(String, bool)> = None;
         let mut delete_action: Option<String> = None;
+        let packs_snapshot = self.selected_content_packs.clone();
 
         ScrollArea::vertical()
             .id_salt("local_content_packs_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for pack in &self.selected_content_packs {
+                for pack in &packs_snapshot {
+                    let icon_tex = self.load_pack_icon_texture(pack, ctx);
+                    let pack_upd = if self.pack_updates_kind == Some(kind) {
+                        self.pack_update_candidates
+                            .iter()
+                            .find(|c| c.update_available && c.file_name == pack.file_name)
+                            .map(|c| c.latest_version_number.clone())
+                    } else {
+                        None
+                    };
                     Frame::new()
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.border))
@@ -831,8 +874,37 @@ impl McwApp {
                                 if ui.checkbox(&mut en, "").changed() {
                                     toggle_action = Some((pack.file_name.clone(), en));
                                 }
+                                if let Some(ref tex) = icon_tex {
+                                    ui.add(
+                                        egui::Image::new((tex.id(), Vec2::splat(32.0)))
+                                            .corner_radius(CornerRadius::same(6)),
+                                    );
+                                } else {
+                                    let (r, _) = ui.allocate_exact_size(
+                                        Vec2::splat(32.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().rect(
+                                        r,
+                                        CornerRadius::same(6),
+                                        p.elevated,
+                                        Stroke::new(1.0_f32, p.border),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
                                 ui.vertical(|ui| {
-                                    ui.label(RichText::new(&pack.display_name).strong());
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(RichText::new(&pack.display_name).strong());
+                                        if let Some(ref new_ver) = pack_upd {
+                                            ui.label(
+                                                RichText::new(format!("UPDATE -> {new_ver}"))
+                                                    .strong()
+                                                    .monospace()
+                                                    .size(10.5)
+                                                    .color(p.accent),
+                                            );
+                                        }
+                                    });
                                     let meta = if pack.is_dir {
                                         format!("{} · Folder", pack.file_name)
                                     } else {

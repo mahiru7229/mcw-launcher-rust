@@ -307,6 +307,40 @@ impl ModrinthClient {
         Ok(dest)
     }
 
+    /// Queries Modrinth's `/v2/version_files/update` batch endpoint by local SHA-1 hashes
+    /// (used for updating resource packs and shader packs cleanly).
+    pub async fn check_version_files_update(
+        &self,
+        hashes: &[String],
+        loaders: &[&str],
+        game_version: &str,
+    ) -> Result<HashMap<String, ModrinthVersion>> {
+        if hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let url = format!("{MODRINTH_API_BASE}/version_files/update");
+        let payload = serde_json::json!({
+            "hashes": hashes,
+            "algorithm": "sha1",
+            "loaders": loaders,
+            "game_versions": [game_version],
+        });
+        let resp = self.http.post(&url).json(&payload).send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(ProviderError::ApiError {
+                status: status.as_u16(),
+                message: text,
+            });
+        }
+        let parsed: HashMap<String, ModrinthVersion> = serde_json::from_str(&text)?;
+        Ok(parsed
+            .into_iter()
+            .map(|(h, v)| (h.to_ascii_lowercase(), v))
+            .collect())
+    }
+
     async fn cached_get(&self, url: &str, ttl_secs: u64) -> Result<String> {
         let cache_key = format!("modrinth:{url}");
         if let Some(ref cache) = self.cache {

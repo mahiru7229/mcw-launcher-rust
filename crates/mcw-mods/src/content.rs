@@ -43,6 +43,49 @@ pub struct ContentPackInfo {
     pub size_bytes: u64,
     pub is_dir: bool,
     pub path: PathBuf,
+    pub icon_png: Option<Vec<u8>>,
+}
+
+const MAX_PACK_ICON_BYTES: usize = 256 * 1024;
+
+fn read_pack_icon_png(path: &Path, is_dir: bool) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+
+    if is_dir {
+        let icon_path = path.join("pack.png");
+        let meta = fs::metadata(&icon_path).ok()?;
+        if meta.len() == 0 || meta.len() > MAX_PACK_ICON_BYTES as u64 {
+            return None;
+        }
+        let bytes = fs::read(&icon_path).ok()?;
+        return (!bytes.is_empty() && bytes.len() <= MAX_PACK_ICON_BYTES).then_some(bytes);
+    }
+
+    let file = fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let idx_opt = if archive.by_name("pack.png").is_ok() {
+        Some("pack.png".to_string())
+    } else {
+        archive
+            .file_names()
+            .find(|n| n.eq_ignore_ascii_case("pack.png"))
+            .map(str::to_string)
+    };
+    let name = idx_opt?;
+    let entry = archive.by_name(&name).ok()?;
+    if entry.size() > MAX_PACK_ICON_BYTES as u64 {
+        return None;
+    }
+    let mut buf = Vec::new();
+    entry
+        .take((MAX_PACK_ICON_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.is_empty() || buf.len() > MAX_PACK_ICON_BYTES {
+        None
+    } else {
+        Some(buf)
+    }
 }
 
 pub struct ContentPackManager;
@@ -90,6 +133,7 @@ impl ContentPackManager {
                 entry.metadata().map(|m| m.len()).unwrap_or(0)
             };
 
+            let icon_png = read_pack_icon_png(&path, is_dir);
             items.push(ContentPackInfo {
                 file_name,
                 display_name,
@@ -97,6 +141,7 @@ impl ContentPackManager {
                 size_bytes,
                 is_dir,
                 path,
+                icon_png,
             });
         }
 
@@ -210,5 +255,43 @@ mod tests {
             .unwrap();
         let list2 = ContentPackManager::list(dir.path(), ContentKind::DataPack);
         assert!(!list2[0].enabled);
+    }
+
+    #[test]
+    fn reads_pack_png_from_zip_and_directory_packs() {
+        use std::io::Write as _;
+        use zip::write::SimpleFileOptions;
+
+        let dir = tempdir().unwrap();
+        let rp_dir = dir.path().join("resourcepacks");
+        fs::create_dir_all(&rp_dir).unwrap();
+
+        let dir_pack = rp_dir.join("DirPack");
+        fs::create_dir_all(&dir_pack).unwrap();
+        let fake_png = b"\x89PNG\r\n\x1a\nfake-dir-icon";
+        fs::write(dir_pack.join("pack.png"), fake_png).unwrap();
+
+        let zip_pack_path = rp_dir.join("ZipPack.zip");
+        {
+            let file = fs::File::create(&zip_pack_path).unwrap();
+            let mut zw = zip::ZipWriter::new(file);
+            zw.start_file("pack.png", SimpleFileOptions::default())
+                .unwrap();
+            zw.write_all(b"\x89PNG\r\n\x1a\nfake-zip-icon").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let listed = ContentPackManager::list(dir.path(), ContentKind::ResourcePack);
+        assert_eq!(listed.len(), 2);
+        let dir_item = listed.iter().find(|p| p.file_name == "DirPack").unwrap();
+        assert_eq!(dir_item.icon_png.as_deref(), Some(fake_png.as_slice()));
+        let zip_item = listed
+            .iter()
+            .find(|p| p.file_name == "ZipPack.zip")
+            .unwrap();
+        assert_eq!(
+            zip_item.icon_png.as_deref(),
+            Some(b"\x89PNG\r\n\x1a\nfake-zip-icon".as_slice())
+        );
     }
 }

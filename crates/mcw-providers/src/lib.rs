@@ -18,8 +18,8 @@ pub use curseforge::{
 };
 pub use ftb::{FtbClient, FtbPackSummary, FtbVersionSummary};
 pub use mod_updates::{
-    LanHostingManager, ModProvenanceFile, ModProvenanceRegistry, ModUpdateCandidate,
-    ModUpdateManager, TrackedModEntry,
+    ContentPackUpdateCandidate, LanHostingManager, ModProvenanceFile, ModProvenanceRegistry,
+    ModUpdateCandidate, ModUpdateManager, TrackedModEntry,
 };
 pub use modpack::{
     inspect_archive_name, normalize_modloader, parse_cf_loader_id, suggest_short_instance_name,

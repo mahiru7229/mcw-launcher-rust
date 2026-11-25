@@ -270,6 +270,135 @@ impl ModUpdateManager {
 
         Ok(updated_count)
     }
+
+    pub async fn check_content_pack_updates(
+        mc_dir: &Path,
+        kind_folder: &str,
+        loaders: &[&str],
+        mc_version: &str,
+        modrinth: &ModrinthClient,
+    ) -> Vec<ContentPackUpdateCandidate> {
+        let dir = mc_dir.join(kind_folder);
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+
+        let mut file_hashes: Vec<(String, String)> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let low = name.to_ascii_lowercase();
+            if !(low.ends_with(".zip") || low.ends_with(".zip.disabled")) {
+                continue;
+            }
+            if let Ok(sha1) = mcw_net::compute_sha1(&path) {
+                file_hashes.push((name, sha1.to_ascii_lowercase()));
+            }
+            if file_hashes.len() >= 200 {
+                break;
+            }
+        }
+        if file_hashes.is_empty() {
+            return Vec::new();
+        }
+
+        let mut updates: HashMap<String, crate::modrinth::ModrinthVersion> = HashMap::new();
+        for chunk in file_hashes.chunks(50) {
+            let hashes: Vec<String> = chunk.iter().map(|(_, h)| h.clone()).collect();
+            if let Ok(map) = modrinth
+                .check_version_files_update(&hashes, loaders, mc_version)
+                .await
+            {
+                updates.extend(map);
+            }
+        }
+
+        build_content_pack_update_candidates(&file_hashes, &updates)
+    }
+
+    pub async fn apply_content_pack_updates(
+        mc_dir: &Path,
+        kind_folder: &str,
+        candidates: &[ContentPackUpdateCandidate],
+        downloader: &DownloadClient,
+    ) -> Result<usize> {
+        let dir = mc_dir.join(kind_folder);
+        fs::create_dir_all(&dir)?;
+        let mut updated = 0usize;
+
+        for cand in candidates {
+            if !cand.update_available || cand.download_url.trim().is_empty() {
+                continue;
+            }
+            let was_disabled = cand.file_name.ends_with(".disabled");
+            let target_name = if was_disabled {
+                format!("{}.disabled", cand.latest_file_name)
+            } else {
+                cand.latest_file_name.clone()
+            };
+            let dest_path = dir.join(&target_name);
+            let req = DownloadRequest::new(&cand.download_url, &dest_path)
+                .with_sha1(cand.sha1.clone())
+                .with_size(cand.file_size);
+            downloader.download_file(&req).await?;
+
+            if cand.file_name != target_name {
+                let _ = fs::remove_file(dir.join(&cand.file_name));
+            }
+            updated += 1;
+        }
+
+        Ok(updated)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ContentPackUpdateCandidate {
+    pub file_name: String,
+    pub project_id: String,
+    pub current_version_number: String,
+    pub latest_version_number: String,
+    pub latest_file_name: String,
+    pub download_url: String,
+    pub sha1: Option<String>,
+    pub file_size: u64,
+    pub update_available: bool,
+}
+
+pub fn build_content_pack_update_candidates(
+    file_hashes: &[(String, String)],
+    updates: &HashMap<String, crate::modrinth::ModrinthVersion>,
+) -> Vec<ContentPackUpdateCandidate> {
+    let mut candidates = Vec::new();
+    for (file_name, local_sha1) in file_hashes {
+        let local_low = local_sha1.trim().to_ascii_lowercase();
+        let Some(latest) = updates.get(&local_low) else {
+            continue;
+        };
+        let Some(primary) = latest.primary_file() else {
+            continue;
+        };
+        let remote_sha1 = primary
+            .hashes
+            .get("sha1")
+            .map(|s| s.trim().to_ascii_lowercase());
+        let update_available = remote_sha1.as_deref() != Some(local_low.as_str());
+        candidates.push(ContentPackUpdateCandidate {
+            file_name: file_name.clone(),
+            project_id: latest.project_id.clone(),
+            current_version_number: String::new(),
+            latest_version_number: latest.version_number.clone(),
+            latest_file_name: primary.filename.clone(),
+            download_url: primary.url.clone(),
+            sha1: remote_sha1,
+            file_size: primary.size,
+            update_available,
+        });
+    }
+    candidates
 }
 
 pub struct LanHostingManager;
@@ -425,5 +554,83 @@ mod tests {
             dir.path(),
             "sodium-fabric-0.6.0.jar.disabled"
         ));
+    }
+
+    #[test]
+    fn detects_content_pack_update_from_modrinth_hash_response() {
+        use crate::modrinth::{ModrinthFile, ModrinthVersion};
+
+        let local_hash_old = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        let local_hash_cur = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+        let file_hashes = vec![
+            ("Complementary.zip".to_string(), local_hash_old.clone()),
+            ("Faithful.zip".to_string(), local_hash_cur.clone()),
+        ];
+
+        let mut updates = HashMap::new();
+        let mut h_new = HashMap::new();
+        h_new.insert(
+            "sha1".to_string(),
+            "cccccccccccccccccccccccccccccccccccccccc".to_string(),
+        );
+        updates.insert(
+            local_hash_old,
+            ModrinthVersion {
+                id: "v2".to_string(),
+                project_id: "HVnmMxH1".to_string(),
+                name: "r5.3".to_string(),
+                version_number: "r5.3".to_string(),
+                version_type: "release".to_string(),
+                game_versions: vec!["1.21.4".to_string()],
+                loaders: vec!["iris".to_string()],
+                files: vec![ModrinthFile {
+                    url:
+                        "https://cdn.modrinth.com/data/HVnmMxH1/versions/v2/Complementary_r5.3.zip"
+                            .to_string(),
+                    filename: "Complementary_r5.3.zip".to_string(),
+                    primary: true,
+                    size: 12345,
+                    hashes: h_new,
+                }],
+                dependencies: Vec::new(),
+            },
+        );
+        let mut h_same = HashMap::new();
+        h_same.insert("sha1".to_string(), local_hash_cur.clone());
+        updates.insert(
+            local_hash_cur,
+            ModrinthVersion {
+                id: "v1".to_string(),
+                project_id: "FAITHFUL".to_string(),
+                name: "1.21".to_string(),
+                version_number: "1.21".to_string(),
+                version_type: "release".to_string(),
+                game_versions: vec!["1.21.4".to_string()],
+                loaders: vec!["minecraft".to_string()],
+                files: vec![ModrinthFile {
+                    url: "https://cdn.modrinth.com/data/FAITHFUL/versions/v1/Faithful.zip"
+                        .to_string(),
+                    filename: "Faithful.zip".to_string(),
+                    primary: true,
+                    size: 456,
+                    hashes: h_same,
+                }],
+                dependencies: Vec::new(),
+            },
+        );
+
+        let result = build_content_pack_update_candidates(&file_hashes, &updates);
+        assert_eq!(result.len(), 2);
+        let comp = result
+            .iter()
+            .find(|c| c.file_name == "Complementary.zip")
+            .unwrap();
+        assert!(comp.update_available);
+        assert_eq!(comp.latest_version_number, "r5.3");
+        let faith = result
+            .iter()
+            .find(|c| c.file_name == "Faithful.zip")
+            .unwrap();
+        assert!(!faith.update_available);
     }
 }

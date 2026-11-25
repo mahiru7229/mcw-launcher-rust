@@ -218,6 +218,10 @@ impl McwApp {
         self.screenshot_thumbs_loading.clear();
         self.screenshot_thumb_lru.clear();
         self.world_icon_textures.clear();
+        self.pack_icon_textures.clear();
+        self.pack_update_candidates.clear();
+        self.pack_updates_kind = None;
+        self.checking_pack_updates = false;
         self.screenshot_preview_path = None;
         self.screenshot_preview_texture = None;
         self.instance_settings_dirty = false;
@@ -3028,6 +3032,64 @@ impl McwApp {
                                 "[ERROR] Mod update failed in '{instance_id}': {err}"
                             ));
                             self.notice_banner = Some((format!("Mod update failed: {err}"), true));
+                        }
+                    }
+                }
+                AppEvent::ContentPackUpdatesChecked {
+                    instance_id,
+                    kind,
+                    candidates,
+                } => {
+                    self.checking_pack_updates = false;
+                    let avail = candidates.iter().filter(|c| c.update_available).count();
+                    self.push_global_log(format!(
+                        "[PACK] Checked {} in '{instance_id}': {avail}/{} update(s) available.",
+                        kind.folder_name(),
+                        candidates.len()
+                    ));
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                        self.pack_updates_kind = Some(kind);
+                        self.pack_update_candidates = candidates;
+                        self.notice_banner = Some((
+                            format!(
+                                "Checked {}: {avail} Modrinth update(s) available.",
+                                kind.folder_name()
+                            ),
+                            false,
+                        ));
+                    }
+                }
+                AppEvent::ContentPackUpdatesApplied {
+                    task_id,
+                    instance_id,
+                    kind,
+                    result,
+                } => {
+                    self.finish_task(task_id);
+                    match result {
+                        Ok(count) => {
+                            self.content_packs_cache
+                                .remove(&(instance_id.clone(), kind));
+                            self.pack_icon_textures.clear();
+                            if self.pack_updates_kind == Some(kind) {
+                                self.pack_update_candidates.clear();
+                            }
+                            if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                                self.load_content_packs_async(&instance_id, kind, ctx, true);
+                            }
+                            let msg = format!(
+                                "Updated {count} pack(s) in '{}/{}'.",
+                                instance_id,
+                                kind.folder_name()
+                            );
+                            self.push_global_log(format!("[PACK] {msg}"));
+                            self.notice_banner = Some((msg, false));
+                        }
+                        Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] Pack update failed in '{instance_id}': {err}"
+                            ));
+                            self.notice_banner = Some((format!("Pack update failed: {err}"), true));
                         }
                     }
                 }
@@ -6784,6 +6846,21 @@ impl McwApp {
         });
     }
 
+    fn decode_image_bytes_to_texture(
+        key: &str,
+        bytes: &[u8],
+        max_dim: u32,
+        ctx: &egui::Context,
+    ) -> Option<egui::TextureHandle> {
+        let img = image::load_from_memory(bytes).ok()?;
+        let rgba = img.thumbnail(max_dim, max_dim).to_rgba8();
+        let color = egui::ColorImage::from_rgba_unmultiplied(
+            [rgba.width() as usize, rgba.height() as usize],
+            rgba.as_raw(),
+        );
+        Some(ctx.load_texture(key.to_string(), color, egui::TextureOptions::LINEAR))
+    }
+
     pub(crate) fn load_world_icon_texture(
         &mut self,
         icon_path: &std::path::Path,
@@ -6792,24 +6869,130 @@ impl McwApp {
         if let Some(cached) = self.world_icon_textures.get(icon_path) {
             return cached.clone();
         }
+        let key = format!("world_icon_{}", icon_path.display());
         let tex = std::fs::read(icon_path)
             .ok()
-            .and_then(|bytes| image::load_from_memory(&bytes).ok())
-            .map(|img| {
-                let rgba = img.thumbnail(96, 96).to_rgba8();
-                let color = egui::ColorImage::from_rgba_unmultiplied(
-                    [rgba.width() as usize, rgba.height() as usize],
-                    rgba.as_raw(),
-                );
-                ctx.load_texture(
-                    format!("world_icon_{}", icon_path.display()),
-                    color,
-                    egui::TextureOptions::LINEAR,
-                )
-            });
+            .and_then(|bytes| Self::decode_image_bytes_to_texture(&key, &bytes, 96, ctx));
         self.world_icon_textures
             .insert(icon_path.to_path_buf(), tex.clone());
         tex
+    }
+
+    pub(crate) fn load_pack_icon_texture(
+        &mut self,
+        pack: &ContentPackInfo,
+        ctx: &egui::Context,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(cached) = self.pack_icon_textures.get(&pack.path) {
+            return cached.clone();
+        }
+        let key = format!("pack_icon_{}", pack.path.display());
+        let tex = pack
+            .icon_png
+            .as_deref()
+            .and_then(|bytes| Self::decode_image_bytes_to_texture(&key, bytes, 64, ctx));
+        self.pack_icon_textures
+            .insert(pack.path.clone(), tex.clone());
+        tex
+    }
+
+    pub(crate) fn start_check_content_pack_updates(
+        &mut self,
+        kind: ContentKind,
+        ctx: &egui::Context,
+    ) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        if self.checking_pack_updates {
+            return;
+        }
+        if self.connectivity_status == ConnectivityStatus::Offline {
+            self.notice_banner = Some((
+                "Offline mode: connect to the internet to check pack updates.".to_string(),
+                true,
+            ));
+            return;
+        }
+        self.checking_pack_updates = true;
+        self.pack_updates_kind = Some(kind);
+        self.pack_update_candidates.clear();
+
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let cache_path = self.paths.cache_root.join("providers.sqlite");
+        let folder = kind.folder_name().to_string();
+        let loaders: Vec<&'static str> = match kind {
+            ContentKind::ShaderPack => vec!["iris", "optifine", "canvas", "vanilla", "minecraft"],
+            ContentKind::ResourcePack | ContentKind::DataPack => vec!["minecraft"],
+        };
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+            let candidates = if let Ok(mr) = ModrinthClient::new(cache) {
+                ModUpdateManager::check_content_pack_updates(
+                    &mc_dir,
+                    &folder,
+                    &loaders,
+                    &inst.version_id,
+                    &mr,
+                )
+                .await
+            } else {
+                Vec::new()
+            };
+            let _ = tx.send(AppEvent::ContentPackUpdatesChecked {
+                instance_id: inst.instance_id,
+                kind,
+                candidates,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_apply_content_pack_updates(
+        &mut self,
+        kind: ContentKind,
+        ctx: &egui::Context,
+    ) {
+        let Some(inst) = self.selected_instance().cloned() else {
+            return;
+        };
+        if self.pack_updates_kind != Some(kind) {
+            return;
+        }
+        let candidates = self.pack_update_candidates.clone();
+        if !candidates.iter().any(|c| c.update_available) {
+            return;
+        }
+        let (task_id, task_ctrl) = self.begin_task_with_control(
+            format!("Update {} ({})", kind.folder_name(), inst.name),
+            "Downloading pack updates...",
+        );
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let folder = kind.folder_name().to_string();
+        let downloader = self.download_client.with_task_control(task_ctrl);
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = ModUpdateManager::apply_content_pack_updates(
+                &mc_dir,
+                &folder,
+                &candidates,
+                &downloader,
+            )
+            .await
+            .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::ContentPackUpdatesApplied {
+                task_id,
+                instance_id: inst.instance_id,
+                kind,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
     }
 
     pub(crate) fn toggle_mod_cart_item(&mut self, item: ModCartItem) {

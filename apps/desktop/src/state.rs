@@ -5,9 +5,9 @@ use mcw_models::progress::{ProgressEvent, ProgressSink};
 use mcw_mods::{ContentKind, ContentPackInfo, InstalledContentItem, ModInfo};
 use mcw_net::{ConnectivityStatus, TaskControl};
 use mcw_providers::{
-    AtLauncherPack, CurseForgeMod, FtbPackSummary, ModUpdateCandidate, ModpackInstallReport,
-    ModpackOptionalFile, ModpackUpdateCheck, ModpackUpdateReport, ModrinthSearchHit,
-    TechnicModpackSummary,
+    AtLauncherPack, ContentPackUpdateCandidate, CurseForgeMod, FtbPackSummary, ModUpdateCandidate,
+    ModpackInstallReport, ModpackOptionalFile, ModpackUpdateCheck, ModpackUpdateReport,
+    ModrinthSearchHit, TechnicModpackSummary,
 };
 use mcw_runtime::{
     FirstRunRecommendation, JavaDiagnostic, JavaInstallation, LogLine, LogSink, McLogsUploadResult,
@@ -502,6 +502,17 @@ pub enum AppEvent {
         installed_count: usize,
         dep_count: usize,
         failed: Vec<String>,
+    },
+    ContentPackUpdatesChecked {
+        instance_id: String,
+        kind: ContentKind,
+        candidates: Vec<ContentPackUpdateCandidate>,
+    },
+    ContentPackUpdatesApplied {
+        task_id: u64,
+        instance_id: String,
+        kind: ContentKind,
+        result: Result<usize, String>,
     },
 }
 
