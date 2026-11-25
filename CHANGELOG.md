@@ -2,6 +2,25 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.3.0] - 2026-11-25
+
+### Highlights
+- **All-in-One Mod & Modpack Ecosystem (`mcw-providers`, `mcw-mods`, `mcw-desktop`)**:
+  - Added **Technic Platform & Solder API** modpack browsing, installation, and updates alongside **Modrinth**, **CurseForge**, **FTB**, and **ATLauncher** (5 online providers), plus **Prism Launcher / MultiMC `.zip`** import and **Universal Launcher Importer** (read-only migration from Prism/MultiMC, Modrinth App, CurseForge App, and Vanilla `.minecraft`).
+  - Added **Modrinth-style Inline Project Detail View** in the Content Browser (`← Back to Results`, categories/loaders/compatibility chips, inline Markdown formatting with clickable links, CurseForge creator attribution, and a clickable **Gallery** thumbnail strip opening an **In-App Image Preview Modal** `mcw_modal_gallery_preview`).
+  - Added **Multi-Mod Download Cart** (`+ Cart` -> `Review & Confirm`), **Bulk Mod Management** with status/search filters and sliding **Enabled/Disabled** toggle switch, **Resource Pack & Shader `pack.png` Icons + Modrinth Updates**, and **Selective File Tree** exports.
+- **Workspace AIO, Accounts & Quick Launch (`mcw-minecraft`, `mcw-desktop`)**:
+  - Added collapsible **Library Grid View** on `Home`, quick top-bar **Account Switcher** + per-instance **Preferred Account** override, `--launch` / `--world` / `--server` direct launch CLI flags, and **Create Desktop Shortcut** (`.lnk` / `.desktop`).
+  - Added **Instance Notes (`notes.txt`)**, visual **Screenshot Gallery & Preview Modal**, World **`icon.png`** / **Copy Seed** / **Export `.zip`**, and **Export Modlist...** (`.md` / `.txt`).
+- **Networking, Appearance & Diagnostics (`mcw-net`, `mcw-minecraft`, `mcw-runtime`, `mcw-desktop`)**:
+  - Added **HTTP & SOCKS5 Proxy Settings** (`reqwest` `"socks"`), **Crash Auto-Log**, `All` / `INFO` / `WARN` / `ERROR` **Log Level Filter**, and automatic **Crash Cause Summary** diagnostics.
+  - Added centered HSV **In-App Accent Color Picker Modal** (`mcw_modal_color_picker`), unified **`Apply` / `Reset Defaults`** typography controls (`UI Font`, `UI Scale`, `Font Size`), conditional **`Show Snapshots`** checkbox for Vanilla instances, remote-only **GitHub Changelog** loading, and **Asset Cache Zero-Rewrite Fast Path** (including 0-byte objects and cached vs missing progress).
+- **Final Pre-Release Fixes & Temporary Removals**:
+  - Left-aligned card summary labels in Content Browser, decoded extended HTML typography entities (`&ensp;`, `&emsp;`, `&thinsp;`, `&mdash;`, `&ndash;`, `&hellip;`), fixed overlapping buttons in the **About** modal footer, and cleared stale search filters across category/tab switches.
+  - **Temporarily Removed**: The **`Repair`** action button in *Repair Center & Health* has known issues and has been temporarily removed (keeping `Refresh` and `Close`) so users can act on diagnostics directly; it will return fixed in a future update.
+
+---
+
 ## [1.3.0-beta.4] - 2026-11-25
 
 ### Added
