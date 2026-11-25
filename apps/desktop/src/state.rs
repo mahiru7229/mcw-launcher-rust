@@ -469,6 +469,13 @@ pub enum AppEvent {
         quick_play_server: Option<String>,
         issues: Vec<String>,
     },
+    ServerRpSecurityConfirmationRequired {
+        instance_id: String,
+        quick_play_world: Option<String>,
+        quick_play_server: Option<String>,
+        risky_servers: Vec<(usize, String, String)>,
+        mitigation_enabled: bool,
+    },
     PythonFolderPicked(Option<std::path::PathBuf>),
     PythonInspectionFinished {
         source_root: String,

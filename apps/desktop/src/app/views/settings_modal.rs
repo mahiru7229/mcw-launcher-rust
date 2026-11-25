@@ -63,6 +63,10 @@ impl McwApp {
                 self.t("settings.section.runtime").to_string(),
             ),
             (
+                LauncherSettingsTab::Security,
+                self.t("settings.section.security").to_string(),
+            ),
+            (
                 LauncherSettingsTab::Appearance,
                 self.t("settings.section.appearance").to_string(),
             ),
@@ -253,6 +257,13 @@ impl McwApp {
                                                     &mut install_java_major,
                                                 );
                                             }
+                                            LauncherSettingsTab::Security => {
+                                                self.render_settings_security_tab(
+                                                    ui,
+                                                    &mut prefs_dirty,
+                                                    None,
+                                                );
+                                            }
                                             LauncherSettingsTab::Appearance => {
                                                 self.render_settings_appearance_tab(
                                                     ui,
@@ -304,6 +315,11 @@ impl McwApp {
                                             &mut open_java_manager,
                                             &mut check_latest_java,
                                             &mut install_java_major,
+                                        );
+                                        matched += self.render_settings_security_tab(
+                                            ui,
+                                            &mut prefs_dirty,
+                                            q,
                                         );
                                         matched += self.render_settings_appearance_tab(
                                             ui,
@@ -1575,6 +1591,164 @@ impl McwApp {
                                 }
                             }
                         });
+                });
+            ui.add_space(8.0);
+        }
+
+        matched
+    }
+
+    fn render_settings_security_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        prefs_dirty: &mut bool,
+        search_q: Option<&str>,
+    ) -> usize {
+        let p = self.palette;
+        let cat_title = self.t("settings.section.security").to_string();
+        let cat_detail = self.t("settings.section.security_detail").to_string();
+        let mut matched = 0usize;
+        if search_q.is_none() {
+            ui.label(RichText::new(&cat_title).strong().size(16.0));
+            ui.label(RichText::new(&cat_detail).size(12.0).color(p.text_muted));
+            ui.add_space(10.0);
+        }
+
+        // Card 1: Minecraft2Shell Protection (FreeType SHZ native RCE)
+        let m2s_title = self.t("security.minecraft2shell.title").to_string();
+        let m2s_desc = self.t("security.minecraft2shell.description").to_string();
+        let m2s_toggle = self.t("security.minecraft2shell.toggle").to_string();
+        if settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                &m2s_title,
+                &m2s_desc,
+                &m2s_toggle,
+                "minecraft2shell freetype rce shz hinting security agent lwjgl",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                render_settings_search_badge(ui, p, &cat_title);
+            }
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(
+                    1.0_f32,
+                    if self.prefs.mitigate_minecraft2shell {
+                        p.border
+                    } else {
+                        p.danger
+                    },
+                ))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(&m2s_title).strong().color(p.text));
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&m2s_desc).size(11.5).color(p.text_muted),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(6.0);
+                    if ui
+                        .checkbox(&mut self.prefs.mitigate_minecraft2shell, &m2s_toggle)
+                        .changed()
+                    {
+                        *prefs_dirty = true;
+                    }
+                    if !self.prefs.mitigate_minecraft2shell {
+                        ui.add_space(4.0);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "Warning: Disabling Minecraft2Shell protection exposes Minecraft 1.20.5+ clients to remote code execution via malicious server or resource-pack fonts.",
+                                )
+                                .size(11.5)
+                                .color(p.danger),
+                            )
+                            .wrap(),
+                        );
+                    }
+                });
+            ui.add_space(8.0);
+        }
+
+        // Card 2: Pre-launch Server Resource Pack Warning + Trusted Server Reset
+        let srp_title = self.t("security.server_rp.title").to_string();
+        let srp_desc = self.t("security.server_rp.description").to_string();
+        let srp_toggle = self.t("security.server_rp.toggle").to_string();
+        if settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                &srp_title,
+                &srp_desc,
+                &srp_toggle,
+                "server resource pack accepttextures servers.dat warning trust",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                render_settings_search_badge(ui, p, &cat_title);
+            }
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(&srp_title).strong().color(p.text));
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&srp_desc).size(11.5).color(p.text_muted),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(6.0);
+                    if ui
+                        .checkbox(
+                            &mut self.prefs.warn_auto_accept_server_resource_packs,
+                            &srp_toggle,
+                        )
+                        .changed()
+                    {
+                        *prefs_dirty = true;
+                    }
+
+                    if let (Some(inst_id), Some(ref mut settings)) = (
+                        self.selected_instance_id.clone(),
+                        self.selected_settings.as_mut(),
+                    ) {
+                        if !settings.trusted_resource_pack_servers.is_empty() {
+                            ui.add_space(6.0);
+                            ui.horizontal_wrapped(|ui| {
+                                let count = settings.trusted_resource_pack_servers.len();
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Trusted servers for '{inst_id}': {count}"
+                                    ))
+                                    .size(11.5)
+                                    .color(p.text_muted),
+                                );
+                                if ui.button("Clear Trusted Servers").clicked() {
+                                    settings.trusted_resource_pack_servers.clear();
+                                    let _ = InstanceStore::new(&self.paths)
+                                        .save_settings(&inst_id, settings);
+                                    self.settings_cache
+                                        .insert(inst_id.clone(), settings.clone());
+                                    self.notice_banner = Some((
+                                        format!("Cleared trusted resource pack servers for '{inst_id}'."),
+                                        false,
+                                    ));
+                                }
+                            });
+                        }
+                    }
                 });
             ui.add_space(8.0);
         }

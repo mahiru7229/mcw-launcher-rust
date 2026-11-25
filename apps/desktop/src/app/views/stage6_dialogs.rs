@@ -13,11 +13,18 @@ enum UnsavedChoice {
     Cancel,
 }
 
+enum SecurityRpChoice {
+    TrustAndContinue,
+    LaunchAfterCleanup,
+    Cancel,
+}
+
 impl McwApp {
     pub(crate) fn render_stage6_modals(&mut self, ctx: &egui::Context) {
         self.render_content_library_window(ctx);
         self.render_modpack_update_window(ctx);
         self.render_preflight_confirm_window(ctx);
+        self.render_security_rp_confirm_window(ctx);
         self.render_issue_report_window(ctx);
         self.render_theme_issues_window(ctx);
         self.render_unsaved_changes_window(ctx);
@@ -716,6 +723,310 @@ impl McwApp {
                 PreflightChoice::Cancel => {
                     self.notice_banner = Some((
                         self.t("compatibility.confirmation.cancelled").to_string(),
+                        false,
+                    ));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn render_security_rp_confirm_window(&mut self, ctx: &egui::Context) {
+        let Some(inst_id) = self.security_rp_confirm_instance_id.clone() else {
+            return;
+        };
+        let p = self.palette;
+        let title = format!("{} - {inst_id}", self.t("security.server_rp.modal_title"));
+        let trust_lbl = self.t("security.server_rp.trust_continue").to_string();
+        let cancel_lbl = self.t("security.server_rp.cancel_launch").to_string();
+        let launch_now_lbl = self.t("security.server_rp.launch_now").to_string();
+        let delete_srv_lbl = self.t("security.server_rp.delete_server").to_string();
+        let mitigation_on = self.security_rp_confirm_mitigation_enabled;
+        let mc_dir = self.paths.minecraft_dir(&inst_id);
+        let notice = self.modal_notice_for("mcw_modal_security_rp_confirm");
+
+        let mut choice: Option<SecurityRpChoice> = None;
+        let mut delete_index: Option<usize> = None;
+        let mut open = true;
+        let servers_snapshot = self.security_rp_confirm_servers.clone();
+
+        let (keep_open, dismiss_notice) = super::dialogs::render_in_app_modal(
+            ctx,
+            "mcw_modal_security_rp_confirm",
+            &title,
+            [680.0, 490.0],
+            [500.0, 350.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                // Direct RCE vulnerability warning card
+                Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(p.danger.r(), p.danger.g(), p.danger.b(), 26))
+                    .stroke(Stroke::new(1.0_f32, p.danger))
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            RichText::new("Critical Vulnerability Warning: FreeType Native RCE (bikini/minecraft2shell)")
+                                .strong()
+                                .size(13.0)
+                                .color(p.danger),
+                        );
+                        ui.add_space(4.0);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "Minecraft 1.20.5+ uses FreeType for TrueType fonts. Servers listed below have \"Server Resource Packs: Enabled\" (auto-accept in servers.dat). Joining an untrusted server lets it push a crafted .ttf font that exploits FreeType's Ins_SHZ hinting bytecode to execute arbitrary native code (RCE) on your PC.",
+                                )
+                                .size(11.5)
+                                .color(p.text),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(6.0);
+                        let (status_txt, status_col) = if mitigation_on {
+                            (
+                                "MCW Security Agent is ACTIVE (FT_LOAD_NO_HINTING forced), blocking known hinting bytecode exploits — however, removing untrusted auto-accept servers is still recommended.",
+                                p.accent,
+                            )
+                        } else {
+                            (
+                                "DANGER: MCW Security Agent is DISABLED in Launcher Settings -> Security! Launching and joining an untrusted server leaves your system directly exposed to native RCE.",
+                                p.danger,
+                            )
+                        };
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(status_txt).size(11.5).strong().color(status_col),
+                            )
+                            .wrap(),
+                        );
+                    });
+
+                ui.add_space(8.0);
+
+                egui::TopBottomPanel::bottom("security_rp_confirm_footer")
+                    .frame(
+                        Frame::new()
+                            .fill(p.canvas)
+                            .inner_margin(egui::Margin::symmetric(0, 6)),
+                    )
+                    .show_inside(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            if servers_snapshot.is_empty() {
+                                let launch_btn = Button::new(
+                                    RichText::new(&launch_now_lbl).color(p.accent_text).strong(),
+                                )
+                                .fill(p.accent);
+                                if ui.add(launch_btn).clicked() {
+                                    choice = Some(SecurityRpChoice::LaunchAfterCleanup);
+                                }
+                            } else {
+                                let trust_btn = Button::new(
+                                    RichText::new(&trust_lbl).color(p.accent_text).strong(),
+                                )
+                                .fill(p.accent);
+                                if ui.add(trust_btn).clicked() {
+                                    choice = Some(SecurityRpChoice::TrustAndContinue);
+                                }
+                            }
+                            if ui.button(&cancel_lbl).clicked() {
+                                choice = Some(SecurityRpChoice::Cancel);
+                            }
+                        });
+                    });
+
+                if servers_snapshot.is_empty() {
+                    Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0_f32, p.accent))
+                        .corner_radius(CornerRadius::same(10))
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(
+                                RichText::new(
+                                    "All auto-accept resource pack servers have been removed from servers.dat. You can launch the instance safely now.",
+                                )
+                                .color(p.text),
+                            );
+                        });
+                } else {
+                    ui.label(
+                        RichText::new(format!(
+                            "Servers in servers.dat with Auto-Accept Resource Packs ({}):",
+                            servers_snapshot.len()
+                        ))
+                        .strong()
+                        .size(12.0)
+                        .color(p.text),
+                    );
+                    ui.add_space(4.0);
+                    Frame::new()
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .corner_radius(CornerRadius::same(10))
+                        .inner_margin(egui::Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ScrollArea::vertical()
+                                .id_salt("security_rp_servers_scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    for (srv_idx, srv_name, srv_ip) in &servers_snapshot {
+                                        Frame::new()
+                                            .fill(p.elevated)
+                                            .stroke(Stroke::new(1.0_f32, p.border))
+                                            .corner_radius(CornerRadius::same(8))
+                                            .inner_margin(egui::Margin::symmetric(10, 8))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.horizontal(|ui| {
+                                                    ui.vertical(|ui| {
+                                                        let display_name = if srv_name.trim().is_empty() {
+                                                            srv_ip.as_str()
+                                                        } else {
+                                                            srv_name.as_str()
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(display_name)
+                                                                .strong()
+                                                                .color(p.text),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "{srv_ip}  •  acceptTextures=1 (Auto-Accept)"
+                                                            ))
+                                                            .monospace()
+                                                            .size(11.0)
+                                                            .color(p.warning),
+                                                        );
+                                                    });
+                                                    ui.with_layout(
+                                                        Layout::right_to_left(Align::Center),
+                                                        |ui| {
+                                                            let del_btn = Button::new(
+                                                                RichText::new(&delete_srv_lbl)
+                                                                    .color(Color32::WHITE)
+                                                                    .strong(),
+                                                            )
+                                                            .fill(p.danger);
+                                                            if ui.add(del_btn).clicked() {
+                                                                delete_index = Some(*srv_idx);
+                                                            }
+                                                        },
+                                                    );
+                                                });
+                                            });
+                                        ui.add_space(6.0);
+                                    }
+                                });
+                        });
+                }
+            },
+        );
+
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
+        if !open && choice.is_none() {
+            choice = Some(SecurityRpChoice::Cancel);
+        }
+
+        if let Some(idx) = delete_index {
+            match ServerManager::remove_server(&mc_dir, idx) {
+                Ok(updated) => {
+                    self.servers_cache.insert(inst_id.clone(), updated.clone());
+                    if self.selected_instance_id.as_deref() == Some(inst_id.as_str()) {
+                        self.selected_servers = updated.clone();
+                    }
+                    let store = InstanceStore::new(&self.paths);
+                    let trusted: HashSet<String> = store
+                        .load_settings(&inst_id)
+                        .map(|s| {
+                            s.trusted_resource_pack_servers
+                                .into_iter()
+                                .map(|ip| ip.trim().to_ascii_lowercase())
+                                .filter(|ip| !ip.is_empty())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.security_rp_confirm_servers = updated
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(i, s)| {
+                            if s.accept_textures == Some(1)
+                                && !trusted.contains(&s.ip.trim().to_ascii_lowercase())
+                            {
+                                Some((i, s.name, s.ip))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    self.push_global_log(format!(
+                        "[SECURITY] Removed auto-accept resource pack server entry #{idx} from '{inst_id}'."
+                    ));
+                }
+                Err(e) => {
+                    self.notice_banner = Some((
+                        format!("Failed to delete server from servers.dat: {e}"),
+                        true,
+                    ));
+                }
+            }
+        }
+
+        if let Some(chosen) = choice {
+            let flagged_ips: Vec<String> = self
+                .security_rp_confirm_servers
+                .iter()
+                .map(|(_, _, ip)| ip.trim().to_ascii_lowercase())
+                .filter(|ip| !ip.is_empty())
+                .collect();
+            self.security_rp_confirm_instance_id = None;
+            let world = self.security_rp_confirm_world.take();
+            let server = self.security_rp_confirm_server.take();
+            self.security_rp_confirm_servers.clear();
+
+            match chosen {
+                SecurityRpChoice::TrustAndContinue => {
+                    let store = InstanceStore::new(&self.paths);
+                    if let Ok(mut settings) = store.load_settings(&inst_id) {
+                        for ip in flagged_ips {
+                            if !settings
+                                .trusted_resource_pack_servers
+                                .iter()
+                                .any(|existing| existing.eq_ignore_ascii_case(&ip))
+                            {
+                                settings.trusted_resource_pack_servers.push(ip);
+                            }
+                        }
+                        let _ = store.save_settings(&inst_id, &settings);
+                        self.settings_cache
+                            .insert(inst_id.clone(), settings.clone());
+                        if self.selected_instance_id.as_deref() == Some(inst_id.as_str()) {
+                            self.selected_settings = Some(settings);
+                        }
+                    }
+                    self.push_global_log(format!(
+                        "[SECURITY] User explicitly trusted auto-accept resource pack server(s) for '{inst_id}'; continuing launch."
+                    ));
+                    self.launch_with_security_rp_bypass(inst_id, world, server, ctx);
+                }
+                SecurityRpChoice::LaunchAfterCleanup => {
+                    self.launch_with_security_rp_bypass(inst_id, world, server, ctx);
+                }
+                SecurityRpChoice::Cancel => {
+                    self.push_global_log(format!(
+                        "[SECURITY] Launch cancelled by user for '{inst_id}' due to server resource pack security warning."
+                    ));
+                    self.notice_banner = Some((
+                        "Launch cancelled due to Server Resource Pack security warning."
+                            .to_string(),
                         false,
                     ));
                 }

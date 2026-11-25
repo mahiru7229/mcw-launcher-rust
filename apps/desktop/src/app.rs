@@ -30,7 +30,7 @@ use mcw_auth::{
     StoredAccount,
 };
 use mcw_minecraft::{
-    is_quick_play_supported, ForgePreflightManager, LanAgentTargetResolver,
+    is_quick_play_supported, ArgumentBuilder, ForgePreflightManager, LanAgentTargetResolver,
     LoaderDiagnosticsExporter, OptiFineManager, OptiFineState, RepairService, SavedServer,
     ScreenshotInfo, ScreenshotManager, ServerManager, VanillaLaunchPipeline,
     VersionManifestService, WorldInfo, WorldManager,
@@ -63,7 +63,8 @@ use mcw_runtime::{
     FirstRunRecommendationService, GameWindowActivator, IssueReportBuilder, IssueReportInput,
     JavaDiagnostic, JavaDiagnosticsManager, JavaDiscovery, JavaInstallation, JavaProvisioner,
     JavaRecoveryDiagnostics, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine,
-    LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
+    LogStream, McLogsClient, ProcessControl, SecurityAgentManager, SupervisedProcess,
+    DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
     default_root_candidates_for_kind, detect_default_launcher_roots, import_external_instances,
@@ -175,6 +176,7 @@ enum LauncherSettingsTab {
     General,
     Downloads,
     Runtime,
+    Security,
     Appearance,
     Storage,
     Updates,
@@ -592,6 +594,11 @@ pub struct McwApp {
     preflight_confirm_world: Option<String>,
     preflight_confirm_server: Option<String>,
     preflight_confirm_issues: Vec<String>,
+    security_rp_confirm_instance_id: Option<String>,
+    security_rp_confirm_world: Option<String>,
+    security_rp_confirm_server: Option<String>,
+    security_rp_confirm_servers: Vec<(usize, String, String)>,
+    security_rp_confirm_mitigation_enabled: bool,
     show_issue_report_window: bool,
     issue_report_summary: String,
     issue_report_markdown: String,
@@ -1080,6 +1087,11 @@ impl McwApp {
             preflight_confirm_world: None,
             preflight_confirm_server: None,
             preflight_confirm_issues: Vec::new(),
+            security_rp_confirm_instance_id: None,
+            security_rp_confirm_world: None,
+            security_rp_confirm_server: None,
+            security_rp_confirm_servers: Vec::new(),
+            security_rp_confirm_mitigation_enabled: true,
             show_issue_report_window: false,
             issue_report_summary: String::new(),
             issue_report_markdown: String::new(),
@@ -1271,6 +1283,7 @@ impl McwApp {
             || self.show_content_library_window
             || self.show_modpack_update_window
             || self.preflight_confirm_instance_id.is_some()
+            || self.security_rp_confirm_instance_id.is_some()
             || self.show_issue_report_window
             || self.show_theme_issues_window
             || self.show_unsaved_changes_window
@@ -1305,6 +1318,8 @@ impl McwApp {
             Some("mcw_modal_unsaved_changes")
         } else if self.preflight_confirm_instance_id.is_some() {
             Some("mcw_modal_preflight_confirm")
+        } else if self.security_rp_confirm_instance_id.is_some() {
+            Some("mcw_modal_security_rp_confirm")
         } else if self.show_delete_modal && has_inst {
             Some("mcw_modal_delete_instance")
         } else if self.pending_restore_backup_id.is_some() {

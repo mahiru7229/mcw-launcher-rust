@@ -711,7 +711,7 @@ impl McwApp {
         quick_play_server: Option<String>,
         ctx: &egui::Context,
     ) {
-        self.start_launch_for_instance(quick_play_world, quick_play_server, false, ctx);
+        self.start_launch_with_flags(quick_play_world, quick_play_server, false, false, ctx);
     }
 
     pub(crate) fn launch_with_preflight_bypass(
@@ -725,7 +725,21 @@ impl McwApp {
             self.selected_instance_id = Some(instance_id);
             self.sync_selected_from_cache();
         }
-        self.start_launch_for_instance(quick_play_world, quick_play_server, true, ctx);
+        self.start_launch_with_flags(quick_play_world, quick_play_server, true, false, ctx);
+    }
+
+    pub(crate) fn launch_with_security_rp_bypass(
+        &mut self,
+        instance_id: String,
+        quick_play_world: Option<String>,
+        quick_play_server: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        if self.selected_instance_id.as_deref() != Some(instance_id.as_str()) {
+            self.selected_instance_id = Some(instance_id);
+            self.sync_selected_from_cache();
+        }
+        self.start_launch_with_flags(quick_play_world, quick_play_server, false, true, ctx);
     }
 
     pub(crate) fn start_launch_for_instance(
@@ -733,6 +747,23 @@ impl McwApp {
         quick_play_world: Option<String>,
         quick_play_server: Option<String>,
         bypass_preflight: bool,
+        ctx: &egui::Context,
+    ) {
+        self.start_launch_with_flags(
+            quick_play_world,
+            quick_play_server,
+            bypass_preflight,
+            false,
+            ctx,
+        );
+    }
+
+    fn start_launch_with_flags(
+        &mut self,
+        quick_play_world: Option<String>,
+        quick_play_server: Option<String>,
+        bypass_preflight: bool,
+        bypass_security_rp: bool,
         ctx: &egui::Context,
     ) {
         let Some(inst) = self.selected_instance().cloned() else {
@@ -805,6 +836,8 @@ impl McwApp {
 
         let paths = self.paths.clone();
         let prefer_dedicated_gpu = self.prefs.prefer_dedicated_gpu;
+        let mitigate_minecraft2shell = self.prefs.mitigate_minecraft2shell;
+        let warn_auto_accept_server_rp = self.prefs.warn_auto_accept_server_resource_packs;
         let forge_policy_str = self.prefs.forge_preflight_failure_policy.clone();
         let is_official_pack =
             detect_installed_pack(&self.paths.instance_dir(&inst.instance_id)).is_some();
@@ -943,6 +976,72 @@ impl McwApp {
                             line: LogLine {
                                 stream: LogStream::Stderr,
                                 text: format!("[ForgePreflight] {note}"),
+                            },
+                        });
+                    }
+                }
+
+                let uses_freetype = ArgumentBuilder::uses_lwjgl_freetype(&prepared.metadata);
+                if uses_freetype && warn_auto_accept_server_rp && !bypass_security_rp {
+                    let mc_dir = paths.minecraft_dir(&inst.instance_id);
+                    let trusted: HashSet<String> = settings
+                        .trusted_resource_pack_servers
+                        .iter()
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let risky_servers: Vec<(usize, String, String)> =
+                        ServerManager::list_servers(&mc_dir)
+                            .into_iter()
+                            .enumerate()
+                            .filter_map(|(idx, srv)| {
+                                if srv.accept_textures == Some(1) {
+                                    let norm_ip = srv.ip.trim().to_ascii_lowercase();
+                                    if !trusted.contains(&norm_ip) {
+                                        return Some((idx, srv.name, srv.ip));
+                                    }
+                                }
+                                None
+                            })
+                            .collect();
+                    if !risky_servers.is_empty() {
+                        drop(lock);
+                        let _ = tx.send(AppEvent::ServerRpSecurityConfirmationRequired {
+                            instance_id: inst.instance_id.clone(),
+                            quick_play_world: quick_play_world.clone(),
+                            quick_play_server: quick_play_server.clone(),
+                            risky_servers,
+                            mitigation_enabled: mitigate_minecraft2shell,
+                        });
+                        ctx.request_repaint();
+                        return Ok(None);
+                    }
+                }
+
+                prepared.spec.jvm_args =
+                    SecurityAgentManager::sanitize_user_jvm_args(&prepared.spec.jvm_args);
+                if uses_freetype {
+                    if mitigate_minecraft2shell {
+                        let sec_args = SecurityAgentManager::build_jvm_args(
+                            &paths.cache_root.join("security_agent"),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        let mut combined = sec_args;
+                        combined.extend(prepared.spec.jvm_args);
+                        prepared.spec.jvm_args = combined;
+                        let _ = tx.send(AppEvent::LogReceived {
+                            instance_id: inst.instance_id.clone(),
+                            line: LogLine {
+                                stream: LogStream::Stdout,
+                                text: "[Security] Minecraft2Shell (FreeType SHZ RCE) protection enabled via MCW Security Agent (FT_LOAD_NO_HINTING).".to_string(),
+                            },
+                        });
+                    } else {
+                        let _ = tx.send(AppEvent::LogReceived {
+                            instance_id: inst.instance_id.clone(),
+                            line: LogLine {
+                                stream: LogStream::Stderr,
+                                text: "[Security][WARN] Minecraft2Shell protection is DISABLED in Launcher Settings -> Security!".to_string(),
                             },
                         });
                     }
@@ -4193,6 +4292,29 @@ impl McwApp {
                     self.preflight_confirm_world = quick_play_world;
                     self.preflight_confirm_server = quick_play_server;
                     self.preflight_confirm_issues = issues;
+                }
+                AppEvent::ServerRpSecurityConfirmationRequired {
+                    instance_id,
+                    quick_play_world,
+                    quick_play_server,
+                    risky_servers,
+                    mitigation_enabled,
+                } => {
+                    self.last_launch_log_msg.remove(&instance_id);
+                    if let Some(tid) = self.launch_task_ids.remove(&instance_id) {
+                        self.finish_task(tid);
+                    }
+                    self.push_global_log(format!(
+                        "[SECURITY][WARN] Found {} server(s) with Auto-Accept Resource Packs in '{instance_id}'; awaiting user confirmation before launch.",
+                        risky_servers.len()
+                    ));
+                    self.launch_states
+                        .insert(instance_id.clone(), LaunchState::Idle);
+                    self.security_rp_confirm_instance_id = Some(instance_id);
+                    self.security_rp_confirm_world = quick_play_world;
+                    self.security_rp_confirm_server = quick_play_server;
+                    self.security_rp_confirm_servers = risky_servers;
+                    self.security_rp_confirm_mitigation_enabled = mitigation_enabled;
                 }
                 AppEvent::PythonFolderPicked(picked) => {
                     self.python_import_folder_picking = false;
