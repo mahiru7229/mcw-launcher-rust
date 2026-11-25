@@ -1024,6 +1024,8 @@ impl McwApp {
                     if mitigate_minecraft2shell {
                         let sec_args = SecurityAgentManager::build_jvm_args(
                             &paths.cache_root.join("security_agent"),
+                            &paths.instance_dir(&inst.instance_id),
+                            prepared.java.major,
                         )
                         .map_err(|e| e.to_string())?;
                         let mut combined = sec_args;

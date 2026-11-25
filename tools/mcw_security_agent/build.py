@@ -162,10 +162,12 @@ def verify_agent(agent_jar: Path) -> None:
         if normal.stdout.strip() != "4,4,0,8":
             raise RuntimeError(f"Unexpected unpatched output: {normal.stdout!r}")
 
+        dormant_status = root / "status-dormant.json"
         dormant = run(
             [
                 java,
                 "-Xverify:all",
+                f"-Dmcw.security.status_file={dormant_status.as_posix()}",
                 f"-javaagent:{agent_jar}",
                 "-cp",
                 str(root),
@@ -174,12 +176,16 @@ def verify_agent(agent_jar: Path) -> None:
         )
         if dormant.stdout.strip() != "4,4,0,8":
             raise RuntimeError(f"Agent should stay dormant unless property is true: {dormant.stdout!r}")
+        if '"state": "DORMANT"' not in dormant_status.read_text(encoding="utf-8"):
+            raise RuntimeError(f"Expected DORMANT status file, got: {dormant_status.read_text(encoding='utf-8')!r}")
 
+        active_status = root / "status-active.json"
         patched = run(
             [
                 java,
                 "-Xverify:all",
                 "-Dmcw.security.freetype_no_hinting=true",
+                f"-Dmcw.security.status_file={active_status.as_posix()}",
                 f"-javaagent:{agent_jar}",
                 "-cp",
                 str(root),
@@ -192,6 +198,9 @@ def verify_agent(agent_jar: Path) -> None:
             )
         if "Minecraft2Shell mitigation active: patched 4 method(s)" not in patched.stderr:
             raise RuntimeError(f"Unexpected agent stderr log: {patched.stderr!r}")
+        status_text = active_status.read_text(encoding="utf-8")
+        if '"state": "ACTIVE_VERIFIED"' not in status_text or '"patched_methods": 4' not in status_text:
+            raise RuntimeError(f"Expected ACTIVE_VERIFIED status file with patched_methods=4, got: {status_text!r}")
 
 
 if __name__ == "__main__":

@@ -41,7 +41,9 @@ pub use launcher::{
 };
 pub use mclogs::{sanitize_log_text, McLogsClient, McLogsUploadResult};
 pub use provisioner::{AdoptiumRelease, JavaProvisioner};
-pub use security_agent::SecurityAgentManager;
+pub use security_agent::{
+    SecurityAgentManager, SecurityAgentRuntimeState, SecurityAgentStatusReport,
+};
 pub use supervisor::{
     detect_unsupported_class_version, ExitClassification, LogLine, LogSink, LogStream, NoopLogSink,
     ProcessControl, ProcessExitReport, SupervisedProcess,
