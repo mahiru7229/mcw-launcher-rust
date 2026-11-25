@@ -12,9 +12,9 @@ use crate::background::{decode_user_image, BackgroundManager};
 use crate::i18n::{LanguageManager, LauncherPrefs};
 use crate::skin_render::{default_skin_face_rgba, render_skin_face_rgba};
 use crate::state::{
-    ActiveTask, AppEvent, BrowserCategory, BrowserProvider, CartModProvider, CartResolvedEntry,
-    ChannelLogSink, ChannelProgressSink, ModCartItem, ModVersionChoice, ModpackChannel,
-    ModpackVersionOption,
+    ActiveTask, AppEvent, BrowserCategory, BrowserDetailPayload, BrowserProvider, CartModProvider,
+    CartResolvedEntry, ChannelLogSink, ChannelProgressSink, ModCartItem, ModVersionChoice,
+    ModpackChannel, ModpackVersionOption,
 };
 use crate::theme::{
     apply_custom_accent, apply_theme_palette, configure_fonts_with_spec, format_hex_color,
@@ -374,6 +374,9 @@ pub struct McwApp {
     browser_request_id: u64,
     browser_initialized_key: Option<String>,
     browser_selected_key: Option<String>,
+    browser_inline_detail_open: bool,
+    browser_detail: Option<BrowserDetailPayload>,
+    browser_detail_loading_key: Option<String>,
     browser_mr_results: Vec<ModrinthSearchHit>,
     browser_cf_results: Vec<CurseForgeMod>,
     browser_ftb_results: Vec<FtbPackSummary>,
@@ -883,6 +886,9 @@ impl McwApp {
             browser_request_id: 0,
             browser_initialized_key: None,
             browser_selected_key: None,
+            browser_inline_detail_open: false,
+            browser_detail: None,
+            browser_detail_loading_key: None,
             browser_mr_results: Vec::new(),
             browser_cf_results: Vec::new(),
             browser_ftb_results: Vec::new(),

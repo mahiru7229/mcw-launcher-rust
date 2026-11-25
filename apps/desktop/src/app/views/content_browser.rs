@@ -72,6 +72,8 @@ struct ContentBrowserActions {
     toggle_cart: Option<ModCartItem>,
     open_cart: bool,
     clear_cart: bool,
+    open_detail: Option<String>,
+    close_detail: bool,
 }
 
 fn cart_item_for_entry(entry: &BrowserEntry) -> Option<ModCartItem> {
@@ -108,6 +110,18 @@ impl McwApp {
         let thumb_urls: Vec<String> = entries.iter().filter_map(|e| e.icon_url.clone()).collect();
         for url in thumb_urls {
             self.ensure_thumbnail(&url, ctx);
+        }
+        if self.browser_inline_detail_open {
+            if let Some(detail_urls) = self
+                .browser_detail
+                .as_ref()
+                .filter(|d| Some(d.key.as_str()) == self.browser_selected_key.as_deref())
+                .map(|d| d.gallery_urls.clone())
+            {
+                for url in detail_urls {
+                    self.ensure_thumbnail(&url, ctx);
+                }
+            }
         }
 
         if let Some(ref sel) = self.browser_selected_key {
@@ -188,6 +202,8 @@ impl McwApp {
         let mut toggle_cart: Option<ModCartItem> = None;
         let mut open_cart = false;
         let mut clear_cart = false;
+        let mut open_detail: Option<String> = None;
+        let mut close_detail = false;
 
         // Row 1: Title + Subtitle (left) and Back button (right for inline instance tab)
         ui.horizontal_wrapped(|ui| {
@@ -534,6 +550,346 @@ impl McwApp {
                                         let can_next = !self.browser_searching
                                             && (self.browser_page + 1) < total_pages;
 
+                                        let inline_detail_entry = if self.browser_inline_detail_open {
+                                            self.browser_selected_key
+                                                .as_deref()
+                                                .and_then(|k| entries.iter().find(|e| e.key == k))
+                                        } else {
+                                            None
+                                        };
+
+                                        if let Some(detail_entry) = inline_detail_entry {
+                                            ui.horizontal_wrapped(|ui| {
+                                                if ui
+                                                    .add(
+                                                        Button::new(
+                                                            RichText::new("← Back to Results")
+                                                                .strong(),
+                                                        )
+                                                        .corner_radius(CornerRadius::same(8)),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    close_detail = true;
+                                                }
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        if let Some(ref url) = detail_entry.web_url {
+                                                            if ui.button("Open Web Page").clicked() {
+                                                                open_external(url);
+                                                            }
+                                                        }
+                                                        ui.label(
+                                                            RichText::new(prov.label())
+                                                                .size(11.5)
+                                                                .color(p.accent),
+                                                        );
+                                                    },
+                                                );
+                                            });
+                                            ui.add_space(6.0);
+                                            ui.separator();
+                                            ui.add_space(6.0);
+
+                                            ScrollArea::vertical()
+                                                .id_salt("mcw_inline_detail_scroll")
+                                                .max_height((body_h - 68.0).max(140.0))
+                                                .auto_shrink([false, false])
+                                                .show(ui, |ui| {
+                                                    ui.set_width(ui.available_width());
+                                                    let detail = self
+                                                        .browser_detail
+                                                        .as_ref()
+                                                        .filter(|d| d.key == detail_entry.key);
+                                                    let is_loading = self
+                                                        .browser_detail_loading_key
+                                                        .as_deref()
+                                                        == Some(detail_entry.key.as_str());
+
+                                                    ui.horizontal_top(|ui| {
+                                                        self.render_thumbnail(
+                                                            ui,
+                                                            detail_entry.icon_url.as_deref(),
+                                                            60.0,
+                                                        );
+                                                        ui.add_space(10.0);
+                                                        ui.vertical(|ui| {
+                                                            ui.label(
+                                                                RichText::new(&detail_entry.title)
+                                                                    .size(19.0)
+                                                                    .strong()
+                                                                    .color(p.text),
+                                                            );
+                                                            let by_line = if detail_entry
+                                                                .author
+                                                                .is_empty()
+                                                            {
+                                                                format!(
+                                                                    "{} · {}",
+                                                                    prov.label(),
+                                                                    detail_entry.metric_label
+                                                                )
+                                                            } else {
+                                                                format!(
+                                                                    "by {} · {} · {}",
+                                                                    detail_entry.author,
+                                                                    prov.label(),
+                                                                    detail_entry.metric_label
+                                                                )
+                                                            };
+                                                            ui.label(
+                                                                RichText::new(by_line)
+                                                                    .size(12.0)
+                                                                    .color(p.text_muted),
+                                                            );
+                                                            if let Some(d) = detail {
+                                                                let mut chips: Vec<String> =
+                                                                    Vec::new();
+                                                                for l in d.loaders.iter().take(4) {
+                                                                    chips.push(
+                                                                        display_loader_name(l),
+                                                                    );
+                                                                }
+                                                                for c in d.categories.iter().take(4)
+                                                                {
+                                                                    chips.push(c.clone());
+                                                                }
+                                                                if !d.client_side.is_empty()
+                                                                    || !d.server_side.is_empty()
+                                                                {
+                                                                    chips.push(format!(
+                                                                        "Client: {} / Server: {}",
+                                                                        d.client_side,
+                                                                        d.server_side
+                                                                    ));
+                                                                }
+                                                                if !chips.is_empty() {
+                                                                    ui.add_space(4.0);
+                                                                    ui.horizontal_wrapped(|ui| {
+                                                                        for chip in chips {
+                                                                            Frame::new()
+                                                                                .fill(p.elevated)
+                                                                                .stroke(Stroke::new(
+                                                                                    1.0_f32,
+                                                                                    p.border,
+                                                                                ))
+                                                                                .corner_radius(CornerRadius::same(6))
+                                                                                .inner_margin(Margin::symmetric(7, 2))
+                                                                                .show(ui, |ui| {
+                                                                                    ui.label(
+                                                                                        RichText::new(chip)
+                                                                                            .size(10.5)
+                                                                                            .color(p.text_muted),
+                                                                                    );
+                                                                                });
+                                                                        }
+                                                                    });
+                                                                }
+                                                            }
+                                                        });
+                                                    });
+
+                                                    ui.add_space(10.0);
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        let can = self.can_install_browser_entry(
+                                                            cat,
+                                                            selected_inst.as_ref(),
+                                                        );
+                                                        let install_lbl = if self
+                                                            .browser_global_mode
+                                                            && cat != BrowserCategory::Modpacks
+                                                        {
+                                                            "Install..."
+                                                        } else {
+                                                            "Install"
+                                                        };
+                                                        let inst_btn = Button::new(
+                                                            RichText::new(install_lbl)
+                                                                .color(p.accent_text)
+                                                                .strong(),
+                                                        )
+                                                        .fill(p.accent)
+                                                        .corner_radius(CornerRadius::same(8));
+                                                        if ui.add_enabled(can, inst_btn).clicked() {
+                                                            pending_install =
+                                                                Some(detail_entry.action.clone());
+                                                        }
+                                                        if cat == BrowserCategory::Mods {
+                                                            if let Some(cart_item) =
+                                                                cart_item_for_entry(detail_entry)
+                                                            {
+                                                                let in_cart = self
+                                                                    .mod_cart
+                                                                    .iter()
+                                                                    .any(|x| {
+                                                                        x.provider
+                                                                            == cart_item.provider
+                                                                    });
+                                                                let c_btn = Button::new(
+                                                                    RichText::new(if in_cart {
+                                                                        "In Cart ✓"
+                                                                    } else {
+                                                                        "+ Cart"
+                                                                    })
+                                                                    .color(if in_cart {
+                                                                        p.accent
+                                                                    } else {
+                                                                        p.text
+                                                                    }),
+                                                                )
+                                                                .fill(if in_cart {
+                                                                    with_alpha(p.accent, 40)
+                                                                } else {
+                                                                    p.elevated
+                                                                })
+                                                                .stroke(Stroke::new(
+                                                                    1.0_f32,
+                                                                    if in_cart {
+                                                                        p.accent
+                                                                    } else {
+                                                                        p.border
+                                                                    },
+                                                                ))
+                                                                .corner_radius(CornerRadius::same(8));
+                                                                if ui.add(c_btn).clicked() {
+                                                                    toggle_cart = Some(cart_item);
+                                                                }
+                                                            }
+                                                        }
+                                                        if let Some(ref url) = detail_entry.web_url
+                                                        {
+                                                            if ui.button("Open Web Page").clicked() {
+                                                                open_external(url);
+                                                            }
+                                                        }
+                                                        if let Some(d) = detail {
+                                                            if let Some(ref src) = d.source_url {
+                                                                if !src.trim().is_empty()
+                                                                    && ui.button("Source").clicked()
+                                                                {
+                                                                    open_external(src);
+                                                                }
+                                                            }
+                                                            if let Some(ref iss) = d.issues_url {
+                                                                if !iss.trim().is_empty()
+                                                                    && ui.button("Issues").clicked()
+                                                                {
+                                                                    open_external(iss);
+                                                                }
+                                                            }
+                                                        }
+                                                    });
+
+                                                    ui.add_space(10.0);
+                                                    ui.separator();
+                                                    ui.add_space(8.0);
+
+                                                    if is_loading {
+                                                        ui.horizontal(|ui| {
+                                                            ui.spinner();
+                                                            ui.label(
+                                                                RichText::new(
+                                                                    "Loading project overview & gallery...",
+                                                                )
+                                                                .color(p.text_muted),
+                                                            );
+                                                        });
+                                                        ui.add_space(6.0);
+                                                    }
+
+                                                    if let Some(d) = detail {
+                                                        if !d.gallery_urls.is_empty() {
+                                                            ui.label(
+                                                                RichText::new("Gallery")
+                                                                    .strong()
+                                                                    .size(13.5)
+                                                                    .color(p.text),
+                                                            );
+                                                            ui.add_space(6.0);
+                                                            egui::ScrollArea::horizontal()
+                                                                .id_salt(
+                                                                    "mcw_inline_gallery_scroll",
+                                                                )
+                                                                .show(ui, |ui| {
+                                                                    ui.horizontal(|ui| {
+                                                                        for g_url in &d.gallery_urls
+                                                                        {
+                                                                            Frame::new()
+                                                                                .fill(p.elevated)
+                                                                                .stroke(Stroke::new(
+                                                                                    1.0_f32,
+                                                                                    p.border,
+                                                                                ))
+                                                                                .corner_radius(
+                                                                                    CornerRadius::same(
+                                                                                        8,
+                                                                                    ),
+                                                                                )
+                                                                                .inner_margin(
+                                                                                    Margin::same(4),
+                                                                                )
+                                                                                .show(ui, |ui| {
+                                                                                    self.render_thumbnail(
+                                                                                        ui,
+                                                                                        Some(g_url.as_str()),
+                                                                                        108.0,
+                                                                                    );
+                                                                                });
+                                                                            ui.add_space(6.0);
+                                                                        }
+                                                                    });
+                                                                });
+                                                            ui.add_space(10.0);
+                                                        }
+
+                                                        let overview = if d
+                                                            .body_excerpt
+                                                            .trim()
+                                                            .is_empty()
+                                                        {
+                                                            detail_entry.summary.as_str()
+                                                        } else {
+                                                            d.body_excerpt.as_str()
+                                                        };
+                                                        if !overview.is_empty() {
+                                                            ui.label(
+                                                                RichText::new("Overview")
+                                                                    .strong()
+                                                                    .size(13.5)
+                                                                    .color(p.text),
+                                                            );
+                                                            ui.add_space(4.0);
+                                                            render_project_overview_text(
+                                                                ui, overview, p,
+                                                            );
+                                                        }
+
+                                                        if !d.game_versions.is_empty() {
+                                                            ui.add_space(10.0);
+                                                            ui.label(
+                                                                RichText::new(format!(
+                                                                    "Supported Versions: {}",
+                                                                    d.game_versions.join(", ")
+                                                                ))
+                                                                .size(11.0)
+                                                                .color(p.text_muted),
+                                                            );
+                                                        }
+                                                    } else if !detail_entry.summary.is_empty() {
+                                                        ui.add(
+                                                            egui::Label::new(
+                                                                RichText::new(
+                                                                    &detail_entry.summary,
+                                                                )
+                                                                .size(12.5)
+                                                                .color(p.text),
+                                                            )
+                                                            .wrap(),
+                                                        );
+                                                    }
+                                                });
+                                        } else {
                                         ScrollArea::vertical()
                                             .id_salt("mcw_browser_results_scroll")
                                             .max_height((body_h - 64.0).max(120.0))
@@ -559,6 +915,9 @@ impl McwApp {
                                                     .browser_selected_key
                                                     .as_deref()
                                                     == Some(entry.key.as_str());
+                                                let has_cart_btn = cat == BrowserCategory::Mods
+                                                    && cart_item_for_entry(entry).is_some();
+                                                let mut row_action_clicked = false;
                                                 let card_resp = Frame::new()
                                                     .fill(if is_sel {
                                                         with_alpha(p.accent, 36)
@@ -580,30 +939,50 @@ impl McwApp {
                                                                 40.0,
                                                             );
                                                             ui.add_space(6.0);
+                                                            let right_reserve = if has_cart_btn {
+                                                                245.0
+                                                            } else {
+                                                                170.0
+                                                            };
                                                             let text_w =
-                                                                (card_w - 150.0).max(100.0);
-                                                            ui.vertical(|ui| {
-                                                                ui.set_max_width(text_w);
-                                                                ui.horizontal_wrapped(|ui| {
-                                                                    ui.label(
-                                                                        RichText::new(&entry.title)
+                                                                (card_w - 40.0 - 16.0 - right_reserve)
+                                                                    .max(90.0);
+                                                            ui.allocate_ui_with_layout(
+                                                                Vec2::new(text_w, 42.0),
+                                                                Layout::top_down(Align::Min),
+                                                                |ui| {
+                                                                    ui.set_max_width(text_w);
+                                                                ui.horizontal(|ui| {
+                                                                    ui.add(
+                                                                        egui::Label::new(
+                                                                            RichText::new(
+                                                                                &entry.title,
+                                                                            )
                                                                             .strong()
                                                                             .size(13.0)
                                                                             .color(p.text),
+                                                                        )
+                                                                        .truncate(),
                                                                     );
                                                                     if !entry.author.is_empty() {
-                                                                        ui.label(
-                                                                            RichText::new(format!(
-                                                                                "by {}",
-                                                                                entry.author
-                                                                            ))
-                                                                            .size(11.0)
-                                                                            .color(p.text_muted),
+                                                                        ui.add(
+                                                                            egui::Label::new(
+                                                                                RichText::new(
+                                                                                    format!(
+                                                                                        "by {}",
+                                                                                        entry.author
+                                                                                    ),
+                                                                                )
+                                                                                .size(11.0)
+                                                                                .color(p.text_muted),
+                                                                            )
+                                                                            .truncate(),
                                                                         );
                                                                     }
                                                                 });
                                                                 if !entry.summary.is_empty() {
-                                                                    ui.add(
+                                                                    ui.add_sized(
+                                                                        [text_w, 16.0],
                                                                         egui::Label::new(
                                                                             RichText::new(
                                                                                 &entry.summary,
@@ -614,7 +993,8 @@ impl McwApp {
                                                                         .truncate(),
                                                                     );
                                                                 }
-                                                            });
+                                                                },
+                                                            );
                                                             ui.with_layout(
                                                                 Layout::right_to_left(Align::Center),
                                                                 |ui| {
@@ -645,6 +1025,7 @@ impl McwApp {
                                                                         .add_enabled(can, btn)
                                                                         .clicked()
                                                                     {
+                                                                        row_action_clicked = true;
                                                                         pending_install = Some(
                                                                             entry.action.clone(),
                                                                         );
@@ -702,6 +1083,7 @@ impl McwApp {
                                                                                 .add(cbtn)
                                                                                 .clicked()
                                                                             {
+                                                                                row_action_clicked = true;
                                                                                 toggle_cart =
                                                                                     Some(cart_item);
                                                                             }
@@ -726,9 +1108,9 @@ impl McwApp {
                                                     });
                                                 if ui.rect_contains_pointer(card_resp.response.rect)
                                                     && key_ctx.input(|i| i.pointer.primary_clicked())
+                                                    && !row_action_clicked
                                                 {
-                                                    self.browser_selected_key =
-                                                        Some(entry.key.clone());
+                                                    open_detail = Some(entry.key.clone());
                                                 }
                                                 ui.add_space(6.0);
                                             }
@@ -786,6 +1168,7 @@ impl McwApp {
                                                 },
                                             );
                                         });
+                                        }
                                     });
                             },
                         );
@@ -991,6 +1374,23 @@ impl McwApp {
                                             }
                                         }
 
+                                        if !self.browser_inline_detail_open {
+                                            ui.add_space(10.0);
+                                            if ui
+                                                .add(
+                                                    Button::new("Overview & Gallery →")
+                                                        .min_size(Vec2::new(
+                                                            ui.available_width(),
+                                                            32.0,
+                                                        ))
+                                                        .corner_radius(CornerRadius::same(8)),
+                                                )
+                                                .clicked()
+                                            {
+                                                open_detail = Some(entry.key.clone());
+                                            }
+                                        }
+
                                         if let Some(ref url) = entry.web_url {
                                             ui.add_space(10.0);
                                             if ui
@@ -1024,6 +1424,8 @@ impl McwApp {
             toggle_cart,
             open_cart,
             clear_cart,
+            open_detail,
+            close_detail,
         }
     }
 
@@ -1032,6 +1434,12 @@ impl McwApp {
         actions: ContentBrowserActions,
         ctx: &egui::Context,
     ) {
+        if actions.close_detail {
+            self.browser_inline_detail_open = false;
+        }
+        if let Some(ref detail_key) = actions.open_detail {
+            self.open_browser_inline_detail(detail_key, ctx);
+        }
         if let Some(item) = actions.toggle_cart {
             self.toggle_mod_cart_item(item);
         }
@@ -1069,6 +1477,9 @@ impl McwApp {
         if actions.trigger_search {
             self.browser_page = 0;
             self.browser_selected_key = None;
+            self.browser_inline_detail_open = false;
+            self.browser_detail = None;
+            self.browser_detail_loading_key = None;
             self.start_content_browser_search(ctx);
         } else if actions.page_delta != 0 {
             let target_page = if actions.page_delta < 0 {
@@ -1079,6 +1490,9 @@ impl McwApp {
             if target_page != self.browser_page {
                 self.browser_page = target_page;
                 self.browser_selected_key = None;
+                self.browser_inline_detail_open = false;
+                self.browser_detail = None;
+                self.browser_detail_loading_key = None;
                 self.start_content_browser_search(ctx);
             }
         }
@@ -1281,7 +1695,7 @@ impl McwApp {
                     BrowserEntry {
                         key: format!("cf:{}", cf.id),
                         title: cf.name.clone(),
-                        author: String::new(),
+                        author: cf.primary_author(),
                         summary: cf.summary.clone(),
                         icon_url: icon,
                         web_url: Some(web),
@@ -1386,6 +1800,34 @@ impl McwApp {
                     }
                 })
                 .collect(),
+        }
+    }
+}
+
+fn render_project_overview_text(ui: &mut egui::Ui, overview: &str, p: ThemePalette) {
+    for raw_line in overview.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            ui.add_space(4.0);
+            continue;
+        }
+        if let Some(h) = line.strip_prefix("### ") {
+            ui.add_space(3.0);
+            ui.add(egui::Label::new(RichText::new(h).strong().size(13.0).color(p.text)).wrap());
+        } else if let Some(h) = line.strip_prefix("## ") {
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(h).strong().size(14.5).color(p.accent)).wrap());
+        } else if let Some(h) = line.strip_prefix("# ") {
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(h).strong().size(15.5).color(p.text)).wrap());
+        } else if let Some(bullet) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            ui.horizontal_top(|ui| {
+                ui.add_space(6.0);
+                ui.label(RichText::new("•").color(p.accent));
+                ui.add(egui::Label::new(RichText::new(bullet).size(12.0).color(p.text)).wrap());
+            });
+        } else {
+            ui.add(egui::Label::new(RichText::new(line).size(12.0).color(p.text)).wrap());
         }
     }
 }

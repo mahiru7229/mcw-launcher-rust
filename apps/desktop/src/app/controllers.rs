@@ -4518,6 +4518,30 @@ impl McwApp {
                         }
                     }
                 }
+                AppEvent::ContentDetailLoaded { key, result } => {
+                    if self.browser_detail_loading_key.as_deref() == Some(key.as_str()) {
+                        self.browser_detail_loading_key = None;
+                    }
+                    if self.browser_selected_key.as_deref() == Some(key.as_str()) {
+                        match result {
+                            Ok(payload) => {
+                                for url in &payload.gallery_urls {
+                                    self.ensure_thumbnail(url, ctx);
+                                }
+                                self.browser_detail = Some(payload);
+                            }
+                            Err(err) => {
+                                self.browser_detail = Some(BrowserDetailPayload {
+                                    key,
+                                    body_excerpt: format!(
+                                        "Could not load extended project details: {err}"
+                                    ),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -6436,6 +6460,14 @@ impl McwApp {
         }
         self.active_tab = tab;
         self.instance_inline_browser = None;
+        self.browser_query.clear();
+        self.browser_inline_detail_open = false;
+        self.browser_detail = None;
+        self.browser_detail_loading_key = None;
+        self.mod_search_query.clear();
+        self.mod_status_filter = "all".to_string();
+        self.logs_tab_search.clear();
+        self.logs_level_filter = "all".to_string();
         self.ensure_active_tab_loaded(ctx);
         self.clear_remote_thumbs_if_idle();
         self.record_nav_location();
@@ -6454,6 +6486,12 @@ impl McwApp {
         }
         self.selected_instance_id = Some(instance_id);
         self.instance_inline_browser = None;
+        self.browser_query.clear();
+        self.browser_inline_detail_open = false;
+        self.browser_detail = None;
+        self.browser_detail_loading_key = None;
+        self.mod_search_query.clear();
+        self.logs_tab_search.clear();
         self.sync_selected_from_cache();
         self.ensure_active_tab_loaded(ctx);
         self.clear_remote_thumbs_if_idle();
@@ -7786,6 +7824,226 @@ impl McwApp {
             ctx_c.request_repaint();
         });
     }
+
+    pub(crate) fn open_browser_inline_detail(&mut self, key: &str, ctx: &egui::Context) {
+        self.browser_selected_key = Some(key.to_string());
+        self.browser_inline_detail_open = true;
+        if self.browser_detail.as_ref().is_some_and(|d| d.key == key) {
+            return;
+        }
+        if self.browser_detail_loading_key.as_deref() == Some(key) {
+            return;
+        }
+
+        if let Some(slug) = key.strip_prefix("mr:") {
+            let key_owned = key.to_string();
+            let slug_owned = slug.to_string();
+            let fallback_desc = self
+                .browser_mr_results
+                .iter()
+                .find(|h| h.slug == slug_owned)
+                .map(|h| h.description.clone())
+                .unwrap_or_default();
+            self.browser_detail = None;
+            self.browser_detail_loading_key = Some(key_owned.clone());
+            let cache_path = self
+                .paths
+                .cache_root
+                .join("providers")
+                .join("api_cache.sqlite");
+            let tx = self.tx.clone();
+            let ctx_c = ctx.clone();
+
+            self.runtime.spawn(async move {
+                let res = async {
+                    let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                    let mr = ModrinthClient::new(cache).map_err(|e| e.to_string())?;
+                    let proj = mr
+                        .get_project(&slug_owned)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let raw_body = if proj.body.trim().is_empty() {
+                        if proj.description.trim().is_empty() {
+                            fallback_desc
+                        } else {
+                            proj.description
+                        }
+                    } else {
+                        proj.body
+                    };
+                    let mut versions: Vec<String> =
+                        proj.game_versions.into_iter().rev().take(10).collect();
+                    versions.reverse();
+                    let gallery_urls: Vec<String> = proj
+                        .gallery
+                        .into_iter()
+                        .filter(|g| !g.url.trim().is_empty())
+                        .take(6)
+                        .map(|g| g.url)
+                        .collect();
+                    Ok::<_, String>(BrowserDetailPayload {
+                        key: key_owned.clone(),
+                        body_excerpt: clean_project_markdown_preview(&raw_body, 2800),
+                        categories: proj.categories,
+                        loaders: proj.loaders,
+                        game_versions: versions,
+                        client_side: proj.client_side,
+                        server_side: proj.server_side,
+                        gallery_urls,
+                        source_url: proj.source_url,
+                        issues_url: proj.issues_url,
+                    })
+                }
+                .await;
+                let _ = tx.send(AppEvent::ContentDetailLoaded {
+                    key: key_owned,
+                    result: res,
+                });
+                ctx_c.request_repaint();
+            });
+            return;
+        }
+
+        if let Some(id_str) = key.strip_prefix("cf:") {
+            let Ok(mod_id) = id_str.parse::<u64>() else {
+                return;
+            };
+            let key_owned = key.to_string();
+            let found = self.browser_cf_results.iter().find(|m| m.id == mod_id);
+            let fallback_desc = found.map(|m| m.summary.clone()).unwrap_or_default();
+            let gallery_urls: Vec<String> = found
+                .map(|m| {
+                    m.screenshots
+                        .iter()
+                        .filter_map(|s| s.thumbnail_url.clone().or_else(|| s.url.clone()))
+                        .filter(|u| !u.trim().is_empty())
+                        .take(6)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for url in &gallery_urls {
+                self.ensure_thumbnail(url, ctx);
+            }
+            self.browser_detail = None;
+            self.browser_detail_loading_key = Some(key_owned.clone());
+            let api_key = self.resolved_cf_api_key();
+            let cache_path = self
+                .paths
+                .cache_root
+                .join("providers")
+                .join("api_cache.sqlite");
+            let tx = self.tx.clone();
+            let ctx_c = ctx.clone();
+
+            self.runtime.spawn(async move {
+                let res = async {
+                    let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+                    let cf = CurseForgeClient::new(api_key, cache).map_err(|e| e.to_string())?;
+                    let body = cf
+                        .get_mod_description(mod_id)
+                        .await
+                        .unwrap_or_else(|_| fallback_desc.clone());
+                    let body_excerpt = if body.trim().is_empty() {
+                        fallback_desc
+                    } else {
+                        body
+                    };
+                    Ok::<_, String>(BrowserDetailPayload {
+                        key: key_owned.clone(),
+                        body_excerpt,
+                        categories: Vec::new(),
+                        loaders: Vec::new(),
+                        game_versions: Vec::new(),
+                        client_side: String::new(),
+                        server_side: String::new(),
+                        gallery_urls,
+                        source_url: None,
+                        issues_url: None,
+                    })
+                }
+                .await;
+                let _ = tx.send(AppEvent::ContentDetailLoaded {
+                    key: key_owned,
+                    result: res,
+                });
+                ctx_c.request_repaint();
+            });
+            return;
+        }
+
+        // Local metadata detail for FTB / ATLauncher / Technic packs
+        self.browser_detail_loading_key = None;
+        let payload =
+            if let Some(ftb_id) = key.strip_prefix("ftb:").and_then(|s| s.parse::<u64>().ok()) {
+                self.browser_ftb_results
+                    .iter()
+                    .find(|p| p.id == ftb_id)
+                    .map(|p| BrowserDetailPayload {
+                        key: key.to_string(),
+                        body_excerpt: clean_project_markdown_preview(&p.synopsis, 2400),
+                        ..Default::default()
+                    })
+            } else if let Some(atl_key) = key.strip_prefix("atl:") {
+                self.browser_atl_results
+                    .iter()
+                    .find(|p| p.effective_safe_name() == atl_key)
+                    .map(|p| {
+                        let vers: Vec<String> = p
+                            .versions
+                            .iter()
+                            .take(8)
+                            .map(|v| v.minecraft.clone())
+                            .collect();
+                        BrowserDetailPayload {
+                            key: key.to_string(),
+                            body_excerpt: clean_project_markdown_preview(&p.description, 2400),
+                            game_versions: vers,
+                            ..Default::default()
+                        }
+                    })
+            } else if let Some(tech_slug) = key.strip_prefix("tech:") {
+                self.browser_technic_results
+                    .iter()
+                    .find(|p| p.slug == tech_slug)
+                    .map(|p| BrowserDetailPayload {
+                        key: key.to_string(),
+                        body_excerpt: clean_project_markdown_preview(&p.description, 2400),
+                        game_versions: if p.minecraft.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![p.minecraft.clone()]
+                        },
+                        ..Default::default()
+                    })
+            } else {
+                None
+            };
+        self.browser_detail = payload;
+    }
+}
+
+/// Simplifies Markdown/HTML project descriptions into concise readable overview lines.
+pub(crate) fn clean_project_markdown_preview(raw: &str, max_chars: usize) -> String {
+    let stripped = mcw_providers::strip_html_to_preview(raw, max_chars.saturating_add(500));
+    let mut lines = Vec::new();
+    for line in stripped.lines() {
+        let t = line.trim();
+        // Skip pure markdown badge / image links such as [![...](...)](...) or ![alt](url)
+        if t.starts_with("![") || t.starts_with("[![") || t == "---" || t == "***" {
+            continue;
+        }
+        lines.push(t.to_string());
+    }
+    let joined = lines.join("\n").trim().to_string();
+    if max_chars == 0 || joined.chars().count() <= max_chars {
+        return joined;
+    }
+    let mut clipped: String = joined.chars().take(max_chars.saturating_sub(3)).collect();
+    while clipped.ends_with(char::is_whitespace) {
+        clipped.pop();
+    }
+    clipped.push_str("...");
+    clipped
 }
 
 pub(crate) fn apply_lan_agent_option(settings: &mut InstanceSettings, enable: bool) {

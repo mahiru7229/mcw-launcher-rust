@@ -520,6 +520,24 @@ pub enum AppEvent {
         task_id: u64,
         result: Result<Vec<String>, String>,
     },
+    ContentDetailLoaded {
+        key: String,
+        result: Result<BrowserDetailPayload, String>,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BrowserDetailPayload {
+    pub key: String,
+    pub body_excerpt: String,
+    pub categories: Vec<String>,
+    pub loaders: Vec<String>,
+    pub game_versions: Vec<String>,
+    pub client_side: String,
+    pub server_side: String,
+    pub gallery_urls: Vec<String>,
+    pub source_url: Option<String>,
+    pub issues_url: Option<String>,
 }
 
 pub struct ChannelProgressSink {

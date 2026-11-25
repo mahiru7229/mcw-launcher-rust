@@ -126,6 +126,16 @@ impl McwApp {
             self.browser_provider = BrowserProvider::Modrinth;
         }
         let provider_changed = self.browser_provider != prev_provider;
+        if category_changed || global_mode != prev_global || !was_open {
+            self.browser_query.clear();
+            self.browser_inline_detail_open = false;
+            self.browser_detail = None;
+            self.browser_detail_loading_key = None;
+        } else if provider_changed {
+            self.browser_inline_detail_open = false;
+            self.browser_detail = None;
+            self.browser_detail_loading_key = None;
+        }
 
         // Global Mod & Modpacks defaults: Relevance, All Loaders, All Versions.
         if (category == BrowserCategory::Modpacks
