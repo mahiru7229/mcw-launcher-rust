@@ -153,13 +153,27 @@ pub enum ModpackExportMode {
     Portable { full: bool },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportTreeEntry {
+    pub rel_path: String,
+    pub parent_dir: Option<String>,
+    pub is_dir: bool,
+    pub file_count: usize,
+    pub size_bytes: u64,
+    pub default_included: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModpackExportOptions {
     pub mode: ModpackExportMode,
     pub include_saves: bool,
     pub disable_mod_repair_and_updates: bool,
     #[serde(default = "default_true_opt")]
     pub disable_launch_checking: bool,
+    #[serde(default)]
+    pub excluded_paths: Vec<String>,
+    #[serde(default)]
+    pub extra_included_paths: Vec<String>,
 }
 
 fn default_true_opt() -> bool {
@@ -173,6 +187,8 @@ impl Default for ModpackExportOptions {
             include_saves: false,
             disable_mod_repair_and_updates: true,
             disable_launch_checking: true,
+            excluded_paths: Vec::new(),
+            extra_included_paths: Vec::new(),
         }
     }
 }
@@ -1336,6 +1352,118 @@ impl ModpackInstaller {
         Ok(exported_files)
     }
 
+    /// Scans top-level and depth-1 entries inside `.minecraft/` for the Selective Export Tree UI.
+    pub fn scan_export_candidates(
+        paths: &LauncherPaths,
+        instance_id: &str,
+        mode: ModpackExportMode,
+        include_saves: bool,
+    ) -> Vec<ExportTreeEntry> {
+        const SKIP_ROOTS: &[&str] = &[
+            "logs",
+            "crash-reports",
+            ".fabric",
+            ".mixin.out",
+            "natives",
+            "versions",
+            "libraries",
+            "assets",
+            ".mcw_trash",
+        ];
+
+        let mc_dir = paths.minecraft_dir(instance_id);
+        let Ok(read_root) = fs::read_dir(&mc_dir) else {
+            return Vec::new();
+        };
+
+        let default_dirs = default_included_dirs_for_mode(mode, include_saves);
+        let mut top_dirs: Vec<(String, PathBuf)> = Vec::new();
+        let mut top_files: Vec<(String, u64)> = Vec::new();
+
+        for entry in read_root.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.trim().is_empty()
+                || SKIP_ROOTS
+                    .iter()
+                    .any(|s| s.eq_ignore_ascii_case(name.as_str()))
+            {
+                continue;
+            }
+            if path.is_dir() {
+                top_dirs.push((name, path));
+            } else if path.is_file() {
+                let sz = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                top_files.push((name, sz));
+            }
+        }
+
+        top_dirs.sort_by_key(|a| a.0.to_ascii_lowercase());
+        top_files.sort_by_key(|a| a.0.to_ascii_lowercase());
+
+        let mut out = Vec::new();
+        for (dir_name, dir_path) in top_dirs {
+            let (file_count, size_bytes) = dir_tree_stats(&dir_path);
+            let def_inc = default_dirs
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(dir_name.as_str()));
+            out.push(ExportTreeEntry {
+                rel_path: dir_name.clone(),
+                parent_dir: None,
+                is_dir: true,
+                file_count,
+                size_bytes,
+                default_included: def_inc,
+            });
+
+            if let Ok(read_children) = fs::read_dir(&dir_path) {
+                let mut child_entries: Vec<(String, PathBuf, bool)> = read_children
+                    .flatten()
+                    .map(|c| {
+                        let p = c.path();
+                        let n = c.file_name().to_string_lossy().to_string();
+                        let is_d = p.is_dir();
+                        (n, p, is_d)
+                    })
+                    .filter(|(n, _, _)| !n.trim().is_empty())
+                    .collect();
+                child_entries.sort_by(|a, b| {
+                    b.2.cmp(&a.2)
+                        .then_with(|| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()))
+                });
+                for (child_name, child_path, is_dir) in child_entries.into_iter().take(200) {
+                    let (c_count, c_size) = if is_dir {
+                        dir_tree_stats(&child_path)
+                    } else {
+                        (1, fs::metadata(&child_path).map(|m| m.len()).unwrap_or(0))
+                    };
+                    out.push(ExportTreeEntry {
+                        rel_path: format!("{dir_name}/{child_name}"),
+                        parent_dir: Some(dir_name.clone()),
+                        is_dir,
+                        file_count: c_count,
+                        size_bytes: c_size,
+                        default_included: def_inc,
+                    });
+                }
+            }
+        }
+
+        for (file_name, size_bytes) in top_files {
+            let def_inc = file_name.eq_ignore_ascii_case("options.txt");
+            out.push(ExportTreeEntry {
+                rel_path: file_name,
+                parent_dir: None,
+                is_dir: false,
+                file_count: 1,
+                size_bytes,
+                default_included: def_inc,
+            });
+        }
+
+        out
+    }
+
     /// Exports an instance using one of MCW Launcher's 3 standard modes:
     /// 1. `Mrpack` (`.mrpack`): `modrinth.index.json` + `overrides/` (+ optional `saves/`)
     /// 2. `ProviderProfile` (`-MCW-Profile.zip`): CurseForge-compatible `manifest.json` + `mcw_profile.json` + `overrides/config`
@@ -1365,28 +1493,12 @@ impl ModpackInstaller {
 
         let mc_dir = paths.minecraft_dir(instance_id);
         let mut exported_files = 0usize;
-
-        let add_dir = |zip: &mut ZipWriter<File>, sub: &str, prefix: &str| -> Result<usize> {
-            let dir = mc_dir.join(sub);
-            if !dir.is_dir() {
-                return Ok(0);
-            }
-            let mut count = 0usize;
-            for entry in walkdir::WalkDir::new(&dir).into_iter().flatten() {
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                let Ok(rel) = entry.path().strip_prefix(&mc_dir) else {
-                    continue;
-                };
-                let zip_path = format!("{prefix}{}", rel.to_string_lossy().replace('\\', "/"));
-                zip.start_file(&zip_path, zopts)
-                    .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
-                let mut src = File::open(entry.path())?;
-                io::copy(&mut src, zip)?;
-                count += 1;
-            }
-            Ok(count)
+        let mut zctx = ExportZipContext {
+            mc_dir: &mc_dir,
+            prefix: "overrides/",
+            zopts,
+            excluded_paths: &options.excluded_paths,
+            written_zip_paths: HashSet::new(),
         };
 
         match options.mode {
@@ -1425,18 +1537,14 @@ impl ModpackInstaller {
                 zip.write_all(serde_json::to_string_pretty(&index_json)?.as_bytes())?;
 
                 for sub in ["mods", "config", "resourcepacks", "shaderpacks"] {
-                    exported_files += add_dir(&mut zip, sub, "overrides/")?;
+                    exported_files += zctx.add_dir(&mut zip, sub)?;
                 }
                 if options.include_saves {
-                    exported_files += add_dir(&mut zip, "saves", "overrides/")?;
+                    exported_files += zctx.add_dir(&mut zip, "saves")?;
                 }
                 let options_txt = mc_dir.join("options.txt");
                 if options_txt.is_file() {
-                    zip.start_file("overrides/options.txt", zopts)
-                        .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
-                    let mut src = File::open(&options_txt)?;
-                    io::copy(&mut src, &mut zip)?;
-                    exported_files += 1;
+                    exported_files += zctx.add_file(&mut zip, &options_txt, "options.txt")?;
                 }
             }
             ModpackExportMode::ProviderProfile => {
@@ -1473,14 +1581,10 @@ impl ModpackInstaller {
                     .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
                 zip.write_all(serde_json::to_string_pretty(&profile_meta)?.as_bytes())?;
 
-                exported_files += add_dir(&mut zip, "config", "overrides/")?;
+                exported_files += zctx.add_dir(&mut zip, "config")?;
                 let options_txt = mc_dir.join("options.txt");
                 if options_txt.is_file() {
-                    zip.start_file("overrides/options.txt", zopts)
-                        .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
-                    let mut src = File::open(&options_txt)?;
-                    io::copy(&mut src, &mut zip)?;
-                    exported_files += 1;
+                    exported_files += zctx.add_file(&mut zip, &options_txt, "options.txt")?;
                 }
             }
             ModpackExportMode::Portable { full } => {
@@ -1515,19 +1619,27 @@ impl ModpackInstaller {
                     &["mods", "config", "resourcepacks", "shaderpacks"]
                 };
                 for sub in dirs {
-                    exported_files += add_dir(&mut zip, sub, "overrides/")?;
+                    exported_files += zctx.add_dir(&mut zip, sub)?;
                 }
                 if options.include_saves {
-                    exported_files += add_dir(&mut zip, "saves", "overrides/")?;
+                    exported_files += zctx.add_dir(&mut zip, "saves")?;
                 }
                 let options_txt = mc_dir.join("options.txt");
                 if options_txt.is_file() {
-                    zip.start_file("overrides/options.txt", zopts)
-                        .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
-                    let mut src = File::open(&options_txt)?;
-                    io::copy(&mut src, &mut zip)?;
-                    exported_files += 1;
+                    exported_files += zctx.add_file(&mut zip, &options_txt, "options.txt")?;
                 }
+            }
+        }
+
+        for extra in &options.extra_included_paths {
+            let Some(rel_posix) = normalize_safe_rel_posix(extra) else {
+                continue;
+            };
+            let abs = mc_dir.join(&rel_posix);
+            if abs.is_dir() {
+                exported_files += zctx.add_dir(&mut zip, &rel_posix)?;
+            } else if abs.is_file() {
+                exported_files += zctx.add_file(&mut zip, &abs, &rel_posix)?;
             }
         }
 
@@ -1535,6 +1647,123 @@ impl ModpackInstaller {
             .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
         Ok(exported_files)
     }
+}
+
+struct ExportZipContext<'a> {
+    mc_dir: &'a Path,
+    prefix: &'a str,
+    zopts: zip::write::SimpleFileOptions,
+    excluded_paths: &'a [String],
+    written_zip_paths: HashSet<String>,
+}
+
+impl ExportZipContext<'_> {
+    fn add_file(
+        &mut self,
+        zip: &mut zip::ZipWriter<File>,
+        abs_path: &Path,
+        rel_posix: &str,
+    ) -> Result<usize> {
+        if is_rel_path_excluded(rel_posix, self.excluded_paths) {
+            return Ok(0);
+        }
+        let zip_path = format!("{}{}", self.prefix, rel_posix);
+        if !self.written_zip_paths.insert(zip_path.clone()) {
+            return Ok(0);
+        }
+        zip.start_file(&zip_path, self.zopts)
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        let mut src = File::open(abs_path)?;
+        io::copy(&mut src, zip)?;
+        Ok(1)
+    }
+
+    fn add_dir(&mut self, zip: &mut zip::ZipWriter<File>, sub: &str) -> Result<usize> {
+        let dir = self.mc_dir.join(sub);
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+        let mut count = 0usize;
+        for entry in walkdir::WalkDir::new(&dir).into_iter().flatten() {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let Ok(rel) = entry.path().strip_prefix(self.mc_dir) else {
+                continue;
+            };
+            let rel_posix = rel.to_string_lossy().replace('\\', "/");
+            count += self.add_file(zip, entry.path(), &rel_posix)?;
+        }
+        Ok(count)
+    }
+}
+
+fn default_included_dirs_for_mode(
+    mode: ModpackExportMode,
+    include_saves: bool,
+) -> Vec<&'static str> {
+    let mut dirs = match mode {
+        ModpackExportMode::Mrpack => vec!["mods", "config", "resourcepacks", "shaderpacks"],
+        ModpackExportMode::ProviderProfile => vec!["config"],
+        ModpackExportMode::Portable { full: false } => {
+            vec!["mods", "config", "resourcepacks", "shaderpacks"]
+        }
+        ModpackExportMode::Portable { full: true } => vec![
+            "mods",
+            "config",
+            "resourcepacks",
+            "shaderpacks",
+            "datapacks",
+            "screenshots",
+        ],
+    };
+    if include_saves && !matches!(mode, ModpackExportMode::ProviderProfile) {
+        dirs.push("saves");
+    }
+    dirs
+}
+
+fn dir_tree_stats(dir: &Path) -> (usize, u64) {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    for entry in walkdir::WalkDir::new(dir).into_iter().flatten() {
+        if entry.file_type().is_file() {
+            files += 1;
+            bytes = bytes.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
+        }
+    }
+    (files, bytes)
+}
+
+fn normalize_safe_rel_posix(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().replace('\\', "/");
+    let stripped = trimmed.trim_matches('/');
+    if stripped.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for seg in stripped.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains(':') {
+            return None;
+        }
+        parts.push(seg);
+    }
+    Some(parts.join("/"))
+}
+
+fn is_rel_path_excluded(rel_posix: &str, excluded_paths: &[String]) -> bool {
+    let Some(norm_rel) = normalize_safe_rel_posix(rel_posix) else {
+        return true;
+    };
+    for raw_ex in excluded_paths {
+        let Some(ex) = normalize_safe_rel_posix(raw_ex) else {
+            continue;
+        };
+        if norm_rel == ex || norm_rel.starts_with(&format!("{ex}/")) {
+            return true;
+        }
+    }
+    false
 }
 
 fn normalize_mod_filename(name: &str) -> String {
@@ -2102,6 +2331,7 @@ mod tests {
                 include_saves: false,
                 disable_mod_repair_and_updates: true,
                 disable_launch_checking: false,
+                ..ModpackExportOptions::default()
             },
         )
         .unwrap();
@@ -2274,6 +2504,83 @@ mod tests {
         assert_eq!(
             settings.jvm_arguments,
             vec!["-XX:+UseG1GC", "-DsomeFlag=true"]
+        );
+    }
+
+    #[test]
+    fn export_instance_respects_selective_exclusions_and_extra_includes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = LauncherPaths::portable(dir.path().join("mcw"));
+        paths.initialize().unwrap();
+        let store = InstanceStore::new(&paths);
+        let (inst, _) = store
+            .create_instance("sel-exp", "1.20.1", ModLoader::vanilla())
+            .unwrap();
+        let inst_id = &inst.instance_id;
+        let mc = paths.minecraft_dir(inst_id);
+        fs::create_dir_all(mc.join("mods")).unwrap();
+        fs::create_dir_all(mc.join("config")).unwrap();
+        fs::create_dir_all(mc.join("kubejs")).unwrap();
+        fs::write(mc.join("mods/keep.jar"), b"keep").unwrap();
+        fs::write(mc.join("mods/skip.jar"), b"skip").unwrap();
+        fs::write(mc.join("config/app.toml"), b"cfg").unwrap();
+        fs::write(mc.join("kubejs/script.js"), b"script").unwrap();
+        fs::write(mc.join("servers.dat"), b"srv").unwrap();
+        fs::write(mc.join("options.txt"), b"fov:0.0").unwrap();
+
+        let candidates = ModpackInstaller::scan_export_candidates(
+            &paths,
+            inst_id,
+            ModpackExportMode::Mrpack,
+            false,
+        );
+        assert!(candidates
+            .iter()
+            .any(|e| e.rel_path == "mods" && e.default_included));
+        assert!(candidates
+            .iter()
+            .any(|e| e.rel_path == "mods/skip.jar" && e.default_included));
+        assert!(candidates
+            .iter()
+            .any(|e| e.rel_path == "kubejs" && !e.default_included));
+        assert!(candidates
+            .iter()
+            .any(|e| e.rel_path == "servers.dat" && !e.default_included));
+
+        let out = dir.path().join("selective.mrpack");
+        ModpackInstaller::export_instance(
+            &paths,
+            inst_id,
+            &out,
+            &ModpackExportOptions {
+                mode: ModpackExportMode::Mrpack,
+                include_saves: false,
+                disable_mod_repair_and_updates: true,
+                disable_launch_checking: true,
+                excluded_paths: vec!["mods/skip.jar".to_string(), "config".to_string()],
+                extra_included_paths: vec![
+                    "kubejs".to_string(),
+                    "kubejs/script.js".to_string(),
+                    "servers.dat".to_string(),
+                ],
+            },
+        )
+        .unwrap();
+
+        let archive = ZipArchive::new(File::open(&out).unwrap()).unwrap();
+        let names: Vec<&str> = archive.file_names().collect();
+        assert!(names.contains(&"overrides/mods/keep.jar"));
+        assert!(!names.contains(&"overrides/mods/skip.jar"));
+        assert!(!names.contains(&"overrides/config/app.toml"));
+        assert!(names.contains(&"overrides/kubejs/script.js"));
+        assert!(names.contains(&"overrides/servers.dat"));
+        assert!(names.contains(&"overrides/options.txt"));
+        assert_eq!(
+            names
+                .iter()
+                .filter(|&&n| n == "overrides/kubejs/script.js")
+                .count(),
+            1
         );
     }
 }

@@ -560,8 +560,8 @@ impl McwApp {
                     ctx,
                     "mcw_modal_export_modpack",
                     &format!("{title} - {}", inst.name),
-                    [560.0, 470.0],
-                    [420.0, 340.0],
+                    [620.0, 560.0],
+                    [460.0, 400.0],
                     p,
                     notice.as_ref(),
                     |ui| {
@@ -751,6 +751,263 @@ impl McwApp {
                                     );
                                 }
 
+                                let effective_mode = match self.export_mode {
+                                    ModpackExportMode::Portable { .. } => {
+                                        ModpackExportMode::Portable {
+                                            full: self.export_portable_full,
+                                        }
+                                    }
+                                    other => other,
+                                };
+                                let effective_saves = saves_enabled && self.export_include_saves;
+                                let mode_key = match effective_mode {
+                                    ModpackExportMode::Mrpack => "mrpack",
+                                    ModpackExportMode::ProviderProfile => "provider",
+                                    ModpackExportMode::Portable { full: false } => "portable_smart",
+                                    ModpackExportMode::Portable { full: true } => "portable_full",
+                                };
+                                let expected_tree_key = (
+                                    inst.instance_id.clone(),
+                                    mode_key.to_string(),
+                                    effective_saves,
+                                );
+                                if self.export_tree_key.as_ref() != Some(&expected_tree_key) {
+                                    self.export_tree_entries =
+                                        ModpackInstaller::scan_export_candidates(
+                                            &self.paths,
+                                            &inst.instance_id,
+                                            effective_mode,
+                                            effective_saves,
+                                        );
+                                    self.export_checked_paths = self
+                                        .export_tree_entries
+                                        .iter()
+                                        .filter(|e| e.default_included)
+                                        .map(|e| e.rel_path.clone())
+                                        .collect();
+                                    self.export_tree_key = Some(expected_tree_key);
+                                }
+
+                                let top_entries: Vec<ExportTreeEntry> = self
+                                    .export_tree_entries
+                                    .iter()
+                                    .filter(|e| e.parent_dir.is_none())
+                                    .cloned()
+                                    .collect();
+                                let mut children_by_parent: std::collections::HashMap<
+                                    String,
+                                    Vec<ExportTreeEntry>,
+                                > = std::collections::HashMap::new();
+                                for entry in &self.export_tree_entries {
+                                    if let Some(ref parent) = entry.parent_dir {
+                                        children_by_parent
+                                            .entry(parent.clone())
+                                            .or_default()
+                                            .push(entry.clone());
+                                    }
+                                }
+                                let checked_top_count = top_entries
+                                    .iter()
+                                    .filter(|e| {
+                                        self.export_checked_paths.contains(&e.rel_path)
+                                            || children_by_parent.get(&e.rel_path).is_some_and(
+                                                |kids| {
+                                                    kids.iter().any(|c| {
+                                                        self.export_checked_paths
+                                                            .contains(&c.rel_path)
+                                                    })
+                                                },
+                                            )
+                                    })
+                                    .count();
+
+                                ui.add_space(8.0);
+                                egui::CollapsingHeader::new(format!(
+                                    "Customize Files to Export ({checked_top_count}/{} top-level items)",
+                                    top_entries.len()
+                                ))
+                                .id_salt("export_selective_tree_hdr")
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        if ui.small_button("Select Defaults").clicked() {
+                                            self.export_checked_paths = self
+                                                .export_tree_entries
+                                                .iter()
+                                                .filter(|e| e.default_included)
+                                                .map(|e| e.rel_path.clone())
+                                                .collect();
+                                        }
+                                        if ui.small_button("Uncheck All").clicked() {
+                                            self.export_checked_paths.clear();
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+                                    if top_entries.is_empty() {
+                                        ui.label(
+                                            RichText::new("No files found in .minecraft/.")
+                                                .size(11.0)
+                                                .color(p.text_muted),
+                                        );
+                                    } else {
+                                        ScrollArea::vertical()
+                                            .id_salt("export_selective_tree_scroll")
+                                            .max_height(180.0)
+                                            .auto_shrink([false, true])
+                                            .show(ui, |ui| {
+                                                for entry in &top_entries {
+                                                    let kids = children_by_parent
+                                                        .get(&entry.rel_path)
+                                                        .cloned()
+                                                        .unwrap_or_default();
+                                                    let expanded = self
+                                                        .export_tree_expanded_dirs
+                                                        .contains(&entry.rel_path);
+                                                    ui.horizontal(|ui| {
+                                                        if entry.is_dir && !kids.is_empty() {
+                                                            let arrow =
+                                                                if expanded { "▾" } else { "▸" };
+                                                            if ui.small_button(arrow).clicked() {
+                                                                if expanded {
+                                                                    self.export_tree_expanded_dirs
+                                                                        .remove(&entry.rel_path);
+                                                                } else {
+                                                                    self.export_tree_expanded_dirs
+                                                                        .insert(
+                                                                            entry.rel_path.clone(),
+                                                                        );
+                                                                }
+                                                            }
+                                                        } else {
+                                                            ui.add_space(22.0);
+                                                        }
+
+                                                        let mut checked = self
+                                                            .export_checked_paths
+                                                            .contains(&entry.rel_path);
+                                                        if ui
+                                                            .checkbox(&mut checked, &entry.rel_path)
+                                                            .changed()
+                                                        {
+                                                            if checked {
+                                                                self.export_checked_paths
+                                                                    .insert(entry.rel_path.clone());
+                                                                for c in &kids {
+                                                                    self.export_checked_paths
+                                                                        .insert(c.rel_path.clone());
+                                                                }
+                                                            } else {
+                                                                self.export_checked_paths
+                                                                    .remove(&entry.rel_path);
+                                                                for c in &kids {
+                                                                    self.export_checked_paths
+                                                                        .remove(&c.rel_path);
+                                                                }
+                                                            }
+                                                        }
+
+                                                        let meta_txt = if entry.is_dir {
+                                                            format!(
+                                                                "({} files · {})",
+                                                                entry.file_count,
+                                                                format_bytes(entry.size_bytes)
+                                                            )
+                                                        } else {
+                                                            format!(
+                                                                "({})",
+                                                                format_bytes(entry.size_bytes)
+                                                            )
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(meta_txt)
+                                                                .monospace()
+                                                                .size(10.5)
+                                                                .color(p.text_muted),
+                                                        );
+                                                    });
+
+                                                    if entry.is_dir && expanded {
+                                                        for child in &kids {
+                                                            ui.horizontal(|ui| {
+                                                                ui.add_space(26.0);
+                                                                let mut c_chk = self
+                                                                    .export_checked_paths
+                                                                    .contains(&child.rel_path);
+                                                                let disp_name = child
+                                                                    .rel_path
+                                                                    .strip_prefix(&format!(
+                                                                        "{}/",
+                                                                        entry.rel_path
+                                                                    ))
+                                                                    .unwrap_or(&child.rel_path);
+                                                                if ui
+                                                                    .checkbox(&mut c_chk, disp_name)
+                                                                    .changed()
+                                                                {
+                                                                    if c_chk {
+                                                                        self.export_checked_paths
+                                                                            .insert(
+                                                                                child
+                                                                                    .rel_path
+                                                                                    .clone(),
+                                                                            );
+                                                                    } else {
+                                                                        self.export_checked_paths
+                                                                            .remove(
+                                                                                &child.rel_path,
+                                                                            );
+                                                                    }
+                                                                    let all_kids =
+                                                                        kids.iter().all(|k| {
+                                                                            self.export_checked_paths
+                                                                                .contains(
+                                                                                    &k.rel_path,
+                                                                                )
+                                                                        });
+                                                                    if all_kids {
+                                                                        self.export_checked_paths
+                                                                            .insert(
+                                                                                entry
+                                                                                    .rel_path
+                                                                                    .clone(),
+                                                                            );
+                                                                    } else {
+                                                                        self.export_checked_paths
+                                                                            .remove(
+                                                                                &entry.rel_path,
+                                                                            );
+                                                                    }
+                                                                }
+                                                                let c_meta = if child.is_dir {
+                                                                    format!(
+                                                                        "({} files · {})",
+                                                                        child.file_count,
+                                                                        format_bytes(
+                                                                            child.size_bytes
+                                                                        )
+                                                                    )
+                                                                } else {
+                                                                    format!(
+                                                                        "({})",
+                                                                        format_bytes(
+                                                                            child.size_bytes
+                                                                        )
+                                                                    )
+                                                                };
+                                                                ui.label(
+                                                                    RichText::new(c_meta)
+                                                                        .monospace()
+                                                                        .size(10.5)
+                                                                        .color(p.text_muted),
+                                                                );
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                    }
+                                });
+
                                 ui.add_space(6.0);
                                 ui.label(
                                     RichText::new(self.t("modpack_package.export.warning"))
@@ -767,18 +1024,65 @@ impl McwApp {
                                     )
                                     .fill(p.accent);
                                     if ui.add(act_btn).clicked() {
-                                        let mode = match self.export_mode {
-                                            ModpackExportMode::Portable { .. } => {
-                                                ModpackExportMode::Portable {
-                                                    full: self.export_portable_full,
+                                        let mut excluded_paths = Vec::new();
+                                        let mut extra_included_paths = Vec::new();
+                                        for entry in &top_entries {
+                                            let kids = children_by_parent.get(&entry.rel_path);
+                                            if entry.is_dir {
+                                                let parent_checked = self
+                                                    .export_checked_paths
+                                                    .contains(&entry.rel_path);
+                                                if entry.default_included {
+                                                    let any_kid_checked = kids.is_some_and(|list| {
+                                                        list.iter().any(|c| {
+                                                            self.export_checked_paths
+                                                                .contains(&c.rel_path)
+                                                        })
+                                                    });
+                                                    if !parent_checked && !any_kid_checked {
+                                                        excluded_paths.push(entry.rel_path.clone());
+                                                    } else if let Some(list) = kids {
+                                                        for c in list {
+                                                            if !self
+                                                                .export_checked_paths
+                                                                .contains(&c.rel_path)
+                                                            {
+                                                                excluded_paths
+                                                                    .push(c.rel_path.clone());
+                                                            }
+                                                        }
+                                                    }
+                                                } else if parent_checked {
+                                                    extra_included_paths
+                                                        .push(entry.rel_path.clone());
+                                                } else if let Some(list) = kids {
+                                                    for c in list {
+                                                        if self
+                                                            .export_checked_paths
+                                                            .contains(&c.rel_path)
+                                                        {
+                                                            extra_included_paths
+                                                                .push(c.rel_path.clone());
+                                                        }
+                                                    }
                                                 }
+                                            } else if entry.default_included {
+                                                if !self
+                                                    .export_checked_paths
+                                                    .contains(&entry.rel_path)
+                                                {
+                                                    excluded_paths.push(entry.rel_path.clone());
+                                                }
+                                            } else if self
+                                                .export_checked_paths
+                                                .contains(&entry.rel_path)
+                                            {
+                                                extra_included_paths.push(entry.rel_path.clone());
                                             }
-                                            other => other,
-                                        };
+                                        }
                                         trigger_export = Some(ModpackExportOptions {
-                                            mode,
-                                            include_saves: saves_enabled
-                                                && self.export_include_saves,
+                                            mode: effective_mode,
+                                            include_saves: effective_saves,
                                             disable_mod_repair_and_updates: if is_portable {
                                                 self.export_disable_repair_and_updates
                                             } else {
@@ -789,6 +1093,8 @@ impl McwApp {
                                             } else {
                                                 true
                                             },
+                                            excluded_paths,
+                                            extra_included_paths,
                                         });
                                     }
                                     if ui.button(self.t("common.cancel")).clicked() {
@@ -803,6 +1109,9 @@ impl McwApp {
                 }
                 if dismiss_notice {
                     self.notice_banner = None;
+                }
+                if !open || trigger_export.is_some() {
+                    self.export_tree_key = None;
                 }
                 self.show_export_modal = open;
                 if let Some(opts) = trigger_export {

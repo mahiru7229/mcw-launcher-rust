@@ -23,8 +23,9 @@ pub use mod_updates::{
 };
 pub use modpack::{
     inspect_archive_name, normalize_modloader, parse_cf_loader_id, suggest_short_instance_name,
-    ManualDownloadItem, ModpackExportMode, ModpackExportOptions, ModpackInstallOptions,
-    ModpackInstallReport, ModpackInstaller, ModpackOptionalFile, ModpackProgressCallback,
+    ExportTreeEntry, ManualDownloadItem, ModpackExportMode, ModpackExportOptions,
+    ModpackInstallOptions, ModpackInstallReport, ModpackInstaller, ModpackOptionalFile,
+    ModpackProgressCallback,
 };
 pub use modpack_update::{
     ModpackUpdateCandidate, ModpackUpdateCheck, ModpackUpdateReport, ModpackUpdateService,
