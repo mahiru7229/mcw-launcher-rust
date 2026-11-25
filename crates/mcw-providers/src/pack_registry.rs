@@ -148,6 +148,92 @@ fn default_atl_schema() -> u32 {
     1
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TechnicManagedFile {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub md5: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default = "default_technic")]
+    pub provider: String,
+}
+
+fn default_technic() -> String {
+    "technic".to_string()
+}
+
+/// Persisted metadata for a Technic Platform modpack installation (`.mcw/technic-pack.json`), Schema 1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TechnicPackRecord {
+    #[serde(rename = "schemaVersion", default = "default_technic_schema")]
+    pub schema_version: u32,
+    #[serde(default = "default_technic")]
+    pub source: String,
+    pub slug: String,
+    #[serde(rename = "packName", default)]
+    pub pack_name: String,
+    #[serde(rename = "solderUrl", default)]
+    pub solder_url: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub minecraft: String,
+    #[serde(rename = "managedFiles", default)]
+    pub managed_files: Vec<TechnicManagedFile>,
+    #[serde(rename = "updatedAt", default)]
+    pub updated_at: String,
+}
+
+fn default_technic_schema() -> u32 {
+    1
+}
+
+pub struct TechnicPackRegistry;
+
+impl TechnicPackRegistry {
+    pub fn registry_path(instance_dir: &Path) -> PathBuf {
+        instance_dir.join(".mcw").join("technic-pack.json")
+    }
+
+    pub fn load(instance_dir: &Path) -> Option<TechnicPackRecord> {
+        let path = Self::registry_path(instance_dir);
+        let raw = fs::read_to_string(path).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    pub fn save(instance_dir: &Path, record: &TechnicPackRecord) -> crate::Result<()> {
+        let mut normalized = record.clone();
+        normalized.source = "technic".to_string();
+        normalized.updated_at = unix_timestamp_string();
+        for f in &mut normalized.managed_files {
+            let fallback = Path::new(&f.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("mod.bin")
+                .to_string();
+            f.path = safe_relative_posix(&f.path, &fallback);
+            f.md5 = f.md5.trim().to_ascii_lowercase();
+            f.provider = "technic".to_string();
+        }
+        normalized
+            .managed_files
+            .sort_by_key(|a| a.path.to_ascii_lowercase());
+        atomic_write_json(&Self::registry_path(instance_dir), &normalized)
+            .map_err(|e| crate::ProviderError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(())
+    }
+
+    pub fn is_managed(instance_dir: &Path) -> bool {
+        Self::load(instance_dir).is_some()
+    }
+}
+
 pub struct AtLauncherPackRegistry;
 
 impl AtLauncherPackRegistry {
@@ -430,6 +516,19 @@ pub fn detect_installed_pack(instance_dir: &Path) -> Option<InstalledPackOrigin>
             managed_files_count: atl.managed_files.len(),
         });
     }
+    if let Some(tech) = TechnicPackRegistry::load(instance_dir) {
+        return Some(InstalledPackOrigin {
+            provider: "Technic".to_string(),
+            pack_id: tech.slug.clone(),
+            pack_name: if tech.pack_name.is_empty() {
+                tech.slug
+            } else {
+                tech.pack_name
+            },
+            version_name: tech.version,
+            managed_files_count: tech.managed_files.len(),
+        });
+    }
     None
 }
 
@@ -464,7 +563,11 @@ pub fn detect_export_origin(instance_dir: &Path, icon_source: &str) -> InstanceE
     }
     if FtbPackRegistry::is_managed(instance_dir)
         || AtLauncherPackRegistry::is_managed(instance_dir)
-        || matches!(src.as_str(), "modpack:ftb" | "modpack:atlauncher")
+        || TechnicPackRegistry::is_managed(instance_dir)
+        || matches!(
+            src.as_str(),
+            "modpack:ftb" | "modpack:atlauncher" | "modpack:technic"
+        )
     {
         return InstanceExportOrigin::OtherProvider;
     }
@@ -591,6 +694,35 @@ mod tests {
         let atl_origin = detect_installed_pack(&inst_atl).unwrap();
         assert_eq!(atl_origin.provider, "ATLauncher");
         assert_eq!(atl_origin.version_name, "2.1.0");
+
+        let inst_tech = dir.path().join("tech_inst");
+        fs::create_dir_all(&inst_tech).unwrap();
+        TechnicPackRegistry::save(
+            &inst_tech,
+            &TechnicPackRecord {
+                schema_version: 1,
+                source: "technic".to_string(),
+                slug: "tekkitmain".to_string(),
+                pack_name: "Tekkit Main".to_string(),
+                solder_url: "https://solder.technicpack.net/api/".to_string(),
+                version: "1.2.9g".to_string(),
+                minecraft: "1.6.4".to_string(),
+                managed_files: vec![TechnicManagedFile {
+                    name: "buildcraft".to_string(),
+                    version: "4.2.2".to_string(),
+                    path: "mods/buildcraft.jar".to_string(),
+                    md5: "ABCD1234".to_string(),
+                    url: "https://example.com/bc.zip".to_string(),
+                    provider: "technic".to_string(),
+                }],
+                updated_at: String::new(),
+            },
+        )
+        .unwrap();
+        assert!(TechnicPackRegistry::is_managed(&inst_tech));
+        let tech_origin = detect_installed_pack(&inst_tech).unwrap();
+        assert_eq!(tech_origin.provider, "Technic");
+        assert_eq!(tech_origin.pack_name, "Tekkit Main");
     }
 
     #[test]

@@ -9,7 +9,12 @@ use crate::modrinth::ModrinthClient;
 use crate::pack_registry::{
     safe_relative_posix, AtLauncherManagedFile, AtLauncherPackRecord, AtLauncherPackRegistry,
     CurseForgePackRecord, CurseForgePackRegistry, FtbManagedFile, FtbPackRecord, FtbPackRegistry,
-    ModrinthPackRecord, ModrinthPackRegistry,
+    ModrinthPackRecord, ModrinthPackRegistry, TechnicManagedFile, TechnicPackRecord,
+    TechnicPackRegistry,
+};
+use crate::technic::{
+    detect_loader_from_modpack_jar, extract_zip_safe, install_solder_mods, StagingDirGuard,
+    TechnicClient,
 };
 use crate::{ProviderError, Result};
 use mcw_models::instance::ModLoader;
@@ -106,7 +111,7 @@ fn prune_obsolete_managed_files(
     removed
 }
 
-/// In-place safe modpack update manager supporting Modrinth, CurseForge, FTB, and ATLauncher
+/// In-place safe modpack update manager supporting Modrinth, CurseForge, FTB, ATLauncher, and Technic
 /// while preserving player saves, options, servers, screenshots, and user configs.
 pub struct ModpackUpdateService;
 
@@ -326,9 +331,94 @@ impl ModpackUpdateService {
                 versions,
             });
         }
+        if let Some(rec) = TechnicPackRegistry::load(instance_dir) {
+            let client = TechnicClient::new(None)?;
+            let detail = client.get_modpack(&rec.slug).await?;
+            let solder_base = if !detail.solder_url.trim().is_empty() {
+                detail.solder_url.clone()
+            } else {
+                rec.solder_url.clone()
+            };
+            let versions = if !solder_base.trim().is_empty() {
+                let pack_info = client.get_solder_pack(&solder_base, &rec.slug).await?;
+                pack_info
+                    .builds
+                    .into_iter()
+                    .rev()
+                    .filter_map(|b| {
+                        let low = b.to_ascii_lowercase();
+                        let is_beta = pack_info.latest.as_deref() == Some(b.as_str())
+                            && pack_info.recommended.as_deref() != Some(b.as_str())
+                            || low.contains("beta")
+                            || low.contains("rc");
+                        let is_alpha = low.contains("alpha") || low.contains("dev");
+                        if (is_alpha && !include_alpha) || (is_beta && !include_beta) {
+                            return None;
+                        }
+                        let vt = if is_alpha {
+                            "alpha"
+                        } else if is_beta {
+                            "beta"
+                        } else {
+                            "release"
+                        };
+                        Some(ModpackUpdateCandidate {
+                            provider: "technic".to_string(),
+                            version_id: b.clone(),
+                            version_number: b.clone(),
+                            name: b,
+                            version_type: vt.to_string(),
+                            game_versions: if detail.minecraft.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![detail.minecraft.clone()]
+                            },
+                            loaders: Vec::new(),
+                            download_url: String::new(),
+                            file_name: String::new(),
+                            file_size: 0,
+                            sha1: None,
+                        })
+                    })
+                    .collect()
+            } else if !detail.version.trim().is_empty() && !detail.url.trim().is_empty() {
+                vec![ModpackUpdateCandidate {
+                    provider: "technic".to_string(),
+                    version_id: detail.version.clone(),
+                    version_number: detail.version.clone(),
+                    name: detail.version.clone(),
+                    version_type: "release".to_string(),
+                    game_versions: if detail.minecraft.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![detail.minecraft.clone()]
+                    },
+                    loaders: Vec::new(),
+                    download_url: detail.url.clone(),
+                    file_name: format!("{}.zip", rec.slug),
+                    file_size: 0,
+                    sha1: None,
+                }]
+            } else {
+                Vec::new()
+            };
+            return Ok(ModpackUpdateCheck {
+                instance_id: instance_id.to_string(),
+                provider: "technic".to_string(),
+                pack_name: if rec.pack_name.is_empty() {
+                    detail.display_name
+                } else {
+                    rec.pack_name
+                },
+                project_slug_or_id: rec.slug,
+                current_version_id: rec.version.clone(),
+                current_version_number: rec.version,
+                versions,
+            });
+        }
 
         Err(ProviderError::Io(io::Error::other(
-            "This instance does not have an official Modrinth, CurseForge, FTB, or ATLauncher modpack manifest.",
+            "This instance does not have an official Modrinth, CurseForge, FTB, ATLauncher, or Technic modpack manifest.",
         )))
     }
 
@@ -385,6 +475,10 @@ impl ModpackUpdateService {
                     on_progress,
                 )
                 .await
+            }
+            "technic" => {
+                Self::apply_technic_update(paths, instance_id, target, downloader, on_progress)
+                    .await
             }
             _ => {
                 if ModrinthPackRegistry::load(&inst_dir).is_some() {
@@ -987,6 +1081,164 @@ impl ModpackUpdateService {
             removed_files,
             downloaded_files,
             extracted_overrides: 0,
+        })
+    }
+
+    async fn apply_technic_update(
+        paths: &LauncherPaths,
+        instance_id: &str,
+        target: &ModpackUpdateCandidate,
+        downloader: &DownloadClient,
+        on_progress: Option<ModpackProgressCallback>,
+    ) -> Result<ModpackUpdateReport> {
+        let inst_dir = paths.instance_dir(instance_id);
+        let mc_dir = paths.minecraft_dir(instance_id);
+        let old_rec = TechnicPackRegistry::load(&inst_dir).ok_or_else(|| {
+            ProviderError::Io(io::Error::other("Missing .mcw/technic-pack.json metadata."))
+        })?;
+        let client = TechnicClient::new(None)?;
+        if let Some(ref cb) = on_progress {
+            cb(
+                0,
+                0,
+                format!("Fetching Technic update {}...", target.version_number),
+            );
+        }
+        let detail = client.get_modpack(&old_rec.slug).await?;
+        let solder_base = if !detail.solder_url.trim().is_empty() {
+            detail.solder_url.clone()
+        } else {
+            old_rec.solder_url.clone()
+        };
+        let old_paths: Vec<String> = old_rec
+            .managed_files
+            .iter()
+            .map(|m| m.path.clone())
+            .collect();
+
+        let (game_version, mut loader, new_managed, downloaded_files, extracted_overrides) =
+            if !solder_base.trim().is_empty() {
+                let build = client
+                    .get_solder_build(&solder_base, &old_rec.slug, &target.version_id)
+                    .await?;
+                let mc_ver = if !build.minecraft.trim().is_empty() {
+                    build.minecraft.clone()
+                } else if !detail.minecraft.trim().is_empty() {
+                    detail.minecraft.clone()
+                } else {
+                    old_rec.minecraft.clone()
+                };
+                let ldr = match build.forge.as_deref().map(str::trim) {
+                    Some(f) if !f.is_empty() => normalize_modloader("forge", f, &mc_ver),
+                    _ => ModLoader::vanilla(),
+                };
+                let (managed, ext) = install_solder_mods(
+                    &build.mods,
+                    &mc_dir,
+                    downloader,
+                    on_progress.clone(),
+                    PRESERVED_OVERRIDE_PREFIXES,
+                )
+                .await?;
+                let dl_count = build.mods.len();
+                (mc_ver, ldr, managed, dl_count, ext)
+            } else {
+                let dl_url = if !target.download_url.trim().is_empty() {
+                    target.download_url.clone()
+                } else {
+                    detail.url.clone()
+                };
+                if dl_url.trim().is_empty() {
+                    return Err(ProviderError::Io(io::Error::other(
+                        "Technic pack update has no download URL.",
+                    )));
+                }
+                let mc_ver = if !detail.minecraft.trim().is_empty() {
+                    detail.minecraft.clone()
+                } else {
+                    old_rec.minecraft.clone()
+                };
+                let staging = StagingDirGuard::new("technic-upd")?;
+                let archive_path = staging.path().join(format!("{}.zip", old_rec.slug));
+                let prog_dl = on_progress.clone();
+                let req = DownloadRequest::new(&dl_url, &archive_path);
+                downloader
+                    .download_file_with_progress(&req, move |done, tot| {
+                        if let Some(ref cb) = prog_dl {
+                            let mb_done = done as f64 / 1_048_576.0;
+                            let msg = if tot > 0 {
+                                format!(
+                                    "Downloading Technic update ({mb_done:.1} / {:.1} MB)",
+                                    tot as f64 / 1_048_576.0
+                                )
+                            } else {
+                                format!("Downloading Technic update ({mb_done:.1} MB)")
+                            };
+                            cb(done, tot.max(done), msg);
+                        }
+                    })
+                    .await?;
+                let rels = extract_zip_safe(&archive_path, &mc_dir, PRESERVED_OVERRIDE_PREFIXES)?;
+                let managed: Vec<TechnicManagedFile> = rels
+                    .into_iter()
+                    .map(|rel| TechnicManagedFile {
+                        name: Path::new(&rel)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("file")
+                            .to_string(),
+                        version: target.version_number.clone(),
+                        path: safe_relative_posix(&rel, "file"),
+                        md5: String::new(),
+                        url: String::new(),
+                        provider: "technic".to_string(),
+                    })
+                    .collect();
+                let ext = managed.len();
+                (mc_ver, ModLoader::vanilla(), managed, 1, ext)
+            };
+
+        if loader.is_vanilla() {
+            if let Some(detected) = detect_loader_from_modpack_jar(&mc_dir, &game_version) {
+                loader = detected;
+            }
+        }
+        let new_managed_paths: Vec<String> = new_managed.iter().map(|m| m.path.clone()).collect();
+        let removed_files = prune_obsolete_managed_files(&mc_dir, &old_paths, &new_managed_paths);
+
+        let store = InstanceStore::new(paths);
+        store
+            .set_runtime_profile(instance_id, &game_version, loader.clone())
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+
+        TechnicPackRegistry::save(
+            &inst_dir,
+            &TechnicPackRecord {
+                schema_version: 1,
+                source: "technic".to_string(),
+                slug: old_rec.slug,
+                pack_name: if old_rec.pack_name.is_empty() {
+                    detail.display_name
+                } else {
+                    old_rec.pack_name
+                },
+                solder_url: solder_base,
+                version: target.version_id.clone(),
+                minecraft: game_version.clone(),
+                managed_files: new_managed,
+                updated_at: String::new(),
+            },
+        )?;
+
+        Ok(ModpackUpdateReport {
+            instance_id: instance_id.to_string(),
+            new_version_id: target.version_id.clone(),
+            new_version_number: target.version_number.clone(),
+            game_version,
+            loader,
+            removed_files,
+            downloaded_files,
+            extracted_overrides,
         })
     }
 

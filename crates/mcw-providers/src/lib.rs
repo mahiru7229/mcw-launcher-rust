@@ -7,6 +7,7 @@ pub mod modpack;
 pub mod modpack_update;
 pub mod modrinth;
 pub mod pack_registry;
+pub mod technic;
 
 pub use atlauncher::{AtLauncherClient, AtLauncherPack};
 pub use cache::ApiCache;
@@ -36,7 +37,12 @@ pub use pack_registry::{
     detect_export_origin, detect_installed_pack, is_verified_or_imported_modpack,
     AtLauncherManagedFile, AtLauncherPackRecord, AtLauncherPackRegistry, CurseForgePackRecord,
     CurseForgePackRegistry, FtbManagedFile, FtbPackRecord, FtbPackRegistry, InstalledPackOrigin,
-    InstanceExportOrigin, ModrinthPackRecord, ModrinthPackRegistry,
+    InstanceExportOrigin, ModrinthPackRecord, ModrinthPackRegistry, TechnicManagedFile,
+    TechnicPackRecord, TechnicPackRegistry,
+};
+pub use technic::{
+    detect_loader_from_modpack_jar, SolderBuildInfo, SolderModEntry, SolderPackInfo, TechnicClient,
+    TechnicModpackDetail, TechnicModpackSummary,
 };
 
 use thiserror::Error;
