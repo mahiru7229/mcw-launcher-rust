@@ -327,6 +327,23 @@ pub fn inspect_archive_name(archive_path: &Path) -> Option<String> {
             }
         }
     }
+    if let Some(prefix) = find_prism_prefix(&mut archive) {
+        let cfg_name = format!("{prefix}instance.cfg");
+        if let Ok(mut entry) = archive.by_name(&cfg_name) {
+            let mut raw_cfg = String::new();
+            if io::Read::read_to_string(&mut entry, &mut raw_cfg).is_ok() {
+                if let Some(name) = parse_prism_instance_cfg(&raw_cfg).name {
+                    if !name.trim().is_empty() {
+                        return Some(suggest_short_instance_name(&name, 36));
+                    }
+                }
+            }
+        }
+        let folder_name = prefix.trim_end_matches('/');
+        if !folder_name.is_empty() {
+            return Some(suggest_short_instance_name(folder_name, 36));
+        }
+    }
     archive_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -473,9 +490,19 @@ impl ModpackInstaller {
             )
             .await;
         }
+        if let Some(prism_prefix) = find_prism_prefix(&mut archive) {
+            drop(archive);
+            return Self::install_prism_zip(
+                paths,
+                archive_path,
+                &prism_prefix,
+                instance_name_override,
+                on_progress,
+            );
+        }
 
         Err(ProviderError::Io(io::Error::other(
-            "Unsupported modpack archive: missing mcw_package.json, modrinth.index.json, or manifest.json",
+            "Unsupported modpack archive: missing mcw_package.json, modrinth.index.json, manifest.json, or Prism/MultiMC mmc-pack.json",
         )))
     }
 
@@ -579,6 +606,202 @@ impl ModpackInstaller {
             loader,
             downloaded_files: 0,
             extracted_overrides,
+            manual_downloads: Vec::new(),
+        })
+    }
+
+    fn install_prism_zip(
+        paths: &LauncherPaths,
+        archive_path: &Path,
+        prefix: &str,
+        name_override: Option<&str>,
+        on_progress: Option<ModpackProgressCallback>,
+    ) -> Result<ModpackInstallReport> {
+        if let Some(ref cb) = on_progress {
+            cb(
+                0,
+                1,
+                "Reading Prism/MultiMC instance metadata...".to_string(),
+            );
+        }
+
+        let (pack_json, cfg_parsed, icon_bytes): (
+            Option<serde_json::Value>,
+            PrismInstanceCfg,
+            Option<Vec<u8>>,
+        ) = {
+            let file = File::open(archive_path)?;
+            let mut archive = ZipArchive::new(file)
+                .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+
+            let pack_name = format!("{prefix}mmc-pack.json");
+            let pack_json = match archive.by_name(&pack_name) {
+                Ok(entry) => serde_json::from_reader(entry).ok(),
+                Err(_) => None,
+            };
+
+            let cfg_name = format!("{prefix}instance.cfg");
+            let cfg_parsed = match archive.by_name(&cfg_name) {
+                Ok(mut entry) => {
+                    let mut raw = String::new();
+                    let _ = io::Read::read_to_string(&mut entry, &mut raw);
+                    parse_prism_instance_cfg(&raw)
+                }
+                Err(_) => PrismInstanceCfg::default(),
+            };
+
+            let mut icon_bytes = None;
+            for icon_rel in [
+                format!("{prefix}icon.png"),
+                format!("{prefix}.minecraft/icon.png"),
+                format!("{prefix}minecraft/icon.png"),
+            ] {
+                if let Ok(mut entry) = archive.by_name(&icon_rel) {
+                    let mut buf = Vec::new();
+                    if io::Read::read_to_end(&mut entry, &mut buf).is_ok() && !buf.is_empty() {
+                        icon_bytes = Some(buf);
+                        break;
+                    }
+                }
+            }
+
+            (pack_json, cfg_parsed, icon_bytes)
+        };
+
+        let mut game_version = cfg_parsed
+            .intended_version
+            .clone()
+            .unwrap_or_else(|| "1.20.1".to_string());
+        let mut loader = ModLoader::vanilla();
+        if let Some(ref pj) = pack_json {
+            if let Some(components) = pj.get("components").and_then(|v| v.as_array()) {
+                for comp in components {
+                    if comp
+                        .get("disabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    let uid = comp.get("uid").and_then(|v| v.as_str()).unwrap_or("");
+                    let ver = comp
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    if uid == "net.minecraft" && !ver.is_empty() {
+                        game_version = ver.to_string();
+                    }
+                }
+                for comp in components {
+                    if comp
+                        .get("disabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    let uid = comp.get("uid").and_then(|v| v.as_str()).unwrap_or("");
+                    let ver = comp
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    let mapped = match uid {
+                        "net.fabricmc.fabric-loader" => Some("fabric"),
+                        "org.quiltmc.quilt-loader" => Some("quilt"),
+                        "net.neoforged" => Some("neoforge"),
+                        "net.minecraftforge" => Some("forge"),
+                        _ => None,
+                    };
+                    if let Some(kind) = mapped {
+                        loader = normalize_modloader(kind, ver, &game_version);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let fallback_name = cfg_parsed
+            .name
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                let f = prefix.trim_end_matches('/');
+                if !f.is_empty() {
+                    Some(f.to_string())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                archive_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "Prism Instance".to_string());
+        let raw_base = match name_override.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(explicit) => explicit.to_string(),
+            None => suggest_short_instance_name(&fallback_name, 36),
+        };
+
+        let store = InstanceStore::new(paths);
+        let target_name = store
+            .resolve_unique_instance_name(&raw_base)
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+        let (inst, mut inst_settings) = store
+            .create_instance(&target_name, &game_version, loader.clone())
+            .map_err(|e| ProviderError::Io(io::Error::other(e.to_string())))?;
+
+        if let Some(min_mb) = cfg_parsed.min_mem_mb {
+            if min_mb >= 256 {
+                inst_settings.min_memory = min_mb;
+            }
+        }
+        if let Some(max_mb) = cfg_parsed.max_mem_mb {
+            if max_mb >= 512 {
+                inst_settings.max_memory = max_mb.max(inst_settings.min_memory);
+            }
+        }
+        if !cfg_parsed.jvm_args.is_empty() {
+            inst_settings.jvm_arguments = cfg_parsed.jvm_args;
+        }
+        let _ = store.save_settings(&inst.instance_id, &inst_settings);
+
+        if let Some(notes) = cfg_parsed.notes.filter(|n| !n.trim().is_empty()) {
+            let _ = fs::write(
+                paths.instance_dir(&inst.instance_id).join("notes.txt"),
+                notes,
+            );
+        }
+        if let Some(bytes) = icon_bytes {
+            let _ =
+                store.set_instance_icon_bytes_with_origin(&inst.instance_id, &bytes, "embedded");
+        }
+
+        let mc_dir = paths.minecraft_dir(&inst.instance_id);
+        fs::create_dir_all(&mc_dir)?;
+        if let Some(ref cb) = on_progress {
+            cb(
+                0,
+                1,
+                "Extracting Prism/MultiMC instance files...".to_string(),
+            );
+        }
+        let p_dot = format!("{prefix}.minecraft/");
+        let p_plain = format!("{prefix}minecraft/");
+        let extracted = extract_overrides(archive_path, &[&p_dot, &p_plain], &mc_dir)?;
+        if let Some(ref cb) = on_progress {
+            cb(1, 1, "Prism/MultiMC instance imported.".to_string());
+        }
+
+        Ok(ModpackInstallReport {
+            instance_id: inst.instance_id,
+            game_version,
+            loader,
+            downloaded_files: 0,
+            extracted_overrides: extracted,
             manual_downloads: Vec::new(),
         })
     }
@@ -1558,6 +1781,96 @@ pub(crate) fn extract_overrides_filtered(
     Ok(extracted)
 }
 
+#[derive(Debug, Default)]
+struct PrismInstanceCfg {
+    name: Option<String>,
+    notes: Option<String>,
+    intended_version: Option<String>,
+    min_mem_mb: Option<u32>,
+    max_mem_mb: Option<u32>,
+    jvm_args: Vec<String>,
+}
+
+fn find_prism_prefix(archive: &mut ZipArchive<File>) -> Option<String> {
+    let mut best_cfg_prefix: Option<String> = None;
+    let mut best_pack_prefix: Option<String> = None;
+
+    for i in 0..archive.len() {
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().replace('\\', "/");
+        let clean = name.trim_start_matches('/');
+        if clean == "mmc-pack.json" {
+            return Some(String::new());
+        }
+        if clean == "instance.cfg" && best_cfg_prefix.is_none() {
+            best_cfg_prefix = Some(String::new());
+        }
+        if let Some(prefix) = clean.strip_suffix("mmc-pack.json") {
+            let depth = prefix.matches('/').count();
+            if depth <= 1 && best_pack_prefix.is_none() {
+                best_pack_prefix = Some(prefix.to_string());
+            }
+        } else if let Some(prefix) = clean.strip_suffix("instance.cfg") {
+            let depth = prefix.matches('/').count();
+            if depth <= 1 && best_cfg_prefix.is_none() {
+                best_cfg_prefix = Some(prefix.to_string());
+            }
+        }
+    }
+
+    best_pack_prefix.or(best_cfg_prefix)
+}
+
+fn parse_prism_instance_cfg(raw: &str) -> PrismInstanceCfg {
+    let mut out = PrismInstanceCfg::default();
+    let mut override_mem = true;
+    let mut override_args = true;
+    let mut min_mem = None;
+    let mut max_mem = None;
+    let mut jvm_args_raw = None;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
+            continue;
+        }
+        let Some((k, v)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = k.trim();
+        let val = v.trim();
+        match key {
+            "name" if !val.is_empty() => out.name = Some(val.to_string()),
+            "notes" if !val.is_empty() => {
+                out.notes = Some(val.replace("\\n", "\n").replace("\\\\", "\\"));
+            }
+            "IntendedVersion" if !val.is_empty() => out.intended_version = Some(val.to_string()),
+            "OverrideMemory" => override_mem = val.eq_ignore_ascii_case("true"),
+            "MinMemAlloc" => min_mem = val.parse::<u32>().ok(),
+            "MaxMemAlloc" => max_mem = val.parse::<u32>().ok(),
+            "OverrideJavaArgs" => override_args = val.eq_ignore_ascii_case("true"),
+            "JvmArgs" if !val.is_empty() => jvm_args_raw = Some(val.to_string()),
+            _ => {}
+        }
+    }
+
+    if override_mem {
+        out.min_mem_mb = min_mem;
+        out.max_mem_mb = max_mem;
+    }
+    if override_args {
+        if let Some(raw_args) = jvm_args_raw {
+            out.jvm_args = raw_args.split_whitespace().map(str::to_string).collect();
+        }
+    }
+    out
+}
+
 pub(crate) fn safe_join_under(base: &Path, relative: &str) -> Result<PathBuf> {
     let normalized = relative.replace('\\', "/");
     let mut out = base.to_path_buf();
@@ -1879,5 +2192,88 @@ mod tests {
         let short = suggest_short_instance_name(long, 36);
         assert!(short.chars().count() <= 36);
         assert!(short.contains("DeceasedCraft"));
+    }
+
+    #[tokio::test]
+    async fn imports_prism_and_multimc_zip_preserving_loader_notes_and_files() {
+        let dir = tempdir().unwrap();
+        let paths = LauncherPaths::portable(dir.path().join("mcw"));
+        paths.initialize().unwrap();
+
+        let prism_zip = dir.path().join("prism-pack.zip");
+        {
+            let mut zip = ZipWriter::new(File::create(&prism_zip).unwrap());
+            zip.start_file("MyPrismPack/instance.cfg", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(
+                b"InstanceType=OneSix\nname=Prism Fabric SMP\nnotes=IP: play.example.net\\nRemember backup!\nOverrideMemory=true\nMinMemAlloc=1024\nMaxMemAlloc=4096\nOverrideJavaArgs=true\nJvmArgs=-XX:+UseG1GC -DsomeFlag=true\n",
+            )
+            .unwrap();
+            zip.start_file("MyPrismPack/mmc-pack.json", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(
+                br#"{
+                    "formatVersion": 1,
+                    "components": [
+                        { "uid": "net.minecraft", "version": "1.20.4" },
+                        { "uid": "net.fabricmc.fabric-loader", "version": "0.15.11" }
+                    ]
+                }"#,
+            )
+            .unwrap();
+            zip.start_file(
+                "MyPrismPack/.minecraft/mods/sodium.jar",
+                SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(b"mod-jar-bytes").unwrap();
+            zip.start_file(
+                "MyPrismPack/.minecraft/saves/world1/level.dat",
+                SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(b"level-bytes").unwrap();
+            zip.finish().unwrap();
+        }
+
+        assert_eq!(
+            inspect_archive_name(&prism_zip).as_deref(),
+            Some("Prism Fabric SMP")
+        );
+
+        let dl = DownloadClient::new().unwrap();
+        let report = ModpackInstaller::install_from_archive_with_options(
+            &paths,
+            &prism_zip,
+            None,
+            &dl,
+            None,
+            &ModpackInstallOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.game_version, "1.20.4");
+        assert_eq!(report.loader.name, "fabric");
+        assert_eq!(report.loader.version, "0.15.11");
+        assert!(paths
+            .minecraft_dir(&report.instance_id)
+            .join("mods/sodium.jar")
+            .is_file());
+        assert!(paths
+            .minecraft_dir(&report.instance_id)
+            .join("saves/world1/level.dat")
+            .is_file());
+        let notes =
+            fs::read_to_string(paths.instance_dir(&report.instance_id).join("notes.txt")).unwrap();
+        assert_eq!(notes, "IP: play.example.net\nRemember backup!");
+        let store = InstanceStore::new(&paths);
+        let settings = store.load_settings(&report.instance_id).unwrap();
+        assert_eq!(settings.max_memory, 4096);
+        assert_eq!(
+            settings.jvm_arguments,
+            vec!["-XX:+UseG1GC", "-DsomeFlag=true"]
+        );
     }
 }
