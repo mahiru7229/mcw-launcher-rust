@@ -456,6 +456,9 @@ impl McwApp {
                 self.instance_inline_browser = None;
                 self.browser_global_mode = false;
                 self.clear_remote_thumbs_if_idle();
+                if self.changelog_markdown.is_empty() && !self.changelog_refreshing {
+                    self.start_changelog_refresh(ctx);
+                }
                 self.record_nav_location();
             }
         }
@@ -533,6 +536,9 @@ impl McwApp {
                 self.instance_inline_browser = None;
                 self.browser_global_mode = false;
                 self.clear_remote_thumbs_if_idle();
+                if self.changelog_markdown.is_empty() && !self.changelog_refreshing {
+                    self.start_changelog_refresh(ctx);
+                }
             }
         }
         self.nav_suppress_record = false;

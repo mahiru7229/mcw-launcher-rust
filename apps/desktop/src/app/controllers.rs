@@ -4338,10 +4338,12 @@ impl McwApp {
                     match res {
                         Ok(md) => {
                             self.changelog_markdown = md;
+                            self.changelog_error = None;
                             self.notice_banner =
-                                Some(("Changelog updated from GitHub.".to_string(), false));
+                                Some(("Changelog loaded from GitHub.".to_string(), false));
                         }
                         Err(err) => {
+                            self.changelog_error = Some(err.clone());
                             self.notice_banner =
                                 Some((format!("Failed to fetch changelog: {err}"), true));
                         }
@@ -6855,12 +6857,11 @@ impl McwApp {
         if self.changelog_refreshing {
             return;
         }
+        self.changelog_error = None;
         if self.connectivity_status == ConnectivityStatus::Offline {
-            self.notice_banner = Some((
-                "Offline mode: showing bundled changelog. Connect to the internet to fetch latest notes."
-                    .to_string(),
-                true,
-            ));
+            let msg = "Offline: connect to the internet to load CHANGELOG.md from GitHub.";
+            self.changelog_error = Some(msg.to_string());
+            self.notice_banner = Some((msg.to_string(), true));
             return;
         }
         self.changelog_refreshing = true;

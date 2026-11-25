@@ -398,7 +398,7 @@ impl McwApp {
                     }
                     if self.connectivity_status == ConnectivityStatus::Offline {
                         ui.label(
-                            RichText::new("(Offline — showing bundled changelog)")
+                            RichText::new("(Offline — GitHub unreachable)")
                                 .size(11.5)
                                 .color(p.warning),
                         );
@@ -413,11 +413,42 @@ impl McwApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        crate::app::views::stage3_dialogs::render_release_markdown(
-                            ui,
-                            &self.changelog_markdown,
-                            p,
-                        );
+                        if self.changelog_markdown.trim().is_empty() {
+                            if self.changelog_refreshing {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label("Loading CHANGELOG.md from GitHub...");
+                                });
+                            } else {
+                                let msg = self
+                                    .changelog_error
+                                    .as_deref()
+                                    .unwrap_or("Changelog is not loaded yet.");
+                                ui.label(RichText::new(msg).color(p.text_muted));
+                                ui.add_space(8.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    let retry_btn = Button::new(
+                                        RichText::new("Retry").color(p.accent_text).strong(),
+                                    )
+                                    .fill(p.accent);
+                                    if ui.add(retry_btn).clicked() {
+                                        self.start_changelog_refresh(ctx);
+                                    }
+                                    if ui.button("Open on GitHub").clicked() {
+                                        open_external(&format!(
+                                            "https://github.com/{}/blob/main/CHANGELOG.md",
+                                            mcw_models::GITHUB_REPOSITORY
+                                        ));
+                                    }
+                                });
+                            }
+                        } else {
+                            crate::app::views::stage3_dialogs::render_release_markdown(
+                                ui,
+                                &self.changelog_markdown,
+                                p,
+                            );
+                        }
                     });
             });
     }

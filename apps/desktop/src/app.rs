@@ -320,6 +320,7 @@ pub struct McwApp {
     last_connectivity_check_at: Instant,
     changelog_markdown: String,
     changelog_refreshing: bool,
+    changelog_error: Option<String>,
     relocated_storage_prompt: Option<StorageRelocationPrompt>,
     relocating_storage_busy: bool,
 
@@ -838,8 +839,9 @@ impl McwApp {
             export_tree_expanded_dirs: HashSet::new(),
             export_tree_key: None,
             last_connectivity_check_at: Instant::now(),
-            changelog_markdown: include_str!("../../../CHANGELOG.md").to_string(),
+            changelog_markdown: String::new(),
             changelog_refreshing: false,
+            changelog_error: None,
             relocated_storage_prompt,
             relocating_storage_busy: false,
             pending_manual_counts: HashMap::new(),
