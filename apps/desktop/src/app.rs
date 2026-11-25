@@ -665,6 +665,13 @@ impl McwApp {
 
         mcw_net::set_global_bandwidth_limit_mbps(prefs.download_limit_mbps);
         mcw_net::set_global_segments_per_file(prefs.download_segments_per_file);
+        mcw_net::set_global_proxy_config(mcw_net::ProxyConfig {
+            mode: prefs.proxy_mode.clone(),
+            host: prefs.proxy_host.clone(),
+            port: prefs.proxy_port,
+            username: prefs.proxy_username.clone(),
+            password: prefs.proxy_password.clone(),
+        });
         mcw_net::init_persistent_verification_cache(
             &paths.cache_root.join("verification_cache.json"),
         );

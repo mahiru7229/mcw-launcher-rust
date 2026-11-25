@@ -36,6 +36,7 @@ impl McwApp {
         let mut check_latest_java = false;
         let mut discord_changed = false;
         let mut open_first_run = false;
+        let mut apply_proxy = false;
         let trigger_storage_scan = (self.launcher_settings_tab == LauncherSettingsTab::Storage
             || !self.settings_search.trim().is_empty())
             && self.storage_summary.is_none()
@@ -238,6 +239,7 @@ impl McwApp {
                                                     ui,
                                                     None,
                                                     &mut prefs_dirty,
+                                                    &mut apply_proxy,
                                                 );
                                             }
                                             LauncherSettingsTab::Runtime => {
@@ -292,6 +294,7 @@ impl McwApp {
                                             ui,
                                             q,
                                             &mut prefs_dirty,
+                                            &mut apply_proxy,
                                         );
                                         matched += self.render_settings_runtime_tab(
                                             ui,
@@ -395,12 +398,20 @@ impl McwApp {
                 self.prefs.discord_rpc_enabled,
                 self.prefs.discord_client_id.clone(),
             );
-            self.save_prefs();
             mcw_net::set_global_bandwidth_limit_mbps(self.prefs.download_limit_mbps);
+            mcw_net::set_global_proxy_config(mcw_net::ProxyConfig::default());
+            if let Ok(client) = DownloadClient::new() {
+                self.download_client = client;
+            }
+            self.save_prefs();
             self.notice_banner =
                 Some(("Launcher settings restored to defaults.".to_string(), false));
-        } else if prefs_dirty {
-            self.save_prefs();
+        } else {
+            if apply_proxy {
+                self.apply_proxy_settings(ctx);
+            } else if prefs_dirty {
+                self.save_prefs();
+            }
         }
     }
 
@@ -736,6 +747,7 @@ impl McwApp {
         ui: &mut egui::Ui,
         search_q: Option<&str>,
         prefs_dirty: &mut bool,
+        apply_proxy: &mut bool,
     ) -> usize {
         let p = self.palette;
         let cat_title = self.t("settings.section.downloads").to_string();
@@ -856,6 +868,131 @@ impl McwApp {
                                 }
                             });
                     });
+                });
+            ui.add_space(8.0);
+        }
+
+        // Card 1a: Network Proxy (HTTP / SOCKS5)
+        if settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                "network proxy http https socks5 host port username password",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                render_settings_search_badge(ui, p, &cat_title);
+            }
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Network Proxy (HTTP / SOCKS5)").strong());
+                    ui.label(
+                        RichText::new(
+                            "Route launcher file downloads and connectivity probes through an HTTP or SOCKS5 proxy.",
+                        )
+                        .size(11.5)
+                        .color(p.text_muted),
+                    );
+                    ui.add_space(6.0);
+                    let cur_mode_lbl = match self.prefs.proxy_mode.as_str() {
+                        "http" => "HTTP / HTTPS Proxy",
+                        "socks5" => "SOCKS5 Proxy",
+                        _ => "Direct (No Proxy)",
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Proxy Mode:");
+                        egui::ComboBox::from_id_salt("launcher_settings_proxy_mode_combo")
+                            .selected_text(cur_mode_lbl)
+                            .width(190.0)
+                            .show_ui(ui, |ui| {
+                                for (val, label) in [
+                                    ("none", "Direct (No Proxy)"),
+                                    ("http", "HTTP / HTTPS Proxy"),
+                                    ("socks5", "SOCKS5 Proxy"),
+                                ] {
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.prefs.proxy_mode,
+                                            val.to_string(),
+                                            label,
+                                        )
+                                        .changed()
+                                    {
+                                        *prefs_dirty = true;
+                                    }
+                                }
+                            });
+                    });
+
+                    if self.prefs.proxy_mode != "none" {
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Host:");
+                            if ui
+                                .add(
+                                    TextEdit::singleline(&mut self.prefs.proxy_host)
+                                        .hint_text("127.0.0.1")
+                                        .desired_width(180.0),
+                                )
+                                .changed()
+                            {
+                                *prefs_dirty = true;
+                            }
+                            ui.label("Port:");
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut self.prefs.proxy_port)
+                                        .range(1..=65535)
+                                        .speed(1),
+                                )
+                                .changed()
+                            {
+                                *prefs_dirty = true;
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Username (optional):");
+                            if ui
+                                .add(
+                                    TextEdit::singleline(&mut self.prefs.proxy_username)
+                                        .hint_text("optional")
+                                        .desired_width(140.0),
+                                )
+                                .changed()
+                            {
+                                *prefs_dirty = true;
+                            }
+                            ui.label("Password:");
+                            if ui
+                                .add(
+                                    TextEdit::singleline(&mut self.prefs.proxy_password)
+                                        .password(true)
+                                        .hint_text("optional")
+                                        .desired_width(140.0),
+                                )
+                                .changed()
+                            {
+                                *prefs_dirty = true;
+                            }
+                        });
+                    }
+                    ui.add_space(6.0);
+                    if ui
+                        .add(
+                            Button::new(RichText::new("Apply Proxy").color(p.accent_text).strong())
+                                .fill(p.accent),
+                        )
+                        .clicked()
+                    {
+                        *apply_proxy = true;
+                    }
                 });
             ui.add_space(8.0);
         }

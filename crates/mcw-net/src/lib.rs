@@ -1,10 +1,12 @@
 pub mod bandwidth;
 pub mod connectivity;
 pub mod journal;
+pub mod proxy;
 
 pub use bandwidth::{global_bandwidth_limit_mbps, set_global_bandwidth_limit_mbps};
 pub use connectivity::{ConnectivityMonitor, ConnectivityStatus};
 pub use journal::{DownloadJournal, DownloadJournalEntry};
+pub use proxy::{apply_global_proxy, global_proxy_config, set_global_proxy_config, ProxyConfig};
 
 use futures::stream::{self, StreamExt};
 use reqwest::header::{
@@ -265,7 +267,7 @@ pub fn compute_byte_ranges(total: u64, segments: usize) -> Vec<(u64, u64)> {
 
 impl DownloadClient {
     pub fn new() -> Result<Self> {
-        let http = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .user_agent(mcw_models::user_agent())
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(30))
@@ -273,8 +275,8 @@ impl DownloadClient {
             .http2_adaptive_window(true)
             .http2_initial_stream_window_size(Some(2 * 1024 * 1024))
             .http2_initial_connection_window_size(Some(4 * 1024 * 1024))
-            .pool_max_idle_per_host(32)
-            .build()?;
+            .pool_max_idle_per_host(32);
+        let http = apply_global_proxy(builder).build()?;
         Ok(Self {
             http,
             max_retries: 4,

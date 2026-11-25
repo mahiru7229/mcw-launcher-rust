@@ -6042,6 +6042,39 @@ impl McwApp {
         });
     }
 
+    pub(crate) fn apply_proxy_settings(&mut self, ctx: &egui::Context) {
+        mcw_net::set_global_proxy_config(mcw_net::ProxyConfig {
+            mode: self.prefs.proxy_mode.clone(),
+            host: self.prefs.proxy_host.clone(),
+            port: self.prefs.proxy_port,
+            username: self.prefs.proxy_username.clone(),
+            password: self.prefs.proxy_password.clone(),
+        });
+        match DownloadClient::new() {
+            Ok(client) => {
+                self.download_client = client;
+                self.save_prefs();
+                self.start_connectivity_check(ctx);
+                let summary =
+                    if self.prefs.proxy_mode == "none" || self.prefs.proxy_host.trim().is_empty() {
+                        "Direct connection enabled (no proxy).".to_string()
+                    } else {
+                        format!(
+                            "Applied {} proxy ({}:{}).",
+                            self.prefs.proxy_mode.to_ascii_uppercase(),
+                            self.prefs.proxy_host.trim(),
+                            self.prefs.proxy_port
+                        )
+                    };
+                self.push_global_log(format!("[NETWORK] {summary}"));
+                self.notice_banner = Some((summary, false));
+            }
+            Err(err) => {
+                self.notice_banner = Some((format!("Invalid proxy configuration: {err}"), true));
+            }
+        }
+    }
+
     pub(crate) fn open_modpack_update_window(&mut self, instance_id: String, ctx: &egui::Context) {
         if self.show_modpack_update_window && self.modpack_update_instance_id == instance_id {
             return;

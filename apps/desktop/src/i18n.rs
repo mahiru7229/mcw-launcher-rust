@@ -331,6 +331,24 @@ pub struct LauncherPrefs {
     pub home_view_mode: String,
     #[serde(default = "default_home_sort_by")]
     pub home_sort_by: String,
+    #[serde(default = "default_proxy_mode")]
+    pub proxy_mode: String,
+    #[serde(default)]
+    pub proxy_host: String,
+    #[serde(default = "default_proxy_port")]
+    pub proxy_port: u16,
+    #[serde(default)]
+    pub proxy_username: String,
+    #[serde(default)]
+    pub proxy_password: String,
+}
+
+fn default_proxy_mode() -> String {
+    "none".to_string()
+}
+
+fn default_proxy_port() -> u16 {
+    8080
 }
 
 fn default_home_view_mode() -> String {
@@ -481,6 +499,11 @@ impl Default for LauncherPrefs {
             junk_reminder_snooze_until: 0,
             home_view_mode: default_home_view_mode(),
             home_sort_by: default_home_sort_by(),
+            proxy_mode: default_proxy_mode(),
+            proxy_host: String::new(),
+            proxy_port: default_proxy_port(),
+            proxy_username: String::new(),
+            proxy_password: String::new(),
         }
     }
 }
