@@ -1290,6 +1290,51 @@ impl McwApp {
                             settings.disable_launch_checking = Some(disable_launch_chk);
                         }
 
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Account Override:");
+                            let pref_lbl = match settings.preferred_account_uuid.as_deref() {
+                                None => "Use Global Account".to_string(),
+                                Some(uuid) => self
+                                    .accounts
+                                    .iter()
+                                    .find(|a| a.uuid == uuid)
+                                    .map(|a| {
+                                        let kind = if a.account_type == AccountSource::Microsoft {
+                                            "MSA"
+                                        } else {
+                                            "Offline"
+                                        };
+                                        format!("{} ({kind})", a.username)
+                                    })
+                                    .unwrap_or_else(|| "Missing account (Global fallback)".to_string()),
+                            };
+                            let aw = auto_combo_width(ui, &pref_lbl, 180.0, 280.0);
+                            egui::ComboBox::from_id_salt("inst_account_override_combo")
+                                .selected_text(&pref_lbl)
+                                .width(aw)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut settings.preferred_account_uuid,
+                                        None,
+                                        "Use Global Account",
+                                    );
+                                    for acc in &self.accounts {
+                                        let kind = if acc.account_type == AccountSource::Microsoft {
+                                            "MSA"
+                                        } else {
+                                            "Offline"
+                                        };
+                                        ui.selectable_value(
+                                            &mut settings.preferred_account_uuid,
+                                            Some(acc.uuid.clone()),
+                                            format!("{} ({kind})", acc.username),
+                                        );
+                                    }
+                                });
+                        });
+
                         ui.add_space(10.0);
                         ui.separator();
                         ui.add_space(10.0);

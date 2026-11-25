@@ -180,6 +180,7 @@ impl McwApp {
         let mut go_back = false;
         let mut go_forward = false;
         let mut open_accounts = false;
+        let mut switch_to_uuid: Option<String> = None;
         let mut open_about = false;
         let mut check_connectivity = false;
 
@@ -341,20 +342,40 @@ impl McwApp {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // Account chip with crisp 2D skin face avatar
+                        // Quick account switcher ComboBox + crisp 2D skin face avatar
                         if let Some(acc) = self.active_account().cloned() {
                             let kind = match acc.account_type {
                                 AccountSource::Microsoft => "MSA",
                                 AccountSource::Offline => "Offline",
                             };
-                            let chip = Button::new(format!("{} ({kind})", acc.username))
-                                .corner_radius(CornerRadius::same(18))
-                                .min_size(Vec2::new(0.0, 34.0));
-                            let clicked_label = ui.add(chip).clicked();
+                            let chip_text = format!("{} ({kind})", acc.username);
+                            let cw = auto_combo_width(ui, &chip_text, 128.0, 220.0);
+                            egui::ComboBox::from_id_salt("top_bar_account_switcher")
+                                .selected_text(&chip_text)
+                                .width(cw)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    for candidate in &self.accounts {
+                                        let c_kind = match candidate.account_type {
+                                            AccountSource::Microsoft => "MSA",
+                                            AccountSource::Offline => "Offline",
+                                        };
+                                        let is_cur = candidate.uuid == acc.uuid;
+                                        let lbl = format!("{} ({c_kind})", candidate.username);
+                                        if ui.selectable_label(is_cur, lbl).clicked() && !is_cur {
+                                            switch_to_uuid = Some(candidate.uuid.clone());
+                                        }
+                                    }
+                                    ui.separator();
+                                    if ui.selectable_label(false, "Manage Accounts...").clicked() {
+                                        open_accounts = true;
+                                    }
+                                })
+                                .response
+                                .on_hover_text(
+                                    "Switch active global account or manage stored accounts",
+                                );
                             self.render_account_avatar(ui, &acc.uuid, 26.0);
-                            if clicked_label {
-                                open_accounts = true;
-                            }
                         } else if ui
                             .add(
                                 Button::new(self.t("Sign in / Add Account"))
@@ -443,6 +464,9 @@ impl McwApp {
                 });
             });
 
+        if let Some(uuid) = switch_to_uuid {
+            self.switch_active_account(&uuid);
+        }
         if open_accounts {
             self.open_accounts_window(ctx);
         }

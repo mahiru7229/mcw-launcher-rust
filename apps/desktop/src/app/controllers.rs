@@ -547,6 +547,27 @@ impl McwApp {
             .or_else(|| self.accounts.first())
     }
 
+    pub(crate) fn account_for_instance(
+        &self,
+        settings: &InstanceSettings,
+    ) -> Option<StoredAccount> {
+        resolve_account_for_instance(
+            &self.accounts,
+            self.active_account(),
+            settings.preferred_account_uuid.as_deref(),
+        )
+        .cloned()
+    }
+
+    pub(crate) fn switch_active_account(&mut self, uuid: &str) {
+        if let Some(acc) = self.accounts.iter().find(|a| a.uuid == uuid).cloned() {
+            let username = acc.username.clone();
+            let _ = AccountStore::new(&self.paths).upsert(acc, true);
+            self.reload_accounts();
+            self.push_global_log(format!("[AUTH] Switched active account to '{username}'."));
+        }
+    }
+
     pub(crate) fn selected_instance(&self) -> Option<&Instance> {
         let id = self.selected_instance_id.as_ref()?;
         self.instances.iter().find(|i| &i.instance_id == id)
@@ -693,7 +714,7 @@ impl McwApp {
         let Some(settings) = self.selected_settings.clone() else {
             return;
         };
-        let Some(account) = self.active_account().cloned() else {
+        let Some(account) = self.account_for_instance(&settings) else {
             self.notice_banner = Some((self.t("accounts.auth_required_notice").to_string(), true));
             self.open_accounts_window(ctx);
             return;
@@ -6769,12 +6790,25 @@ pub(crate) fn is_account_or_token_error(err: &str) -> bool {
     .any(|kw| low.contains(kw))
 }
 
+pub(crate) fn resolve_account_for_instance<'a>(
+    accounts: &'a [StoredAccount],
+    global_active: Option<&'a StoredAccount>,
+    preferred_uuid: Option<&str>,
+) -> Option<&'a StoredAccount> {
+    if let Some(pref) = preferred_uuid.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(hit) = accounts.iter().find(|a| a.uuid == pref) {
+            return Some(hit);
+        }
+    }
+    global_active
+}
+
 #[cfg(test)]
 mod tests {
-    use super::InstanceSettings;
     use super::{
         apply_lan_agent_option, is_account_or_token_error, normalize_mod_stem,
-        resolve_unique_mod_filename,
+        resolve_account_for_instance, resolve_unique_mod_filename, AccountSource, InstanceSettings,
+        StoredAccount,
     };
 
     #[test]
@@ -6832,5 +6866,39 @@ mod tests {
         assert!(!is_account_or_token_error(
             "Checksum mismatch for asset.jar"
         ));
+    }
+
+    #[test]
+    fn resolves_per_instance_account_override_with_global_fallback() {
+        let a1 = StoredAccount {
+            uuid: "u1".to_string(),
+            username: "MainMSA".to_string(),
+            account_type: AccountSource::Microsoft,
+            skin_url: None,
+            active: true,
+        };
+        let a2 = StoredAccount {
+            uuid: "u2".to_string(),
+            username: "LanAlt".to_string(),
+            account_type: AccountSource::Offline,
+            skin_url: None,
+            active: false,
+        };
+        let list = vec![a1.clone(), a2.clone()];
+
+        assert_eq!(
+            resolve_account_for_instance(&list, Some(&list[0]), None).map(|a| a.uuid.as_str()),
+            Some("u1")
+        );
+        assert_eq!(
+            resolve_account_for_instance(&list, Some(&list[0]), Some("u2"))
+                .map(|a| a.uuid.as_str()),
+            Some("u2")
+        );
+        assert_eq!(
+            resolve_account_for_instance(&list, Some(&list[0]), Some("missing"))
+                .map(|a| a.uuid.as_str()),
+            Some("u1")
+        );
     }
 }

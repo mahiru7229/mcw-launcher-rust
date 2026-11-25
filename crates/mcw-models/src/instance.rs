@@ -134,6 +134,8 @@ pub struct InstanceSettings {
     pub enable_gamemode: bool,
     #[serde(default)]
     pub enable_mangohud: bool,
+    #[serde(default)]
+    pub preferred_account_uuid: Option<String>,
 }
 
 impl InstanceSettings {
@@ -200,6 +202,7 @@ impl Default for InstanceSettings {
             env_vars: Vec::new(),
             enable_gamemode: false,
             enable_mangohud: false,
+            preferred_account_uuid: None,
         }
     }
 }
