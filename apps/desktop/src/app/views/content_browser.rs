@@ -267,6 +267,7 @@ impl McwApp {
                                     BrowserProvider::CurseForge,
                                     BrowserProvider::Ftb,
                                     BrowserProvider::AtLauncher,
+                                    BrowserProvider::Technic,
                                 ]
                             } else {
                                 &[BrowserProvider::Modrinth, BrowserProvider::CurseForge]
@@ -1152,6 +1153,52 @@ impl McwApp {
                             provider_label: "ATLauncher",
                             title: pack.name.clone(),
                             icon,
+                            web_url: Some(web),
+                            default_loader: "forge",
+                        },
+                    }
+                })
+                .collect(),
+            BrowserProvider::Technic => self
+                .browser_technic_results
+                .iter()
+                .map(|pack| {
+                    let web = pack.website_url();
+                    let metric_label = if pack.downloads > 0 {
+                        format!("{} downloads", format_compact_count(pack.downloads))
+                    } else if pack.runs > 0 {
+                        format!("{} runs", format_compact_count(pack.runs))
+                    } else if !pack.minecraft.is_empty() {
+                        format!("MC {}", pack.minecraft)
+                    } else {
+                        "Technic Platform".to_string()
+                    };
+                    let summary = if !pack.description.is_empty() {
+                        pack.description.clone()
+                    } else if !pack.version.is_empty() {
+                        format!("Latest version: {}", pack.version)
+                    } else {
+                        "Technic Platform modpack (supports Solder & direct ZIP)".to_string()
+                    };
+                    BrowserEntry {
+                        key: format!("tech:{}", pack.slug),
+                        title: pack.display_name.clone(),
+                        author: if pack.author.is_empty() {
+                            "Technic Platform".to_string()
+                        } else {
+                            pack.author.clone()
+                        },
+                        summary,
+                        icon_url: pack.icon_url.clone(),
+                        web_url: Some(web.clone()),
+                        metric_label,
+                        action: BrowserInstallAction::ModpackDialog {
+                            provider: ModpackInstallProvider::Technic {
+                                slug: pack.slug.clone(),
+                            },
+                            provider_label: "Technic",
+                            title: pack.display_name.clone(),
+                            icon: pack.icon_url.clone(),
                             web_url: Some(web),
                             default_loader: "forge",
                         },

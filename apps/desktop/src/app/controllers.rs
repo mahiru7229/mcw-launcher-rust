@@ -3849,6 +3849,7 @@ impl McwApp {
                     curseforge,
                     ftb,
                     atl,
+                    technic,
                 } => {
                     if request_id != self.browser_request_id {
                         continue;
@@ -3925,6 +3926,23 @@ impl McwApp {
                             Err(err) => {
                                 self.notice_banner =
                                     Some((format!("ATLauncher search failed: {err}"), true));
+                            }
+                        },
+                        BrowserProvider::Technic => match technic {
+                            Ok(packs) => {
+                                self.push_global_log(format!(
+                                    "[NET] Technic search ({category:?}) returned {} items (total {total_hits}).",
+                                    packs.len()
+                                ));
+                                let first = packs.first().map(|p| format!("tech:{}", p.slug));
+                                self.browser_technic_results = packs;
+                                if self.browser_selected_key.is_none() {
+                                    self.browser_selected_key = first;
+                                }
+                            }
+                            Err(err) => {
+                                self.notice_banner =
+                                    Some((format!("Technic search failed: {err}"), true));
                             }
                         },
                     }
@@ -4465,6 +4483,96 @@ impl McwApp {
                             .collect())
                     }
                     ModpackInstallProvider::AtLauncher { .. } => Ok(Vec::new()),
+                    ModpackInstallProvider::Technic { slug } => {
+                        let client = TechnicClient::new(cache).map_err(|e| e.to_string())?;
+                        let detail = client.get_modpack(&slug).await.map_err(|e| e.to_string())?;
+                        let mc_ver = detail.minecraft.clone();
+                        if !detail.solder_url.trim().is_empty() {
+                            let solder = client
+                                .get_solder_pack(&detail.solder_url, &slug)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            let mut opts = Vec::new();
+                            for b in solder.builds.into_iter().rev() {
+                                let low = b.to_ascii_lowercase();
+                                let is_rec = solder.recommended.as_deref() == Some(b.as_str());
+                                let is_lat = solder.latest.as_deref() == Some(b.as_str());
+                                let channel = if low.contains("alpha") || low.contains("dev") {
+                                    ModpackChannel::Alpha
+                                } else if (is_lat && !is_rec)
+                                    || low.contains("beta")
+                                    || low.contains("rc")
+                                {
+                                    ModpackChannel::Beta
+                                } else {
+                                    ModpackChannel::Release
+                                };
+                                let tag = if is_rec {
+                                    " (Recommended)"
+                                } else if is_lat {
+                                    " (Latest)"
+                                } else {
+                                    ""
+                                };
+                                let label = if mc_ver.is_empty() {
+                                    format!("{b}{tag}")
+                                } else {
+                                    format!("{b}{tag} [MC {mc_ver}]")
+                                };
+                                opts.push(ModpackVersionOption {
+                                    id: b,
+                                    label,
+                                    mc_version: mc_ver.clone(),
+                                    loader: "forge".to_string(),
+                                    channel,
+                                    download_url: None,
+                                    file_name: String::new(),
+                                    file_size: 0,
+                                    recommended_ram_mb: 0,
+                                });
+                            }
+                            if opts.is_empty() && !detail.version.is_empty() {
+                                opts.push(ModpackVersionOption {
+                                    id: detail.version.clone(),
+                                    label: if mc_ver.is_empty() {
+                                        detail.version.clone()
+                                    } else {
+                                        format!("{} [MC {mc_ver}]", detail.version)
+                                    },
+                                    mc_version: mc_ver,
+                                    loader: "forge".to_string(),
+                                    channel: ModpackChannel::Release,
+                                    download_url: None,
+                                    file_name: String::new(),
+                                    file_size: 0,
+                                    recommended_ram_mb: 0,
+                                });
+                            }
+                            Ok(opts)
+                        } else {
+                            let ver_id = if detail.version.trim().is_empty() {
+                                "latest".to_string()
+                            } else {
+                                detail.version.clone()
+                            };
+                            let label = if mc_ver.is_empty() {
+                                ver_id.clone()
+                            } else {
+                                format!("{ver_id} [MC {mc_ver}]")
+                            };
+                            Ok(vec![ModpackVersionOption {
+                                id: ver_id,
+                                label,
+                                mc_version: mc_ver,
+                                loader: "forge".to_string(),
+                                channel: ModpackChannel::Release,
+                                download_url: Some(detail.url),
+                                file_name: format!("{slug}.zip"),
+                                file_size: 0,
+                                recommended_ram_mb: 0,
+                            }])
+                        }
+                    }
                 }
             }
             .await;
@@ -4570,6 +4678,7 @@ impl McwApp {
             ModpackInstallProvider::CurseForge { .. } => "modpack:curseforge",
             ModpackInstallProvider::Ftb { .. } => "modpack:ftb",
             ModpackInstallProvider::AtLauncher { .. } => "modpack:atlauncher",
+            ModpackInstallProvider::Technic { .. } => "modpack:technic",
         };
 
         let (task_id, task_ctrl) = self.begin_task_with_control(
@@ -4603,6 +4712,11 @@ impl McwApp {
             }
             ModpackInstallProvider::AtLauncher { pack } => {
                 let k = format!("atl:{}", pack.id);
+                self.installing_ext_packs.insert(k.clone());
+                k
+            }
+            ModpackInstallProvider::Technic { slug } => {
+                let k = format!("tech:{slug}");
                 self.installing_ext_packs.insert(k.clone());
                 k
             }
@@ -4751,6 +4865,20 @@ impl McwApp {
                                 &paths,
                                 &downloader,
                                 &install_opts,
+                                Some(cb.clone()),
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?
+                    }
+                    ModpackInstallProvider::Technic { slug } => {
+                        let client = TechnicClient::new(cache).map_err(|e| e.to_string())?;
+                        client
+                            .install_pack_version_with_progress(
+                                &slug,
+                                Some(&ver.id),
+                                Some(&instance_name),
+                                &paths,
+                                &downloader,
                                 Some(cb.clone()),
                             )
                             .await

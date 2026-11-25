@@ -168,6 +168,7 @@ impl McwApp {
             BrowserProvider::CurseForge => self.browser_cf_results.is_empty(),
             BrowserProvider::Ftb => self.browser_ftb_results.is_empty(),
             BrowserProvider::AtLauncher => self.browser_atl_results.is_empty(),
+            BrowserProvider::Technic => self.browser_technic_results.is_empty(),
         };
         if category_changed
             || provider_changed
@@ -249,6 +250,7 @@ impl McwApp {
             let mut cf_res = Ok(Vec::new());
             let mut ftb_res = Ok(Vec::new());
             let mut atl_res = Ok(Vec::new());
+            let mut technic_res = Ok(Vec::new());
             let mut total_hits: u32 = 0;
 
             match provider {
@@ -350,6 +352,27 @@ impl McwApp {
                         Err(err) => atl_res = Err(err),
                     }
                 }
+                BrowserProvider::Technic => {
+                    match async {
+                        let technic = TechnicClient::new(cache).map_err(|e| e.to_string())?;
+                        let all = technic.search(&query).await.map_err(|e| e.to_string())?;
+                        let tot = all.len() as u32;
+                        let page: Vec<_> = all
+                            .into_iter()
+                            .skip(offset as usize)
+                            .take(page_size as usize)
+                            .collect();
+                        Ok::<_, String>((page, tot))
+                    }
+                    .await
+                    {
+                        Ok((packs, tot)) => {
+                            total_hits = tot;
+                            technic_res = Ok(packs);
+                        }
+                        Err(err) => technic_res = Err(err),
+                    }
+                }
             }
 
             let _ = tx.send(AppEvent::ContentBrowserSearchFinished {
@@ -361,6 +384,7 @@ impl McwApp {
                 curseforge: cf_res,
                 ftb: ftb_res,
                 atl: atl_res,
+                technic: technic_res,
             });
             ctx.request_repaint();
         });

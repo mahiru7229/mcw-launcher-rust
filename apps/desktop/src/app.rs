@@ -49,7 +49,7 @@ use mcw_providers::{
     ModUpdateManager, ModpackExportMode, ModpackExportOptions, ModpackInstallOptions,
     ModpackInstaller, ModpackOptionalFile, ModpackProgressCallback, ModpackUpdateCheck,
     ModpackUpdateService, ModrinthClient, ModrinthPackRegistry, ModrinthSearchHit,
-    ModrinthSearchParams, TrackedModEntry,
+    ModrinthSearchParams, TechnicClient, TechnicModpackSummary, TrackedModEntry,
 };
 use mcw_runtime::{
     detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
@@ -179,6 +179,7 @@ pub(crate) enum ModpackInstallProvider {
     Modrinth { slug: String },
     Ftb { pack_id: u64 },
     AtLauncher { pack: AtLauncherPack },
+    Technic { slug: String },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -358,6 +359,7 @@ pub struct McwApp {
     browser_cf_results: Vec<CurseForgeMod>,
     browser_ftb_results: Vec<FtbPackSummary>,
     browser_atl_results: Vec<AtLauncherPack>,
+    browser_technic_results: Vec<TechnicModpackSummary>,
     browser_datapack_world: String,
     browser_global_mode: bool,
     browser_mc_version_filter: String,
@@ -809,6 +811,7 @@ impl McwApp {
             browser_cf_results: Vec::new(),
             browser_ftb_results: Vec::new(),
             browser_atl_results: Vec::new(),
+            browser_technic_results: Vec::new(),
             browser_datapack_world: String::new(),
             browser_global_mode: true,
             browser_mc_version_filter: String::new(),

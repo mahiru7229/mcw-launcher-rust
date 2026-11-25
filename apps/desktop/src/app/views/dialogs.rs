@@ -313,7 +313,7 @@ impl McwApp {
                                     );
                                     ui.label(
                                         RichText::new(
-                                            "Open the Mod & Modpacks -> Modpacks page to browse Modrinth, CurseForge, FTB, and ATLauncher modpacks.",
+                                            "Open the Mod & Modpacks -> Modpacks page to browse Modrinth, CurseForge, FTB, ATLauncher, and Technic modpacks.",
                                         )
                                         .size(11.5)
                                         .color(p.text_muted),

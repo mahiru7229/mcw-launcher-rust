@@ -7,6 +7,7 @@ use mcw_net::{ConnectivityStatus, TaskControl};
 use mcw_providers::{
     AtLauncherPack, CurseForgeMod, FtbPackSummary, ModUpdateCandidate, ModpackInstallReport,
     ModpackOptionalFile, ModpackUpdateCheck, ModpackUpdateReport, ModrinthSearchHit,
+    TechnicModpackSummary,
 };
 use mcw_runtime::{
     FirstRunRecommendation, JavaDiagnostic, JavaInstallation, LogLine, LogSink, McLogsUploadResult,
@@ -231,6 +232,7 @@ pub enum BrowserProvider {
     CurseForge,
     Ftb,
     AtLauncher,
+    Technic,
 }
 
 impl BrowserProvider {
@@ -240,6 +242,7 @@ impl BrowserProvider {
             Self::CurseForge => "CurseForge",
             Self::Ftb => "FTB",
             Self::AtLauncher => "ATLauncher",
+            Self::Technic => "Technic",
         }
     }
 }
@@ -414,6 +417,7 @@ pub enum AppEvent {
         curseforge: Result<Vec<CurseForgeMod>, String>,
         ftb: Result<Vec<FtbPackSummary>, String>,
         atl: Result<Vec<AtLauncherPack>, String>,
+        technic: Result<Vec<TechnicModpackSummary>, String>,
     },
     ConnectivityChecked(ConnectivityStatus),
     ContentLibraryLoaded(Vec<(String, String, InstalledContentItem)>),
