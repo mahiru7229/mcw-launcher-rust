@@ -453,6 +453,11 @@ pub enum AppEvent {
     WatchedFolderChanged(String),
     ChangelogRefreshed(Result<String, String>),
     StorageRelocationFinished(Result<(bool, PathBuf), String>),
+    ScreenshotThumbLoaded {
+        path: PathBuf,
+        size: [usize; 2],
+        rgba: Vec<u8>,
+    },
 }
 
 pub struct ChannelProgressSink {

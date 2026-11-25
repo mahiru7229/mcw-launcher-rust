@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{MinecraftError, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -60,6 +60,58 @@ impl ScreenshotManager {
         }
         Ok(())
     }
+
+    pub fn rename_screenshot(path: &Path, new_name: &str) -> Result<PathBuf> {
+        if !path.is_file() {
+            return Err(MinecraftError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Screenshot file not found",
+            )));
+        }
+        let trimmed = new_name.trim();
+        if trimmed.is_empty()
+            || trimmed.contains('/')
+            || trimmed.contains('\\')
+            || trimmed.contains("..")
+            || trimmed.contains(':')
+        {
+            return Err(MinecraftError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid screenshot name",
+            )));
+        }
+        let orig_ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("png");
+        let target_name = if trimmed
+            .to_ascii_lowercase()
+            .ends_with(&format!(".{}", orig_ext.to_ascii_lowercase()))
+        {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}.{orig_ext}")
+        };
+        let parent = path.parent().ok_or_else(|| {
+            MinecraftError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Screenshot has no parent folder",
+            ))
+        })?;
+        let dest = parent.join(target_name);
+        if dest == path {
+            return Ok(dest);
+        }
+        if dest.exists() {
+            return Err(MinecraftError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "A screenshot with that name already exists",
+            )));
+        }
+        fs::rename(path, &dest)?;
+        Ok(dest)
+    }
 }
 
 #[cfg(test)]
@@ -79,7 +131,13 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].file_name, "2026-01-01_12.00.00.png");
 
-        ScreenshotManager::delete_screenshot(&list[0].path).unwrap();
+        let renamed = ScreenshotManager::rename_screenshot(&list[0].path, "base-entrance").unwrap();
+        assert_eq!(
+            renamed.file_name().and_then(|n| n.to_str()),
+            Some("base-entrance.png")
+        );
+
+        ScreenshotManager::delete_screenshot(&renamed).unwrap();
         assert!(ScreenshotManager::list_screenshots(dir.path()).is_empty());
     }
 }

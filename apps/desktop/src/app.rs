@@ -3,6 +3,8 @@ mod controllers_pages;
 pub(crate) mod platform;
 mod views;
 
+pub(crate) use controllers::format_modlist_export;
+
 use self::platform::default_user_downloads_dir;
 use crate::background::{decode_user_image, BackgroundManager};
 use crate::i18n::{LanguageManager, LauncherPrefs};
@@ -394,6 +396,15 @@ pub struct McwApp {
 
     // Local instance icon texture cache (keyed by "<instance_id>|<icon>")
     instance_icon_textures: HashMap<String, Option<egui::TextureHandle>>,
+    world_icon_textures: HashMap<PathBuf, Option<egui::TextureHandle>>,
+    screenshot_thumbs: HashMap<PathBuf, Option<egui::TextureHandle>>,
+    screenshot_thumbs_loading: HashSet<PathBuf>,
+    screenshot_thumb_lru: Vec<PathBuf>,
+    screenshot_preview_path: Option<PathBuf>,
+    screenshot_preview_texture: Option<(PathBuf, egui::TextureHandle)>,
+    screenshot_preview_rename_input: String,
+    edit_instance_notes_text: String,
+    instance_notes_baseline: String,
 
     // Detected system physical RAM (MB) for Forge (min(PC_RAM, 8192)) vs general (min(PC_RAM, 4096))
     pc_ram_mb: u32,
@@ -845,6 +856,15 @@ impl McwApp {
             modpack_update_confirm_candidate: None,
             pending_backup_before_modpack_update: None,
             instance_icon_textures: HashMap::new(),
+            world_icon_textures: HashMap::new(),
+            screenshot_thumbs: HashMap::new(),
+            screenshot_thumbs_loading: HashSet::new(),
+            screenshot_thumb_lru: Vec::new(),
+            screenshot_preview_path: None,
+            screenshot_preview_texture: None,
+            screenshot_preview_rename_input: String::new(),
+            edit_instance_notes_text: String::new(),
+            instance_notes_baseline: String::new(),
             pc_ram_mb: detect_total_memory_mb(),
             launch_task_ids: HashMap::new(),
             modpack_dialog: ModpackInstallDialogState::default(),
@@ -1132,6 +1152,7 @@ impl McwApp {
             || self.show_delete_modal
             || self.pending_restore_backup_id.is_some()
             || self.pending_delete_world.is_some()
+            || self.screenshot_preview_path.is_some()
             || self.version_picker_open
             || self.install_target_open
             || self.modpack_dialog.open
@@ -1181,6 +1202,8 @@ impl McwApp {
             Some("mcw_modal_restore_backup")
         } else if self.pending_delete_world.is_some() {
             Some("mcw_modal_delete_world")
+        } else if self.screenshot_preview_path.is_some() {
+            Some("mcw_modal_screenshot_preview")
         } else if self.show_rename_modal && has_inst {
             Some("mcw_modal_rename_instance")
         } else if self.show_group_tags_modal && has_inst {

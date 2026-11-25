@@ -202,6 +202,21 @@ impl McwApp {
             self.edit_env_vars_text.clear();
         }
         self.mod_update_candidates.clear();
+        if let Some(ref inst_id) = self.selected_instance_id {
+            let notes_path = self.paths.instance_dir(inst_id).join("notes.txt");
+            let notes = std::fs::read_to_string(&notes_path).unwrap_or_default();
+            self.edit_instance_notes_text = notes.clone();
+            self.instance_notes_baseline = notes;
+        } else {
+            self.edit_instance_notes_text.clear();
+            self.instance_notes_baseline.clear();
+        }
+        self.screenshot_thumbs.clear();
+        self.screenshot_thumbs_loading.clear();
+        self.screenshot_thumb_lru.clear();
+        self.world_icon_textures.clear();
+        self.screenshot_preview_path = None;
+        self.screenshot_preview_texture = None;
         self.instance_settings_dirty = false;
         self.refresh_mod_compat_report();
     }
@@ -4263,6 +4278,28 @@ impl McwApp {
                         }
                     }
                 }
+                AppEvent::ScreenshotThumbLoaded { path, size, rgba } => {
+                    self.screenshot_thumbs_loading.remove(&path);
+                    let handle = if !rgba.is_empty() && size[0] > 0 && size[1] > 0 {
+                        let img = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                        let key = format!("ss_thumb_{}", path.display());
+                        Some(ctx.load_texture(key, img, egui::TextureOptions::LINEAR))
+                    } else {
+                        None
+                    };
+                    self.screenshot_thumb_lru.retain(|k| k != &path);
+                    self.screenshot_thumb_lru.push(path.clone());
+                    self.screenshot_thumbs.insert(path, handle);
+                    const MAX_SCREENSHOT_THUMBS: usize = 48;
+                    while self.screenshot_thumbs.len() > MAX_SCREENSHOT_THUMBS {
+                        if let Some(oldest) = self.screenshot_thumb_lru.first().cloned() {
+                            self.screenshot_thumb_lru.remove(0);
+                            self.screenshot_thumbs.remove(&oldest);
+                        } else {
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
@@ -6207,11 +6244,24 @@ impl McwApp {
         s.jvm_arguments = jvm_args;
         s.game_arguments = game_args;
         s.env_vars = some_env_vars;
+        let notes_to_save = self.edit_instance_notes_text.clone();
         let store = InstanceStore::new(&self.paths);
         match store.save_settings(&inst.instance_id, s) {
             Ok(()) => {
                 self.settings_cache
                     .insert(inst.instance_id.clone(), s.clone());
+                let notes_path = self.paths.instance_dir(&inst.instance_id).join("notes.txt");
+                if notes_to_save.trim().is_empty() {
+                    if notes_path.exists() {
+                        let _ = std::fs::remove_file(&notes_path);
+                    }
+                } else if let Err(err) = std::fs::write(&notes_path, &notes_to_save) {
+                    self.instance_settings_dirty = false;
+                    self.notice_banner =
+                        Some((format!("Settings saved, but notes failed: {err}"), true));
+                    return true;
+                }
+                self.instance_notes_baseline = notes_to_save;
                 self.instance_settings_dirty = false;
                 self.notice_banner = Some(("Settings saved.".to_string(), false));
                 true
@@ -6609,6 +6659,70 @@ impl McwApp {
             ctx_c.request_repaint();
         });
     }
+
+    pub(crate) fn ensure_screenshot_thumbnail(
+        &mut self,
+        path: &std::path::Path,
+        ctx: &egui::Context,
+    ) {
+        if self.screenshot_thumbs.contains_key(path) {
+            self.screenshot_thumb_lru.retain(|p| p != path);
+            self.screenshot_thumb_lru.push(path.to_path_buf());
+            return;
+        }
+        if self.screenshot_thumbs_loading.contains(path) {
+            return;
+        }
+        self.screenshot_thumbs_loading.insert(path.to_path_buf());
+        let path_owned = path.to_path_buf();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+        self.runtime.spawn_blocking(move || {
+            let decoded = std::fs::read(&path_owned)
+                .ok()
+                .and_then(|bytes| image::load_from_memory(&bytes).ok())
+                .map(|img| {
+                    let thumb = img.thumbnail(320, 180).to_rgba8();
+                    let size = [thumb.width() as usize, thumb.height() as usize];
+                    (size, thumb.into_raw())
+                });
+            let (size, rgba) = decoded.unwrap_or(([0, 0], Vec::new()));
+            let _ = tx.send(AppEvent::ScreenshotThumbLoaded {
+                path: path_owned,
+                size,
+                rgba,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn load_world_icon_texture(
+        &mut self,
+        icon_path: &std::path::Path,
+        ctx: &egui::Context,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(cached) = self.world_icon_textures.get(icon_path) {
+            return cached.clone();
+        }
+        let tex = std::fs::read(icon_path)
+            .ok()
+            .and_then(|bytes| image::load_from_memory(&bytes).ok())
+            .map(|img| {
+                let rgba = img.thumbnail(96, 96).to_rgba8();
+                let color = egui::ColorImage::from_rgba_unmultiplied(
+                    [rgba.width() as usize, rgba.height() as usize],
+                    rgba.as_raw(),
+                );
+                ctx.load_texture(
+                    format!("world_icon_{}", icon_path.display()),
+                    color,
+                    egui::TextureOptions::LINEAR,
+                )
+            });
+        self.world_icon_textures
+            .insert(icon_path.to_path_buf(), tex.clone());
+        tex
+    }
 }
 
 pub(crate) fn apply_lan_agent_option(settings: &mut InstanceSettings, enable: bool) {
@@ -6803,13 +6917,173 @@ pub(crate) fn resolve_account_for_instance<'a>(
     global_active
 }
 
+/// Formats an instance's installed mod list as either a Markdown table or plain text.
+pub(crate) fn format_modlist_export(
+    instance_name: &str,
+    mc_version: &str,
+    loader: &str,
+    mods: &[mcw_mods::ModInfo],
+    as_markdown: bool,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut sorted: Vec<&mcw_mods::ModInfo> = mods.iter().collect();
+    sorted.sort_by(|a, b| {
+        let an = if a.name.trim().is_empty() {
+            &a.file_name
+        } else {
+            &a.name
+        };
+        let bn = if b.name.trim().is_empty() {
+            &b.file_name
+        } else {
+            &b.name
+        };
+        an.to_ascii_lowercase()
+            .cmp(&bn.to_ascii_lowercase())
+            .then_with(|| a.file_name.cmp(&b.file_name))
+    });
+
+    let total = sorted.len();
+    let enabled_count = sorted.iter().filter(|m| m.enabled).count();
+    let disabled_count = total.saturating_sub(enabled_count);
+    let loader_label = display_loader_name(loader);
+
+    let mut out = String::new();
+    if as_markdown {
+        let _ = writeln!(out, "# {instance_name} — Modlist\n");
+        let _ = writeln!(out, "- **Minecraft**: `{mc_version}`");
+        let _ = writeln!(out, "- **Modloader**: {loader_label}");
+        let _ = writeln!(
+            out,
+            "- **Total Mods**: {total} ({enabled_count} enabled, {disabled_count} disabled)\n"
+        );
+        if sorted.is_empty() {
+            let _ = writeln!(out, "_No mods installed._");
+            return out;
+        }
+        let _ = writeln!(out, "| Mod | Version | Author(s) | Status | File |");
+        let _ = writeln!(out, "| --- | --- | --- | --- | --- |");
+        for m in sorted {
+            let name = if m.name.trim().is_empty() {
+                m.file_name.as_str()
+            } else {
+                m.name.as_str()
+            };
+            let ver = if m.version.trim().is_empty() {
+                "-"
+            } else {
+                m.version.as_str()
+            };
+            let authors = if m.authors.is_empty() {
+                "-".to_string()
+            } else {
+                m.authors.join(", ")
+            };
+            let status = if m.enabled { "Enabled" } else { "Disabled" };
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {} | `{}` |",
+                name.replace('|', "\\|"),
+                ver.replace('|', "\\|"),
+                authors.replace('|', "\\|"),
+                status,
+                m.file_name.replace('|', "\\|"),
+            );
+        }
+    } else {
+        let _ = writeln!(out, "Instance: {instance_name}");
+        let _ = writeln!(out, "Minecraft: {mc_version}");
+        let _ = writeln!(out, "Modloader: {loader_label}");
+        let _ = writeln!(
+            out,
+            "Total Mods: {total} ({enabled_count} enabled, {disabled_count} disabled)\n"
+        );
+        if sorted.is_empty() {
+            let _ = writeln!(out, "(No mods installed)");
+            return out;
+        }
+        for m in sorted {
+            let name = if m.name.trim().is_empty() {
+                m.file_name.as_str()
+            } else {
+                m.name.as_str()
+            };
+            out.push_str("- ");
+            out.push_str(name);
+            if !m.version.trim().is_empty() {
+                let _ = write!(out, " ({})", m.version.trim());
+            }
+            if !m.authors.is_empty() {
+                let _ = write!(out, " by {}", m.authors.join(", "));
+            }
+            if !m.enabled {
+                out.push_str(" [DISABLED]");
+            }
+            let _ = writeln!(out, " [{}]", m.file_name);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_lan_agent_option, is_account_or_token_error, normalize_mod_stem,
-        resolve_account_for_instance, resolve_unique_mod_filename, AccountSource, InstanceSettings,
-        StoredAccount,
+        apply_lan_agent_option, format_modlist_export, is_account_or_token_error,
+        normalize_mod_stem, resolve_account_for_instance, resolve_unique_mod_filename,
+        AccountSource, InstanceSettings, StoredAccount,
     };
+    use mcw_mods::{ModInfo, ModLoaderTag};
+    use std::path::PathBuf;
+
+    #[test]
+    fn formats_modlist_as_markdown_and_text() {
+        let mods = vec![
+            ModInfo {
+                file_name: "sodium-0.5.8.jar".to_string(),
+                path: PathBuf::from("sodium-0.5.8.jar"),
+                enabled: true,
+                size_bytes: 1024,
+                mod_id: "sodium".to_string(),
+                name: "Sodium".to_string(),
+                version: "0.5.8".to_string(),
+                description: String::new(),
+                authors: vec!["JellySquid".to_string()],
+                loader: ModLoaderTag::Fabric,
+                required_java_major: 17,
+                embedded_mod_ids: Vec::new(),
+                depends: Vec::new(),
+            },
+            ModInfo {
+                file_name: "alpha-lib-1.0.jar.disabled".to_string(),
+                path: PathBuf::from("alpha-lib-1.0.jar.disabled"),
+                enabled: false,
+                size_bytes: 512,
+                mod_id: "alpha-lib".to_string(),
+                name: "Alpha Lib".to_string(),
+                version: "1.0.0".to_string(),
+                description: String::new(),
+                authors: Vec::new(),
+                loader: ModLoaderTag::Fabric,
+                required_java_major: 17,
+                embedded_mod_ids: Vec::new(),
+                depends: Vec::new(),
+            },
+        ];
+
+        let md = format_modlist_export("My Pack", "1.20.4", "fabric", &mods, true);
+        assert!(md.contains("# My Pack — Modlist"));
+        assert!(md.contains("**Total Mods**: 2 (1 enabled, 1 disabled)"));
+        assert!(md.contains("| Alpha Lib | 1.0.0 | - | Disabled | `alpha-lib-1.0.jar.disabled` |"));
+        assert!(md.contains("| Sodium | 0.5.8 | JellySquid | Enabled | `sodium-0.5.8.jar` |"));
+        // Alpha Lib sorts before Sodium
+        assert!(md.find("Alpha Lib").unwrap() < md.find("Sodium").unwrap());
+
+        let txt = format_modlist_export("My Pack", "1.20.4", "fabric", &mods, false);
+        assert!(txt.contains("Instance: My Pack"));
+        assert!(txt.contains("- Alpha Lib (1.0.0) [DISABLED] [alpha-lib-1.0.jar.disabled]"));
+        assert!(txt.contains("- Sodium (0.5.8) by JellySquid [sodium-0.5.8.jar]"));
+    }
 
     #[test]
     fn duplicate_mod_helpers_normalize_stems_and_append_suffix() {

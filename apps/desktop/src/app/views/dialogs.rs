@@ -2152,6 +2152,7 @@ impl McwApp {
         self.render_duplicate_mod_modal(ctx);
         self.render_junk_cleanup_modal(ctx);
         self.render_storage_relocated_modal(ctx);
+        self.render_screenshot_preview_modal(ctx);
     }
 
     pub(crate) fn render_modpack_install_dialog(&mut self, ctx: &egui::Context) {
@@ -3437,6 +3438,147 @@ impl McwApp {
                 self.relocated_storage_prompt = None;
             }
             _ => {}
+        }
+    }
+
+    pub(crate) fn render_screenshot_preview_modal(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.screenshot_preview_path.clone() else {
+            return;
+        };
+        if !path.is_file() {
+            self.screenshot_preview_path = None;
+            self.screenshot_preview_texture = None;
+            return;
+        }
+        let needs_load = self
+            .screenshot_preview_texture
+            .as_ref()
+            .is_none_or(|(p, _)| p != &path);
+        if needs_load {
+            if let Ok(bytes) = std::fs::read(&path) {
+                if let Ok(img) = image::load_from_memory(&bytes) {
+                    let rgba = img.to_rgba8();
+                    let size = [rgba.width() as usize, rgba.height() as usize];
+                    let color_img = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                    let tex = ctx.load_texture(
+                        format!("mcw_shot_preview_{}", path.display()),
+                        color_img,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.screenshot_preview_texture = Some((path.clone(), tex));
+                }
+            }
+        }
+
+        let p = self.palette;
+        let notice = self.modal_notice_for("mcw_modal_screenshot_preview");
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Screenshot")
+            .to_string();
+        let mut close = false;
+        let mut rename_clicked = false;
+        let mut delete_clicked = false;
+
+        let (keep_open, dismiss_notice) = render_in_app_modal(
+            ctx,
+            "mcw_modal_screenshot_preview",
+            &format!("Screenshot Preview - {file_name}"),
+            [780.0, 580.0],
+            [520.0, 400.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                if let Some((_, ref tex)) = self.screenshot_preview_texture {
+                    let max_size = Vec2::new(ui.available_width().max(300.0), 390.0);
+                    ui.centered_and_justified(|ui| {
+                        ui.add(
+                            egui::Image::new(tex)
+                                .fit_to_exact_size(max_size)
+                                .corner_radius(CornerRadius::same(8)),
+                        );
+                    });
+                } else {
+                    ui.label(RichText::new("Unable to decode image preview.").color(p.warning));
+                }
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Rename:");
+                    let enter = ui
+                        .add(
+                            TextEdit::singleline(&mut self.screenshot_preview_rename_input)
+                                .desired_width(220.0),
+                        )
+                        .lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("Apply Name").clicked() || enter {
+                        rename_clicked = true;
+                    }
+                    if ui.button("Open File").clicked() {
+                        open_external(&path.display().to_string());
+                    }
+                    if ui.button("Copy Path").clicked() {
+                        ctx.copy_text(path.display().to_string());
+                        self.notice_banner = Some(("Copied screenshot path.".to_string(), false));
+                    }
+                    if ui.button(RichText::new("Delete").color(p.danger)).clicked() {
+                        delete_clicked = true;
+                    }
+                    if ui.button(self.t("common.close")).clicked() {
+                        close = true;
+                    }
+                });
+            },
+        );
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
+        if !keep_open || close {
+            self.screenshot_preview_path = None;
+            self.screenshot_preview_texture = None;
+            return;
+        }
+        if rename_clicked {
+            let candidate = self.screenshot_preview_rename_input.clone();
+            match ScreenshotManager::rename_screenshot(&path, &candidate) {
+                Ok(new_path) => {
+                    self.screenshot_preview_path = Some(new_path.clone());
+                    self.screenshot_preview_texture = None;
+                    if let Some(inst_id) = self.selected_instance_id.clone() {
+                        self.screenshots_cache.remove(&inst_id);
+                        self.load_screenshots_async(&inst_id, ctx, true);
+                    }
+                    self.notice_banner = Some((
+                        format!(
+                            "Renamed screenshot to {}.",
+                            new_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("file")
+                        ),
+                        false,
+                    ));
+                }
+                Err(e) => {
+                    self.notice_banner = Some((format!("Rename failed: {e}"), true));
+                }
+            }
+        } else if delete_clicked {
+            match ScreenshotManager::delete_screenshot(&path) {
+                Ok(()) => {
+                    self.screenshot_preview_path = None;
+                    self.screenshot_preview_texture = None;
+                    if let Some(inst_id) = self.selected_instance_id.clone() {
+                        self.screenshots_cache.remove(&inst_id);
+                        self.load_screenshots_async(&inst_id, ctx, true);
+                    }
+                    self.notice_banner = Some(("Deleted screenshot.".to_string(), false));
+                }
+                Err(e) => {
+                    self.notice_banner = Some((format!("Delete failed: {e}"), true));
+                }
+            }
         }
     }
 }

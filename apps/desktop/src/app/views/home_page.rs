@@ -208,6 +208,27 @@ impl McwApp {
                         }
                     });
                 }
+                let note_preview = self
+                    .edit_instance_notes_text
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .map(str::trim)
+                    .unwrap_or("");
+                if !note_preview.is_empty() {
+                    ui.add_space(4.0);
+                    let clipped = if note_preview.chars().count() > 80 {
+                        let head: String = note_preview.chars().take(77).collect();
+                        format!("Note: {head}...")
+                    } else {
+                        format!("Note: {note_preview}")
+                    };
+                    ui.label(
+                        RichText::new(clipped)
+                            .size(11.5)
+                            .italics()
+                            .color(p.text_muted),
+                    );
+                }
             });
 
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {

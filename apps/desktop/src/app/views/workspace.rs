@@ -201,6 +201,38 @@ impl McwApp {
                     let _ = std::fs::create_dir_all(&mods_dir);
                     open_external(&mods_dir.display().to_string());
                 }
+                if ui.button("Export Modlist...").clicked() {
+                    let default_name = format!("{}-modlist.md", inst.instance_id);
+                    if let Some(dest_path) = save_file_dialog(
+                        "Export Modlist",
+                        "Markdown (*.md)|*.md|Text File (*.txt)|*.txt|All Files (*.*)|*.*",
+                        &default_name,
+                    ) {
+                        let as_md = !dest_path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .is_some_and(|e| e.eq_ignore_ascii_case("txt"));
+                        let body = format_modlist_export(
+                            &inst.name,
+                            &inst.version_id,
+                            &inst.mod_loader.name,
+                            &self.selected_mods,
+                            as_md,
+                        );
+                        match std::fs::write(&dest_path, body) {
+                            Ok(()) => {
+                                self.notice_banner = Some((
+                                    format!("Exported modlist to {}", dest_path.display()),
+                                    false,
+                                ));
+                            }
+                            Err(e) => {
+                                self.notice_banner =
+                                    Some((format!("Failed to export modlist: {e}"), true));
+                            }
+                        }
+                    }
+                }
                 if ui
                     .add_enabled(can_install, Button::new("Import Local .jar..."))
                     .clicked()
@@ -648,6 +680,8 @@ impl McwApp {
         }
 
         let mut quick_play_target: Option<String> = None;
+        let mut copy_seed_target: Option<i64> = None;
+        let mut export_world_target: Option<String> = None;
         let mut duplicate_target: Option<String> = None;
         let mut backup_target: Option<String> = None;
         let mut delete_target: Option<String> = None;
@@ -656,7 +690,12 @@ impl McwApp {
             .id_salt("worlds_list_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for w in &self.selected_worlds {
+                let worlds_snapshot = self.selected_worlds.clone();
+                for w in &worlds_snapshot {
+                    let world_tex = w
+                        .icon_path
+                        .as_deref()
+                        .and_then(|ip| self.load_world_icon_texture(ip, ctx));
                     Frame::new()
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0_f32, p.border))
@@ -665,8 +704,29 @@ impl McwApp {
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
+                                if let Some(ref tex) = world_tex {
+                                    ui.add(
+                                        egui::Image::new(tex)
+                                            .fit_to_exact_size(Vec2::splat(42.0))
+                                            .corner_radius(CornerRadius::same(6)),
+                                    );
+                                } else {
+                                    Frame::new()
+                                        .fill(p.elevated)
+                                        .stroke(Stroke::new(1.0_f32, p.border))
+                                        .corner_radius(CornerRadius::same(6))
+                                        .show(ui, |ui| {
+                                            ui.set_min_size(Vec2::splat(42.0));
+                                            ui.centered_and_justified(|ui| {
+                                                ui.label(
+                                                    RichText::new("W").strong().color(p.text_muted),
+                                                );
+                                            });
+                                        });
+                                }
+                                ui.add_space(6.0);
                                 ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
+                                    ui.horizontal_wrapped(|ui| {
                                         ui.label(
                                             RichText::new(&w.display_name).strong().size(13.5),
                                         );
@@ -683,6 +743,14 @@ impl McwApp {
                                                 RichText::new(format!("MC {}", w.version_name))
                                                     .monospace()
                                                     .size(11.0)
+                                                    .color(p.text_muted),
+                                            );
+                                        }
+                                        if let Some(seed) = w.seed {
+                                            ui.label(
+                                                RichText::new(format!("Seed: {seed}"))
+                                                    .monospace()
+                                                    .size(10.5)
                                                     .color(p.text_muted),
                                             );
                                         }
@@ -715,10 +783,21 @@ impl McwApp {
                                         duplicate_target = Some(w.folder_name.clone());
                                     }
                                     if ui
+                                        .add_enabled(!busy, Button::new("Export (.zip)"))
+                                        .clicked()
+                                    {
+                                        export_world_target = Some(w.folder_name.clone());
+                                    }
+                                    if ui
                                         .add_enabled(!busy, Button::new("Backup (.zip)"))
                                         .clicked()
                                     {
                                         backup_target = Some(w.folder_name.clone());
+                                    }
+                                    if let Some(seed) = w.seed {
+                                        if ui.button("Copy Seed").clicked() {
+                                            copy_seed_target = Some(seed);
+                                        }
                                     }
                                     if quick_play_ok {
                                         let can_play = !busy && missing_manual == 0;
@@ -740,6 +819,34 @@ impl McwApp {
                 }
             });
 
+        if let Some(seed) = copy_seed_target {
+            ctx.copy_text(seed.to_string());
+            self.notice_banner = Some((format!("Copied world seed: {seed}"), false));
+        }
+        if let Some(folder) = export_world_target {
+            let default_name = format!("{folder}.zip");
+            if let Some(dest_path) = save_file_dialog(
+                "Export World (.zip)",
+                "Zip Archive (*.zip)|*.zip|All Files (*.*)|*.*",
+                &default_name,
+            ) {
+                match WorldManager::export_world(&mc_dir, &folder, &dest_path) {
+                    Ok(count) => {
+                        self.notice_banner = Some((
+                            format!(
+                                "Exported world '{}' ({count} files) to {}",
+                                folder,
+                                dest_path.display()
+                            ),
+                            false,
+                        ));
+                    }
+                    Err(e) => {
+                        self.notice_banner = Some((format!("World export failed: {e}"), true));
+                    }
+                }
+            }
+        }
         if let Some(folder) = quick_play_target {
             self.start_launch_with_world(Some(folder), ctx);
         }
@@ -831,51 +938,124 @@ impl McwApp {
         }
 
         let mut delete_path: Option<PathBuf> = None;
+        let mut open_preview: Option<PathBuf> = None;
+        let shots_snapshot = self.selected_screenshots.clone();
+        for s in &shots_snapshot {
+            self.ensure_screenshot_thumbnail(&s.path, ctx);
+        }
+
+        let avail_w = ui.available_width().max(220.0);
+        let spacing = 10.0_f32;
+        let cols = ((avail_w + spacing) / (216.0 + spacing)).floor().max(1.0) as usize;
+        let card_w =
+            ((avail_w - spacing * ((cols.saturating_sub(1)) as f32)) / (cols as f32)).max(180.0);
 
         ScrollArea::vertical()
             .id_salt("screenshots_list_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for s in &self.selected_screenshots {
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
-                        .corner_radius(CornerRadius::same(10))
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new(&s.file_name).monospace().strong());
-                                    ui.label(
-                                        RichText::new(format_bytes(s.file_size_bytes))
-                                            .monospace()
-                                            .size(11.0)
-                                            .color(p.text_muted),
+                for row in shots_snapshot.chunks(cols) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = spacing;
+                        for s in row {
+                            let thumb_tex =
+                                self.screenshot_thumbs.get(&s.path).and_then(|o| o.as_ref());
+                            Frame::new()
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0_f32, p.border))
+                                .corner_radius(CornerRadius::same(10))
+                                .inner_margin(egui::Margin::same(8))
+                                .show(ui, |ui| {
+                                    ui.set_width(card_w - 18.0);
+                                    let img_w = (card_w - 20.0).max(150.0);
+                                    let img_h = (img_w * 0.5625).clamp(86.0, 145.0);
+                                    if let Some(tex) = thumb_tex {
+                                        let img_resp = ui.add(
+                                            egui::Image::new(tex)
+                                                .fit_to_exact_size(Vec2::new(img_w, img_h))
+                                                .corner_radius(CornerRadius::same(8))
+                                                .sense(egui::Sense::click()),
+                                        );
+                                        if img_resp
+                                            .on_hover_text("Click to preview & rename")
+                                            .clicked()
+                                        {
+                                            open_preview = Some(s.path.clone());
+                                        }
+                                    } else {
+                                        let (rect, resp) = ui.allocate_exact_size(
+                                            Vec2::new(img_w, img_h),
+                                            egui::Sense::click(),
+                                        );
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            CornerRadius::same(8),
+                                            p.elevated,
+                                        );
+                                        ui.painter().text(
+                                            rect.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            "Loading...",
+                                            egui::FontId::proportional(11.5),
+                                            p.text_muted,
+                                        );
+                                        if resp.clicked() {
+                                            open_preview = Some(s.path.clone());
+                                        }
+                                    }
+                                    ui.add_space(6.0);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&s.file_name)
+                                                .monospace()
+                                                .strong()
+                                                .size(11.5),
+                                        )
+                                        .truncate(),
                                     );
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(format_bytes(s.file_size_bytes))
+                                                .monospace()
+                                                .size(10.5)
+                                                .color(p.text_muted),
+                                        );
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .small_button(
+                                                        RichText::new("Del").color(p.danger),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    delete_path = Some(s.path.clone());
+                                                }
+                                                if ui.small_button("Open").clicked() {
+                                                    open_external(&s.path.display().to_string());
+                                                }
+                                                if ui.small_button("Preview").clicked() {
+                                                    open_preview = Some(s.path.clone());
+                                                }
+                                            },
+                                        );
+                                    });
                                 });
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.button(RichText::new("Delete").color(p.danger)).clicked()
-                                    {
-                                        delete_path = Some(s.path.clone());
-                                    }
-                                    if ui.button("Copy Path").clicked() {
-                                        ctx.copy_text(s.path.display().to_string());
-                                    }
-                                    let open_btn = Button::new(
-                                        RichText::new("Open Image").color(p.accent_text).strong(),
-                                    )
-                                    .fill(p.accent);
-                                    if ui.add(open_btn).clicked() {
-                                        open_external(&s.path.display().to_string());
-                                    }
-                                });
-                            });
-                        });
-                    ui.add_space(4.0);
+                        }
+                    });
+                    ui.add_space(8.0);
                 }
             });
 
+        if let Some(path) = open_preview {
+            self.screenshot_preview_rename_input = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            self.screenshot_preview_path = Some(path);
+            self.screenshot_preview_texture = None;
+        }
         if let Some(path) = delete_path {
             match ScreenshotManager::delete_screenshot(&path) {
                 Ok(()) => {
@@ -1204,6 +1384,19 @@ impl McwApp {
                                 ui.label(RichText::new(&last_status_text).monospace());
                                 ui.end_row();
                             });
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("Instance Notes (notes.txt)")
+                                .size(12.0)
+                                .strong(),
+                        );
+                        ui.add_space(2.0);
+                        ui.add(
+                            TextEdit::multiline(&mut self.edit_instance_notes_text)
+                                .hint_text("Write notes, modpack reminders, server IP, or TODOs for this instance...")
+                                .desired_rows(3)
+                                .desired_width(f32::INFINITY),
+                        );
                     });
                 ui.add_space(10.0);
 
@@ -1714,6 +1907,7 @@ impl McwApp {
             || self.edit_jvm_args_text != jvm_before
             || self.edit_game_args_text != game_before
             || self.edit_env_vars_text != env_before
+            || self.edit_instance_notes_text != self.instance_notes_baseline
         {
             self.instance_settings_dirty = true;
         }

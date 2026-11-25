@@ -18,6 +18,8 @@ pub struct WorldInfo {
     pub version_name: String,
     pub size_bytes: u64,
     pub folder_path: PathBuf,
+    pub seed: Option<i64>,
+    pub icon_path: Option<PathBuf>,
 }
 
 /// Returns `true` if the Minecraft version supports Java Edition Quick Play (`>= 1.20` or snapshot `>= 23w14a`).
@@ -122,6 +124,9 @@ impl WorldManager {
             .map(|m| m.len())
             .sum();
 
+        let icon_file = folder.join("icon.png");
+        let icon_path = icon_file.is_file().then_some(icon_file);
+
         WorldInfo {
             folder_name: folder_name.to_string(),
             display_name,
@@ -131,6 +136,8 @@ impl WorldManager {
             version_name: nbt.version_name,
             size_bytes,
             folder_path: folder.to_path_buf(),
+            seed: nbt.seed,
+            icon_path,
         }
     }
 
@@ -240,28 +247,35 @@ impl WorldManager {
         let archive_name = format!("world_{sanitized}_{epoch_secs}.zip");
         let archive_path = out_dir.join(archive_name);
 
-        let file = fs::File::create(&archive_path)?;
-        let mut zip = zip::ZipWriter::new(file);
-        let opts = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-
-        for entry in WalkDir::new(&source).into_iter().flatten() {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let Ok(rel) = entry.path().strip_prefix(&saves_dir) else {
-                continue;
-            };
-            if rel.file_name().and_then(|n| n.to_str()) == Some("session.lock") {
-                continue;
-            }
-            let arc_name = rel.to_string_lossy().replace('\\', "/");
-            zip.start_file(arc_name, opts)?;
-            let mut src_f = fs::File::open(entry.path())?;
-            std::io::copy(&mut src_f, &mut zip)?;
-        }
-        zip.finish()?;
+        write_world_zip(&saves_dir, &source, &archive_path)?;
         Ok(archive_path)
+    }
+
+    /// Export a single world folder directly to a user-chosen `.zip` destination path.
+    pub fn export_world(
+        mc_dir: &Path,
+        world_folder: &str,
+        dest_zip: &Path,
+    ) -> crate::Result<usize> {
+        if world_folder.contains('/') || world_folder.contains('\\') || world_folder.contains("..")
+        {
+            return Err(MinecraftError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid world folder name",
+            )));
+        }
+        let saves_dir = mc_dir.join("saves");
+        let source = saves_dir.join(world_folder);
+        if !source.is_dir() {
+            return Err(MinecraftError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("World folder '{world_folder}' does not exist."),
+            )));
+        }
+        if let Some(parent) = dest_zip.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        write_world_zip(&saves_dir, &source, dest_zip)
     }
 
     /// Restore a world backup `.zip` into `<mc_dir>/saves/` (1:1 port of Python `WorldManager.restore_world`).
@@ -399,6 +413,7 @@ struct NbtLevelSummary {
     hardcore: bool,
     last_played: i64,
     version_name: String,
+    seed: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -459,7 +474,44 @@ fn parse_level_dat(path: &Path) -> Option<NbtLevelSummary> {
             summary.version_name = vname.clone();
         }
     }
+    if let Some(NbtValue::Compound(wgs)) = data_map.get("WorldGenSettings") {
+        if let Some(NbtValue::Long(s)) = wgs.get("seed") {
+            summary.seed = Some(*s);
+        }
+    }
+    if summary.seed.is_none() {
+        if let Some(NbtValue::Long(s)) = data_map.get("RandomSeed") {
+            summary.seed = Some(*s);
+        }
+    }
     Some(summary)
+}
+
+fn write_world_zip(saves_dir: &Path, source: &Path, archive_path: &Path) -> crate::Result<usize> {
+    let file = fs::File::create(archive_path)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut count = 0usize;
+
+    for entry in WalkDir::new(source).into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(saves_dir) else {
+            continue;
+        };
+        if rel.file_name().and_then(|n| n.to_str()) == Some("session.lock") {
+            continue;
+        }
+        let arc_name = rel.to_string_lossy().replace('\\', "/");
+        zip.start_file(arc_name, opts)?;
+        let mut src_f = fs::File::open(entry.path())?;
+        std::io::copy(&mut src_f, &mut zip)?;
+        count += 1;
+    }
+    zip.finish()?;
+    Ok(count)
 }
 
 struct NbtCursor<'a> {
@@ -623,12 +675,18 @@ mod tests {
         nbt.extend_from_slice(&10u16.to_be_bytes());
         nbt.extend_from_slice(b"LastPlayed");
         nbt.extend_from_slice(&1_700_000_000_000i64.to_be_bytes());
+        // RandomSeed = -123456789012345
+        nbt.push(4);
+        nbt.extend_from_slice(&10u16.to_be_bytes());
+        nbt.extend_from_slice(b"RandomSeed");
+        nbt.extend_from_slice(&(-123_456_789_012_345i64).to_be_bytes());
         nbt.push(0); // End Data
         nbt.push(0); // End Root
 
         let mut enc = GzEncoder::new(Vec::new(), Compression::default());
         enc.write_all(&nbt).unwrap();
         fs::write(world_dir.join("level.dat"), enc.finish().unwrap()).unwrap();
+        fs::write(world_dir.join("icon.png"), b"png").unwrap();
         fs::write(world_dir.join("session.lock"), b"lock").unwrap();
 
         let worlds = WorldManager::list_worlds(dir.path());
@@ -636,6 +694,14 @@ mod tests {
         assert_eq!(worlds[0].display_name, "Survival Base");
         assert_eq!(worlds[0].game_mode, "creative");
         assert_eq!(worlds[0].last_played_ms, 1_700_000_000_000);
+        assert_eq!(worlds[0].seed, Some(-123_456_789_012_345));
+        assert!(worlds[0].icon_path.is_some());
+
+        let exported_zip = dir.path().join("exported.zip");
+        let files_written =
+            WorldManager::export_world(dir.path(), "my_world", &exported_zip).unwrap();
+        assert!(files_written >= 2);
+        assert!(exported_zip.is_file());
 
         let dup = WorldManager::duplicate_world(dir.path(), "my_world").unwrap();
         assert_eq!(dup.folder_name, "my_world (Copy)");
