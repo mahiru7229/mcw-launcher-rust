@@ -2475,6 +2475,138 @@ impl McwApp {
         self.render_screenshot_preview_modal(ctx);
         self.render_mod_cart_modal(ctx);
         self.render_universal_import_modal(ctx);
+        self.render_color_picker_modal(ctx);
+    }
+
+    pub(crate) fn render_color_picker_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_color_picker_modal {
+            return;
+        }
+        let p = self.palette;
+        let mut open = self.show_color_picker_modal;
+        let mut apply_clicked = false;
+        let notice = self.modal_notice_for("mcw_modal_color_picker");
+
+        let (keep_open, dismiss_notice) = render_in_app_modal(
+            ctx,
+            "mcw_modal_color_picker",
+            "Pick Accent Color",
+            [420.0, 490.0],
+            [340.0, 390.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                let mut col = Color32::from_rgb(
+                    self.color_picker_rgb[0],
+                    self.color_picker_rgb[1],
+                    self.color_picker_rgb[2],
+                );
+                if egui::color_picker::color_picker_color32(
+                    ui,
+                    &mut col,
+                    egui::color_picker::Alpha::Opaque,
+                ) {
+                    self.color_picker_rgb = [col.r(), col.g(), col.b()];
+                    self.color_picker_hex_input = format_hex_color(col);
+                }
+
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    let (swatch, _) =
+                        ui.allocate_exact_size(Vec2::splat(26.0), egui::Sense::hover());
+                    ui.painter().rect_filled(swatch, CornerRadius::same(6), col);
+                    ui.painter().rect_stroke(
+                        swatch,
+                        CornerRadius::same(6),
+                        Stroke::new(1.0_f32, p.border),
+                        egui::StrokeKind::Middle,
+                    );
+                    ui.label(RichText::new("Hex (#RRGGBB):").strong());
+                    if ui
+                        .add(
+                            TextEdit::singleline(&mut self.color_picker_hex_input)
+                                .desired_width(110.0),
+                        )
+                        .changed()
+                    {
+                        if let Some(parsed) = parse_hex_color(&self.color_picker_hex_input) {
+                            self.color_picker_rgb = [parsed.r(), parsed.g(), parsed.b()];
+                        }
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Quick Presets:")
+                        .size(11.5)
+                        .color(p.text_muted),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    const PRESETS: &[(&str, [u8; 3])] = &[
+                        ("#8B5CF6", [0x8B, 0x5C, 0xF6]),
+                        ("#EC4899", [0xEC, 0x48, 0x99]),
+                        ("#F97316", [0xF9, 0x73, 0x16]),
+                        ("#EAB308", [0xEA, 0xB3, 0x08]),
+                        ("#10B981", [0x10, 0xB9, 0x81]),
+                        ("#06B6D4", [0x06, 0xB6, 0xD4]),
+                        ("#3B82F6", [0x3B, 0x82, 0xF6]),
+                        ("#EF4444", [0xEF, 0x44, 0x44]),
+                    ];
+                    for &(label, rgb) in PRESETS {
+                        let pc = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                        let (r, resp) =
+                            ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::click());
+                        ui.painter().rect_filled(r, CornerRadius::same(6), pc);
+                        if resp
+                            .on_hover_text(label)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            self.color_picker_rgb = rgb;
+                            self.color_picker_hex_input = label.to_string();
+                        }
+                    }
+                });
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    let apply_btn =
+                        Button::new(RichText::new("Apply").color(p.accent_text).strong())
+                            .fill(p.accent);
+                    if ui.add(apply_btn).clicked() {
+                        apply_clicked = true;
+                        open = false;
+                    }
+                    if ui.button(self.t("common.cancel")).clicked() {
+                        open = false;
+                    }
+                });
+            },
+        );
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
+        self.show_color_picker_modal = open;
+
+        if apply_clicked {
+            let final_col = parse_hex_color(&self.color_picker_hex_input).unwrap_or_else(|| {
+                Color32::from_rgb(
+                    self.color_picker_rgb[0],
+                    self.color_picker_rgb[1],
+                    self.color_picker_rgb[2],
+                )
+            });
+            let hex = format_hex_color(final_col);
+            self.custom_accent_input = hex.clone();
+            self.prefs.custom_accent_hex = hex;
+            self.apply_current_theme(ctx);
+            self.save_prefs();
+        }
     }
 
     pub(crate) fn render_universal_import_modal(&mut self, ctx: &egui::Context) {

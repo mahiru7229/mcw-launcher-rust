@@ -626,6 +626,11 @@ pub struct McwApp {
     nav_history_idx: usize,
     nav_suppress_record: bool,
     pending_ui_scale_pct: f32,
+    pending_font_family: String,
+    pending_font_size: f32,
+    show_color_picker_modal: bool,
+    color_picker_rgb: [u8; 3],
+    color_picker_hex_input: String,
     create_enable_lan_agent: bool,
     archive_enable_lan_agent: bool,
     install_target_enable_lan_agent: bool,
@@ -681,6 +686,8 @@ impl McwApp {
         cc.egui_ctx
             .set_zoom_factor(prefs.ui_scale.clamp(0.75, 1.75));
         let pending_ui_scale_pct = (prefs.ui_scale.clamp(0.75, 1.75) * 100.0).round();
+        let pending_font_family = prefs.custom_font_family.clone();
+        let pending_font_size = prefs.font_size.clamp(10.0, 22.0);
         let app_logo_texture = load_app_logo_texture(&cc.egui_ctx);
 
         mcw_net::set_global_bandwidth_limit_mbps(prefs.download_limit_mbps);
@@ -1095,6 +1102,11 @@ impl McwApp {
             nav_history_idx: 0,
             nav_suppress_record: false,
             pending_ui_scale_pct,
+            pending_font_family,
+            pending_font_size,
+            show_color_picker_modal: false,
+            color_picker_rgb: [139, 92, 246],
+            color_picker_hex_input: "#8B5CF6".to_string(),
             create_enable_lan_agent: false,
             archive_enable_lan_agent: false,
             install_target_enable_lan_agent: false,
@@ -1248,6 +1260,7 @@ impl McwApp {
             || self.show_unsaved_changes_window
             || self.show_python_import_window
             || self.show_universal_import_modal
+            || self.show_color_picker_modal
             || (self.show_junk_cleanup_modal && self.junk_scan_report.is_some())
     }
 
@@ -1299,6 +1312,8 @@ impl McwApp {
             Some("mcw_modal_python_import")
         } else if self.show_universal_import_modal {
             Some("mcw_modal_universal_import")
+        } else if self.show_color_picker_modal {
+            Some("mcw_modal_color_picker")
         } else if self.show_junk_cleanup_modal && self.junk_scan_report.is_some() {
             Some("mcw_modal_junk_cleanup")
         } else if self.show_first_run_wizard {

@@ -170,16 +170,33 @@ impl McwApp {
                 ui.horizontal_wrapped(|ui| {
                     let preview_col =
                         parse_hex_color(&self.custom_accent_input).unwrap_or(self.palette.accent);
-                    let (swatch_rect, _) =
-                        ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::hover());
+                    let (swatch_rect, swatch_resp) =
+                        ui.allocate_exact_size(Vec2::splat(24.0), egui::Sense::click());
                     ui.painter()
                         .rect_filled(swatch_rect, CornerRadius::same(6), preview_col);
+                    ui.painter().rect_stroke(
+                        swatch_rect,
+                        CornerRadius::same(6),
+                        Stroke::new(1.0_f32, p.border),
+                        egui::StrokeKind::Middle,
+                    );
+                    let swatch_clicked = swatch_resp
+                        .on_hover_text("Click to open color picker")
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked();
 
                     ui.add(
                         TextEdit::singleline(&mut self.custom_accent_input)
                             .hint_text(format_hex_color(self.palette.accent))
                             .desired_width(110.0),
                     );
+                    let pick_clicked = ui.button("Pick Color...").clicked();
+                    if swatch_clicked || pick_clicked {
+                        self.color_picker_rgb =
+                            [preview_col.r(), preview_col.g(), preview_col.b()];
+                        self.color_picker_hex_input = format_hex_color(preview_col);
+                        self.show_color_picker_modal = true;
+                    }
                     if ui.button("Apply Accent").clicked() {
                         if parse_hex_color(&self.custom_accent_input).is_some() {
                             self.prefs.custom_accent_hex =
@@ -375,14 +392,11 @@ impl McwApp {
 
                     let default_font_lbl = self.t("appearance.font.default").to_string();
                     let refresh_lbl = self.t("appearance.font.refresh").to_string();
-                    let reset_lbl = self.t("appearance.reset").to_string();
-                    let cur_font_disp = if self.prefs.custom_font_family.trim().is_empty() {
+                    let cur_font_disp = if self.pending_font_family.trim().is_empty() {
                         default_font_lbl.clone()
                     } else {
-                        self.prefs.custom_font_family.clone()
+                        self.pending_font_family.clone()
                     };
-                    let mut font_changed = false;
-                    let mut picked_font = self.prefs.custom_font_family.clone();
 
                     ui.horizontal_wrapped(|ui| {
                         ui.label(&font_lbl);
@@ -394,51 +408,39 @@ impl McwApp {
                             .show_ui(ui, |ui| {
                                 if ui
                                     .selectable_label(
-                                        picked_font.trim().is_empty(),
+                                        self.pending_font_family.trim().is_empty(),
                                         &default_font_lbl,
                                     )
                                     .clicked()
                                 {
-                                    picked_font.clear();
-                                    font_changed = true;
+                                    self.pending_font_family.clear();
                                 }
                                 let bundled_mono = crate::theme::BUNDLED_JETBRAINS_MONO_OPTION;
                                 let bundled_selected =
-                                    picked_font.eq_ignore_ascii_case(bundled_mono);
+                                    self.pending_font_family.eq_ignore_ascii_case(bundled_mono);
                                 if ui
                                     .selectable_label(bundled_selected, bundled_mono)
                                     .clicked()
                                     && !bundled_selected
                                 {
-                                    picked_font = bundled_mono.to_string();
-                                    font_changed = true;
+                                    self.pending_font_family = bundled_mono.to_string();
                                 }
                                 for font in &self.system_fonts {
-                                    let selected = picked_font.eq_ignore_ascii_case(&font.name);
+                                    let selected =
+                                        self.pending_font_family.eq_ignore_ascii_case(&font.name);
                                     if ui.selectable_label(selected, &font.name).clicked()
                                         && !selected
                                     {
-                                        picked_font = font.name.clone();
-                                        font_changed = true;
+                                        self.pending_font_family = font.name.clone();
                                     }
                                 }
                             });
                         if ui.button(&refresh_lbl).clicked() {
                             self.system_fonts = crate::theme::scan_system_fonts();
-                            font_changed = true;
                         }
                     });
-                    if font_changed {
-                        self.prefs.custom_font_family = picked_font;
-                        self.apply_typography_and_scale(ctx);
-                        *prefs_dirty = true;
-                    }
 
                     ui.add_space(6.0);
-                    let applied_scale = self.prefs.ui_scale.clamp(0.75, 1.75);
-                    let scale_pending_diff =
-                        ((self.pending_ui_scale_pct / 100.0) - applied_scale).abs() > 0.005;
-                    let apply_lbl = self.t("appearance.scale.apply").to_string();
                     let high_warn = self.t("appearance.scale.high_warning").to_string();
                     ui.horizontal_wrapped(|ui| {
                         ui.label(&scale_lbl);
@@ -447,28 +449,6 @@ impl McwApp {
                                 .step_by(5.0)
                                 .suffix("%"),
                         );
-                        if ui
-                            .add_enabled(
-                                scale_pending_diff,
-                                Button::new(RichText::new(&apply_lbl).strong()),
-                            )
-                            .clicked()
-                        {
-                            self.prefs.ui_scale =
-                                (self.pending_ui_scale_pct / 100.0).clamp(0.75, 1.75);
-                            self.pending_ui_scale_pct = (self.prefs.ui_scale * 100.0).round();
-                            self.apply_typography_and_scale(ctx);
-                            *prefs_dirty = true;
-                        }
-                        if ((applied_scale - 1.0).abs() > 0.01
-                            || (self.pending_ui_scale_pct - 100.0).abs() > 0.5)
-                            && ui.button(format!("{reset_lbl} (100%)")).clicked()
-                        {
-                            self.pending_ui_scale_pct = 100.0;
-                            self.prefs.ui_scale = 1.0;
-                            self.apply_typography_and_scale(ctx);
-                            *prefs_dirty = true;
-                        }
                     });
                     if self.pending_ui_scale_pct > 125.0 {
                         ui.label(RichText::new(high_warn).size(11.5).color(p.warning));
@@ -477,34 +457,67 @@ impl McwApp {
                     ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(&font_size_lbl);
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.prefs.font_size, 10.0..=22.0)
-                                    .step_by(0.5)
-                                    .suffix(" px"),
-                            )
-                            .changed()
-                        {
-                            self.prefs.font_size = self.prefs.font_size.clamp(10.0, 22.0);
-                            self.apply_current_theme(ctx);
-                            *prefs_dirty = true;
-                        }
-                        if (self.prefs.font_size - 13.0).abs() > 0.1
-                            && ui.button(format!("{reset_lbl} (13 px)")).clicked()
-                        {
-                            self.prefs.font_size = 13.0;
-                            self.apply_current_theme(ctx);
-                            *prefs_dirty = true;
-                        }
+                        ui.add(
+                            egui::Slider::new(&mut self.pending_font_size, 10.0..=22.0)
+                                .step_by(0.5)
+                                .suffix(" px"),
+                        );
                     });
 
                     ui.add_space(6.0);
                     let preview_txt = self.t("appearance.font.preview").to_string();
                     ui.label(
                         RichText::new(preview_txt)
-                            .size(self.prefs.font_size)
+                            .size(self.pending_font_size)
                             .color(p.text_muted),
                     );
+
+                    ui.add_space(8.0);
+                    let applied_font = self.prefs.custom_font_family.trim();
+                    let pending_font = self.pending_font_family.trim();
+                    let applied_scale = self.prefs.ui_scale.clamp(0.75, 1.75);
+                    let applied_size = self.prefs.font_size.clamp(10.0, 22.0);
+                    let has_pending_diff = !pending_font.eq_ignore_ascii_case(applied_font)
+                        || ((self.pending_ui_scale_pct / 100.0) - applied_scale).abs() > 0.005
+                        || (self.pending_font_size - applied_size).abs() > 0.05;
+                    let default_font = crate::theme::BUNDLED_JETBRAINS_MONO_OPTION;
+                    let is_non_default = !pending_font.eq_ignore_ascii_case(default_font)
+                        || !applied_font.eq_ignore_ascii_case(default_font)
+                        || (self.pending_ui_scale_pct - 100.0).abs() > 0.5
+                        || (applied_scale - 1.0).abs() > 0.01
+                        || (self.pending_font_size - 13.0).abs() > 0.05
+                        || (applied_size - 13.0).abs() > 0.05;
+
+                    ui.horizontal_wrapped(|ui| {
+                        let apply_btn =
+                            Button::new(RichText::new("Apply").color(p.accent_text).strong())
+                                .fill(p.accent);
+                        if ui.add_enabled(has_pending_diff, apply_btn).clicked() {
+                            self.prefs.custom_font_family = self.pending_font_family.clone();
+                            self.prefs.ui_scale =
+                                (self.pending_ui_scale_pct / 100.0).clamp(0.75, 1.75);
+                            self.pending_ui_scale_pct = (self.prefs.ui_scale * 100.0).round();
+                            self.prefs.font_size = self.pending_font_size.clamp(10.0, 22.0);
+                            self.pending_font_size = self.prefs.font_size;
+                            self.apply_typography_and_scale(ctx);
+                            self.apply_current_theme(ctx);
+                            *prefs_dirty = true;
+                        }
+                        if ui
+                            .add_enabled(is_non_default, Button::new("Reset Defaults"))
+                            .clicked()
+                        {
+                            self.pending_font_family = default_font.to_string();
+                            self.pending_ui_scale_pct = 100.0;
+                            self.pending_font_size = 13.0;
+                            self.prefs.custom_font_family = default_font.to_string();
+                            self.prefs.ui_scale = 1.0;
+                            self.prefs.font_size = 13.0;
+                            self.apply_typography_and_scale(ctx);
+                            self.apply_current_theme(ctx);
+                            *prefs_dirty = true;
+                        }
+                    });
                 });
             ui.add_space(8.0);
         }
