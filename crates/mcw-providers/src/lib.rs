@@ -13,8 +13,9 @@ pub use atlauncher::{AtLauncherClient, AtLauncherPack};
 pub use cache::ApiCache;
 pub use curseforge::{
     load_curseforge_api_key, load_custom_curseforge_api_key, save_curseforge_api_key_to_dotenv,
-    save_custom_curseforge_api_key, CurseForgeClient, CurseForgeFile, CurseForgeMod,
-    CurseForgePagination, CurseForgeSearchParams, CurseForgeSearchResult,
+    save_custom_curseforge_api_key, strip_html_to_preview, CurseForgeAuthor, CurseForgeClient,
+    CurseForgeFile, CurseForgeMod, CurseForgePagination, CurseForgeScreenshot,
+    CurseForgeSearchParams, CurseForgeSearchResult,
 };
 pub use ftb::{FtbClient, FtbPackSummary, FtbVersionSummary};
 pub use mod_updates::{
@@ -31,8 +32,9 @@ pub use modpack_update::{
     ModpackUpdateCandidate, ModpackUpdateCheck, ModpackUpdateReport, ModpackUpdateService,
 };
 pub use modrinth::{
-    InstalledModFile, ModrinthClient, ModrinthDependency, ModrinthFile, ModrinthSearchHit,
-    ModrinthSearchParams, ModrinthSearchResult, ModrinthVersion,
+    InstalledModFile, ModrinthClient, ModrinthDependency, ModrinthFile, ModrinthGalleryImage,
+    ModrinthProjectDetail, ModrinthSearchHit, ModrinthSearchParams, ModrinthSearchResult,
+    ModrinthVersion,
 };
 pub use pack_registry::{
     detect_export_origin, detect_installed_pack, is_verified_or_imported_modpack,

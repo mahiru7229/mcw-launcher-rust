@@ -104,6 +104,26 @@ pub struct CurseForgeLogo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurseForgeAuthor {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurseForgeScreenshot {
+    #[serde(rename = "thumbnailUrl", default)]
+    pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurseForgeMod {
     pub id: u64,
     pub name: String,
@@ -112,6 +132,10 @@ pub struct CurseForgeMod {
     pub summary: String,
     #[serde(rename = "downloadCount", default)]
     pub download_count: u64,
+    #[serde(default)]
+    pub authors: Vec<CurseForgeAuthor>,
+    #[serde(default)]
+    pub screenshots: Vec<CurseForgeScreenshot>,
     #[serde(default)]
     pub links: Option<CurseForgeLinks>,
     #[serde(default)]
@@ -124,6 +148,17 @@ impl CurseForgeMod {
             .as_ref()
             .and_then(|l| l.thumbnail_url.as_deref().or(l.url.as_deref()))
             .filter(|u| !u.trim().is_empty())
+    }
+
+    pub fn primary_author(&self) -> String {
+        let names: Vec<&str> = self
+            .authors
+            .iter()
+            .map(|a| a.name.trim())
+            .filter(|s| !s.is_empty())
+            .take(2)
+            .collect();
+        names.join(", ")
     }
 }
 
@@ -605,6 +640,16 @@ impl CurseForgeClient {
         Ok(all)
     }
 
+    /// Fetches a project's long HTML description (`GET /v1/mods/{mod_id}/description`)
+    /// and converts it to a concise, plain-text readable preview.
+    pub async fn get_mod_description(&self, mod_id: u64) -> Result<String> {
+        let url = format!("{CURSEFORGE_API_BASE}/mods/{mod_id}/description");
+        let raw = self.cached_get(&url, FILES_TTL_SECS).await?;
+        let val: serde_json::Value = serde_json::from_str(&raw)?;
+        let html = val.get("data").and_then(|d| d.as_str()).unwrap_or("");
+        Ok(strip_html_to_preview(html, 2400))
+    }
+
     async fn cached_get(&self, url: &str, ttl_secs: u64) -> Result<String> {
         let cache_key = format!("curseforge:{url}");
         if let Some(ref cache) = self.cache {
@@ -633,6 +678,86 @@ impl CurseForgeClient {
         }
         Ok(text)
     }
+}
+
+/// Converts CurseForge HTML project descriptions into concise readable plain-text paragraphs.
+pub fn strip_html_to_preview(html: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(html.len().min(max_chars.saturating_add(128)));
+    let mut chars = html.chars().peekable();
+    let mut skip_depth = 0usize;
+
+    while let Some(ch) = chars.next() {
+        if ch == '<' {
+            let mut tag = String::new();
+            for tc in chars.by_ref() {
+                if tc == '>' {
+                    break;
+                }
+                tag.push(tc);
+            }
+            let tag_trim = tag.trim().to_ascii_lowercase();
+            if tag_trim.starts_with("script") || tag_trim.starts_with("style") {
+                skip_depth += 1;
+            } else if tag_trim.starts_with("/script") || tag_trim.starts_with("/style") {
+                skip_depth = skip_depth.saturating_sub(1);
+            } else if skip_depth == 0 {
+                if tag_trim.starts_with("br")
+                    || tag_trim.starts_with("/p")
+                    || tag_trim.starts_with("/div")
+                    || tag_trim.starts_with("/h1")
+                    || tag_trim.starts_with("/h2")
+                    || tag_trim.starts_with("/h3")
+                    || tag_trim.starts_with("/h4")
+                    || tag_trim.starts_with("/li")
+                {
+                    if !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                } else if tag_trim == "li" || tag_trim.starts_with("li ") {
+                    if !out.ends_with('\n') && !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str("- ");
+                }
+            }
+        } else if skip_depth == 0 {
+            out.push(ch);
+        }
+    }
+
+    let decoded = out
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ");
+
+    let mut clean_lines = Vec::new();
+    let mut prev_blank = true;
+    for raw_line in decoded.lines() {
+        let trimmed = raw_line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if trimmed.is_empty() {
+            if !prev_blank {
+                clean_lines.push(String::new());
+                prev_blank = true;
+            }
+        } else {
+            clean_lines.push(trimmed);
+            prev_blank = false;
+        }
+    }
+    let joined = clean_lines.join("\n").trim().to_string();
+    if max_chars == 0 || joined.chars().count() <= max_chars {
+        return joined;
+    }
+    let mut clipped: String = joined.chars().take(max_chars.saturating_sub(3)).collect();
+    while clipped.ends_with(char::is_whitespace) {
+        clipped.pop();
+    }
+    clipped.push_str("...");
+    clipped
 }
 
 /// Path to custom CurseForge API key config under `config/curseforge.json`.
@@ -870,5 +995,34 @@ mod tests {
 
         save_custom_curseforge_api_key(&config_root, "").unwrap();
         assert!(load_custom_curseforge_api_key(&config_root).is_none());
+    }
+
+    #[test]
+    fn deserializes_curseforge_authors_and_strips_html_description() {
+        let json = r#"{
+            "id": 245755,
+            "name": "Waystones",
+            "slug": "waystones",
+            "summary": "Teleportation stones",
+            "downloadCount": 120000000,
+            "authors": [
+                { "id": 1, "name": "BlayTheNinth", "url": "https://cf.example/author" },
+                { "id": 2, "name": "CoAuthor", "url": "" }
+            ],
+            "screenshots": [
+                { "thumbnailUrl": "https://img.example/thumb.png", "url": "https://img.example/full.png", "title": "Main" }
+            ]
+        }"#;
+        let parsed: CurseForgeMod = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.primary_author(), "BlayTheNinth, CoAuthor");
+        assert_eq!(parsed.screenshots.len(), 1);
+
+        let preview = strip_html_to_preview(
+            "<style>.x{color:red}</style><h1>About &amp; Features</h1><p>Fast <b>waystones</b>.<br/>Works&nbsp;great.</p><ul><li>Item 1</li><li>Item 2</li></ul>",
+            500,
+        );
+        assert!(preview.contains("About & Features"));
+        assert!(!preview.contains("color:red"));
+        assert!(preview.contains("- Item 1"));
     }
 }

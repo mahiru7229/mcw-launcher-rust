@@ -63,6 +63,52 @@ pub struct ModrinthSearchHit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModrinthGalleryImage {
+    pub url: String,
+    #[serde(default)]
+    pub featured: bool,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModrinthProjectDetail {
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub downloads: u64,
+    #[serde(default)]
+    pub followers: u64,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub loaders: Vec<String>,
+    #[serde(default)]
+    pub game_versions: Vec<String>,
+    #[serde(default)]
+    pub client_side: String,
+    #[serde(default)]
+    pub server_side: String,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub issues_url: Option<String>,
+    #[serde(default)]
+    pub wiki_url: Option<String>,
+    #[serde(default)]
+    pub gallery: Vec<ModrinthGalleryImage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModrinthVersion {
     pub id: String,
     pub project_id: String,
@@ -194,6 +240,13 @@ impl ModrinthClient {
 
     pub async fn get_version(&self, version_id: &str) -> Result<ModrinthVersion> {
         let url = format!("{MODRINTH_API_BASE}/version/{version_id}");
+        let raw = self.cached_get(&url, VERSIONS_TTL_SECS).await?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    pub async fn get_project(&self, id_or_slug: &str) -> Result<ModrinthProjectDetail> {
+        let clean = id_or_slug.trim();
+        let url = format!("{MODRINTH_API_BASE}/project/{clean}");
         let raw = self.cached_get(&url, VERSIONS_TTL_SECS).await?;
         Ok(serde_json::from_str(&raw)?)
     }
@@ -363,5 +416,37 @@ impl ModrinthClient {
             let _ = cache.set(&cache_key, &text, ttl_secs);
         }
         Ok(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModrinthProjectDetail;
+
+    #[test]
+    fn deserializes_modrinth_project_detail_with_gallery() {
+        let json = serde_json::json!({
+            "id": "AANobbMI",
+            "slug": "sodium",
+            "title": "Sodium",
+            "description": "Modern rendering engine",
+            "body": "## Overview\nBoosts FPS significantly.",
+            "downloads": 95_000_000_u64,
+            "followers": 24_000_u64,
+            "categories": ["optimization"],
+            "loaders": ["fabric", "neoforge"],
+            "game_versions": ["1.21.4"],
+            "client_side": "required",
+            "server_side": "unsupported",
+            "gallery": [
+                { "url": "https://cdn.modrinth.com/data/AANobbMI/images/1.png", "featured": true, "title": "Comparison" }
+            ]
+        })
+        .to_string();
+        let detail: ModrinthProjectDetail = serde_json::from_str(&json).unwrap();
+        assert_eq!(detail.slug, "sodium");
+        assert_eq!(detail.gallery.len(), 1);
+        assert!(detail.gallery[0].featured);
+        assert_eq!(detail.loaders, vec!["fabric", "neoforge"]);
     }
 }
