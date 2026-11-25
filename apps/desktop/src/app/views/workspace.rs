@@ -599,16 +599,8 @@ impl McwApp {
                                             }
                                         }
                                     }
-                                    let (state_lbl, state_col) = if m.enabled {
-                                        ("Enabled", p.accent)
-                                    } else {
-                                        ("Disabled", p.text_muted)
-                                    };
-                                    if ui
-                                        .button(
-                                            RichText::new(state_lbl).size(11.0).color(state_col),
-                                        )
-                                        .on_hover_text("Click to toggle enabled/disabled")
+                                    if render_mod_toggle_switch(ui, p, m.enabled)
+                                        .on_hover_text("Toggle this mod Enabled / Disabled")
                                         .clicked()
                                     {
                                         toggle_action = Some((m.file_name.clone(), !m.enabled));
@@ -1852,6 +1844,10 @@ impl McwApp {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new("Target Minecraft & Mod Loader").strong());
                         ui.add_space(6.0);
+                        let is_vanilla = self.edit_runtime_loader.eq_ignore_ascii_case("vanilla");
+                        if !is_vanilla {
+                            self.edit_runtime_show_snapshots = false;
+                        }
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Minecraft Version:");
                             egui::ComboBox::from_id_salt("inst_settings_mc_ver_combo")
@@ -1859,13 +1855,21 @@ impl McwApp {
                                 .width(150.0)
                                 .show_ui(ui, |ui| {
                                     for (vid, vtype) in &self.available_versions {
-                                        if !self.prefs.show_snapshots && vtype != "release" {
+                                        let is_release = vtype == "release";
+                                        if !is_release
+                                            && !(is_vanilla && self.edit_runtime_show_snapshots)
+                                        {
                                             continue;
                                         }
+                                        let label = if is_release {
+                                            vid.clone()
+                                        } else {
+                                            format!("{vid} ({})", display_version_type(vtype))
+                                        };
                                         ui.selectable_value(
                                             &mut self.edit_runtime_version,
                                             vid.clone(),
-                                            vid,
+                                            label,
                                         );
                                     }
                                 });
@@ -1884,6 +1888,12 @@ impl McwApp {
                                         );
                                     }
                                 });
+                            if self.edit_runtime_loader.eq_ignore_ascii_case("vanilla") {
+                                ui.checkbox(
+                                    &mut self.edit_runtime_show_snapshots,
+                                    "Show Snapshots",
+                                );
+                            }
                             if ui.button("Apply Version / Loader").clicked() {
                                 apply_runtime = true;
                             }
@@ -2364,4 +2374,55 @@ impl McwApp {
             self.start_java_install(major, ctx);
         }
     }
+}
+
+/// Renders a horizontal sliding toggle switch + explicit `Enabled` / `Disabled` label.
+fn render_mod_toggle_switch(ui: &mut egui::Ui, p: ThemePalette, enabled: bool) -> egui::Response {
+    let total_size = Vec2::new(106.0, 22.0);
+    let (rect, resp) = ui.allocate_exact_size(total_size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = resp.hovered();
+        let pill_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left(), rect.center().y - 9.0),
+            Vec2::new(34.0, 18.0),
+        );
+        let fill = if enabled { p.accent } else { p.elevated };
+        let stroke_col = if hovered {
+            p.text
+        } else if enabled {
+            p.accent
+        } else {
+            p.border
+        };
+        ui.painter()
+            .rect_filled(pill_rect, CornerRadius::same(9), fill);
+        ui.painter().rect_stroke(
+            pill_rect,
+            CornerRadius::same(9),
+            Stroke::new(1.0_f32, stroke_col),
+            egui::StrokeKind::Middle,
+        );
+        let knob_x = if enabled {
+            pill_rect.right() - 9.0
+        } else {
+            pill_rect.left() + 9.0
+        };
+        let knob_col = if enabled { p.accent_text } else { p.text_muted };
+        ui.painter()
+            .circle_filled(egui::pos2(knob_x, pill_rect.center().y), 6.5, knob_col);
+
+        let (label, lbl_col) = if enabled {
+            ("Enabled", p.text)
+        } else {
+            ("Disabled", p.text_muted)
+        };
+        ui.painter().text(
+            egui::pos2(pill_rect.right() + 7.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(11.5),
+            lbl_col,
+        );
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

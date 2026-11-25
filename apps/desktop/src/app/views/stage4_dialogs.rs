@@ -13,10 +13,7 @@ impl McwApp {
         let p = self.palette;
         let mut open = self.show_repair_center_window;
         let mut rescan_clicked = false;
-        let mut repair_clicked = false;
-        let busy = self.is_instance_busy(&inst.instance_id);
 
-        let repair_lbl = self.t("workspace.action.repair").to_string();
         let close_lbl = self.t("common.close").to_string();
         let notice = self.modal_notice_for("mcw_modal_repair_center");
 
@@ -38,13 +35,6 @@ impl McwApp {
                     )
                     .show_inside(ui, |ui| {
                         ui.horizontal(|ui| {
-                            let repair_btn = Button::new(
-                                RichText::new(&repair_lbl).color(p.accent_text).strong(),
-                            )
-                            .fill(p.accent);
-                            if ui.add_enabled(!busy, repair_btn).clicked() {
-                                repair_clicked = true;
-                            }
                             if ui.button(self.t("common.refresh")).clicked() {
                                 rescan_clicked = true;
                             }
@@ -213,9 +203,6 @@ impl McwApp {
         if rescan_clicked {
             self.open_repair_center(&inst.instance_id, ctx);
         }
-        if repair_clicked {
-            self.start_repair(ctx);
-        }
     }
 
     pub(crate) fn render_global_logs_window(&mut self, ctx: &egui::Context) {
@@ -372,8 +359,8 @@ impl McwApp {
             ctx,
             "mcw_modal_about",
             "About - MCW Launcher: Rust Edition",
-            [520.0, 390.0],
-            [400.0, 300.0],
+            [560.0, 420.0],
+            [460.0, 340.0],
             p,
             notice.as_ref(),
             |ui| {
@@ -442,6 +429,7 @@ impl McwApp {
                     });
 
                 ui.add_space(12.0);
+                let mut report_clicked = false;
                 ui.horizontal_wrapped(|ui| {
                     let gh_btn = Button::new(
                         RichText::new("Open GitHub Repository")
@@ -455,20 +443,17 @@ impl McwApp {
                     if ui.button("Open Data Folder").clicked() {
                         open_external(&self.paths.project_root.display().to_string());
                     }
-                    let mut report_clicked = false;
                     if ui.button("Report Issue...").clicked() {
                         report_clicked = true;
                     }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button(self.t("common.close")).clicked() {
-                            open = false;
-                        }
-                    });
-                    if report_clicked {
+                    if ui.button(self.t("common.close")).clicked() {
                         open = false;
-                        self.open_issue_report_window(ctx);
                     }
                 });
+                if report_clicked {
+                    open = false;
+                    self.open_issue_report_window(ctx);
+                }
             },
         );
         if !keep_open {

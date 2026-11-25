@@ -347,6 +347,7 @@ pub struct McwApp {
     // Instance runtime/metadata/arguments edit buffers
     edit_runtime_version: String,
     edit_runtime_loader: String,
+    edit_runtime_show_snapshots: bool,
     edit_group_input: String,
     edit_tags_input: String,
     edit_jvm_args_text: String,
@@ -851,6 +852,7 @@ impl McwApp {
             show_delete_modal: false,
             edit_runtime_version: String::new(),
             edit_runtime_loader: "vanilla".to_string(),
+            edit_runtime_show_snapshots: false,
             edit_group_input: String::new(),
             edit_tags_input: String::new(),
             edit_jvm_args_text: String::new(),

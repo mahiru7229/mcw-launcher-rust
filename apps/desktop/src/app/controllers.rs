@@ -173,6 +173,11 @@ impl McwApp {
             }
             self.edit_runtime_version = inst.version_id.clone();
             self.edit_runtime_loader = inst.mod_loader.name.to_ascii_lowercase();
+            self.edit_runtime_show_snapshots = inst.mod_loader.is_vanilla()
+                && self
+                    .available_versions
+                    .iter()
+                    .any(|(vid, vtype)| vid == &inst.version_id && vtype != "release");
             self.edit_group_input = inst.group.clone();
             self.edit_tags_input = inst.tags.join(", ");
         }
