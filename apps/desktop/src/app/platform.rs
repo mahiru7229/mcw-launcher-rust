@@ -708,6 +708,111 @@ pub(crate) fn open_external(target: &str) {
     }
 }
 
+pub(crate) fn sanitize_shortcut_filename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        "Minecraft Instance".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub(crate) fn create_desktop_shortcut(
+    exe_path: &std::path::Path,
+    work_dir: &std::path::Path,
+    instance_id: &str,
+    instance_name: &str,
+    icon_path: Option<&std::path::Path>,
+) -> std::result::Result<std::path::PathBuf, String> {
+    let safe_name = sanitize_shortcut_filename(instance_name);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let ps_escape = |s: &str| s.replace('\'', "''");
+        let exe_s = ps_escape(&exe_path.display().to_string());
+        let dir_s = ps_escape(&work_dir.display().to_string());
+        let id_arg = ps_escape(&format!("--launch \"{instance_id}\""));
+        let desc_s = ps_escape(&format!("Launch {instance_name} via MCW Launcher"));
+        let lnk_name_s = ps_escape(&format!("{safe_name}.lnk"));
+        let icon_src = icon_path
+            .filter(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico")))
+            .unwrap_or(exe_path);
+        let icon_s = ps_escape(&format!("{},0", icon_src.display()));
+
+        let script = format!(
+            "$desktop = [Environment]::GetFolderPath('Desktop'); \
+             $lnk = Join-Path $desktop '{lnk_name_s}'; \
+             $ws = New-Object -ComObject WScript.Shell; \
+             $sc = $ws.CreateShortcut($lnk); \
+             $sc.TargetPath = '{exe_s}'; \
+             $sc.Arguments = '{id_arg}'; \
+             $sc.WorkingDirectory = '{dir_s}'; \
+             $sc.Description = '{desc_s}'; \
+             $sc.IconLocation = '{icon_s}'; \
+             $sc.Save(); \
+             Write-Output $lnk"
+        );
+        let out = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("Failed to invoke PowerShell: {e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("Shortcut creation failed: {}", err.trim()));
+        }
+        let created = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if created.is_empty() {
+            return Err("PowerShell returned empty shortcut path.".to_string());
+        }
+        Ok(std::path::PathBuf::from(created))
+    }
+    #[cfg(not(windows))]
+    {
+        let desktop_dir = std::env::var_os("XDG_DESKTOP_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Desktop"))
+            })
+            .ok_or_else(|| "Could not determine Desktop folder.".to_string())?;
+        std::fs::create_dir_all(&desktop_dir)
+            .map_err(|e| format!("Failed to create Desktop directory: {e}"))?;
+        let dest = desktop_dir.join(format!("{safe_name}.desktop"));
+        let icon_line = icon_path
+            .filter(|p| p.is_file())
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "minecraft".to_string());
+        let body = format!(
+            "[Desktop Entry]\nType=Application\nName={}\nComment=Launch {} via MCW Launcher\nExec=\"{}\" --launch \"{}\"\nPath={}\nIcon={}\nTerminal=false\nCategories=Game;\n",
+            safe_name,
+            instance_name,
+            exe_path.display(),
+            instance_id,
+            work_dir.display(),
+            icon_line,
+        );
+        std::fs::write(&dest, body).map_err(|e| format!("Failed to write .desktop file: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+        }
+        Ok(dest)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_filter_pairs, window_size_for_resolution};

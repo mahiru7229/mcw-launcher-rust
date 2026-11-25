@@ -78,6 +78,13 @@ use std::time::{Duration, Instant};
 
 const MAX_LOG_LINES_PER_INSTANCE: usize = 1500;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupLaunchRequest {
+    pub instance_id: String,
+    pub quick_play_world: Option<String>,
+    pub quick_play_server: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct StorageRelocationPrompt {
     pub(crate) old_root: PathBuf,
@@ -607,6 +614,7 @@ impl McwApp {
         paths: LauncherPaths,
         init_size: [f32; 2],
         relocated_from: Option<(PathBuf, bool)>,
+        startup_launch: Option<StartupLaunchRequest>,
     ) -> Self {
         let mut prefs = LauncherPrefs::load(&paths);
         if prefs.window_size_schema_version < 2 {
@@ -1065,6 +1073,30 @@ impl McwApp {
             && crate::app::platform::unix_now_secs() >= app.prefs.junk_reminder_snooze_until
         {
             app.start_junk_scan(false, &cc.egui_ctx);
+        }
+        if let Some(req) = startup_launch {
+            if app.relocated_storage_prompt.is_none() {
+                if let Some(found) = app.instances.iter().find(|i| {
+                    i.instance_id == req.instance_id
+                        || i.name.eq_ignore_ascii_case(&req.instance_id)
+                }) {
+                    let target_id = found.instance_id.clone();
+                    app.startup_splash_done = true;
+                    app.selected_instance_id = Some(target_id);
+                    app.sync_selected_from_cache();
+                    app.start_launch_for_instance(
+                        req.quick_play_world,
+                        req.quick_play_server,
+                        false,
+                        &cc.egui_ctx,
+                    );
+                } else {
+                    app.notice_banner = Some((
+                        format!("Instance '{}' not found for --launch.", req.instance_id),
+                        true,
+                    ));
+                }
+            }
         }
         app
     }

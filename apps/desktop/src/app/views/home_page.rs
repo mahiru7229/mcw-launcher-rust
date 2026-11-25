@@ -258,6 +258,7 @@ impl McwApp {
         let mut open_modpack_update = false;
         let mut open_content_library = false;
         let mut open_export = false;
+        let mut create_shortcut = false;
         let mut export_loader_diag = false;
         let mut change_icon_clicked = false;
         let mut reset_icon_clicked = false;
@@ -425,6 +426,10 @@ impl McwApp {
                                 .clicked()
                             {
                                 open_export = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("Create Desktop Shortcut").clicked() {
+                                create_shortcut = true;
                                 ui.close_menu();
                             }
                             let rep_lbl = self.t("workspace.action.repair").to_string();
@@ -632,6 +637,39 @@ impl McwApp {
         }
         if open_export {
             self.open_export_modpack_window(ctx);
+        }
+        if create_shortcut {
+            match std::env::current_exe() {
+                Ok(exe) => {
+                    let store = InstanceStore::new(&self.paths);
+                    let icon_p = store.resolve_instance_icon_path(&inst);
+                    match create_desktop_shortcut(
+                        &exe,
+                        &self.paths.project_root,
+                        &inst.instance_id,
+                        &inst.name,
+                        icon_p.as_deref(),
+                    ) {
+                        Ok(dest) => {
+                            self.push_global_log(format!(
+                                "[SHORTCUT] Created desktop shortcut at {}",
+                                dest.display()
+                            ));
+                            self.notice_banner = Some((
+                                format!("Desktop shortcut created: {}", dest.display()),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner = Some((err, true));
+                        }
+                    }
+                }
+                Err(err) => {
+                    self.notice_banner =
+                        Some((format!("Could not locate launcher executable: {err}"), true));
+                }
+            }
         }
         if export_loader_diag {
             self.export_loader_diagnostics(&inst);
