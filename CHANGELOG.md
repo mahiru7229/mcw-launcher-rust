@@ -2,6 +2,27 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.3.0-beta.1] - 2026-11-25
+
+### Added
+- **Technic Platform & Solder API Modpack Provider (`mcw-providers`, Desktop)**:
+  - Added `TechnicClient` supporting both Technic Platform single-zip packs and Technic Solder API manifests (`builds` + per-mod `md5` verification).
+  - Integrated `BrowserProvider::Technic` & `ModpackInstallProvider::Technic` into the **Mod & Modpacks** browser and extended `ModpackUpdateService` across all **5 modpack providers** (**Modrinth**, **CurseForge**, **FTB**, **ATLauncher**, **Technic**).
+- **Prism Launcher / MultiMC `.zip` Import (`mcw-providers`)**:
+  - Added detection and import support for Prism Launcher / MultiMC `.zip` exports (`mmc-pack.json`, `instance.cfg`, `notes.txt`, `.minecraft/`), mapping Minecraft version, loader (`Fabric`, `Quilt`, `Forge`, `NeoForge`), memory/JVM preferences, and instance notes.
+- **Quick Account Switcher & Per-Instance Account Override (`mcw-models`, Desktop)**:
+  - Added a `ComboBox` quick account switcher in the top navigation bar alongside per-instance `preferred_account_uuid` override selection in **Instance Settings** (`resolve_account_for_instance`).
+- **Direct Launch CLI & Create Desktop Shortcut (`mcw-desktop`)**:
+  - Added `--launch <instance>` (with optional `--world <folder>` and `--server <host[:port]>`) CLI flags to `mcw-desktop` (`parse_startup_launch_args`).
+  - Added **`Create Desktop Shortcut`** in the instance `...` Actions menu (`.lnk` on Windows, `.desktop` on Linux).
+- **Workspace AIO Tools (`mcw-minecraft`, Desktop)**:
+  - **Instance Notes (`notes.txt`)**: Multiline editor under **Instance Info** (*Instance Settings*) synced with `<instance_dir>/notes.txt` and previewed in the Home hero header.
+  - **Visual Screenshot Gallery & Preview Modal**: Asynchronous decoded screenshot thumbnail grid (up to 48-entry LRU texture cache) with a centered **In-App Preview Modal** supporting rename, open, and delete.
+  - **World Icon, Copy Seed & World Export (`.zip`)**: Renders world `icon.png`, reads NBT world seed (`WorldGenSettings.seed` / `RandomSeed`) with one-click **`Copy Seed`**, and exports worlds to `.zip` via `SaveFileDialog`.
+  - **Export Modlist (`.md` / `.txt`)**: Added **`Export Modlist...`** in the Mods tab (`SaveFileDialog`), exporting sorted Markdown tables or plain-text summaries.
+
+---
+
 ## [1.2.1] - 2026-11-23
 
 ### Added
