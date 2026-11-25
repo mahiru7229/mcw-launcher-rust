@@ -99,7 +99,10 @@ mod tests {
         fs::write(&jar, b"corrupted-agent").unwrap();
         let repaired = SecurityAgentManager::ensure_installed(tmp.path()).unwrap();
         assert_eq!(repaired, jar);
-        assert_eq!(sha256_hex(&fs::read(&repaired).unwrap()), SECURITY_AGENT_SHA256);
+        assert_eq!(
+            sha256_hex(&fs::read(&repaired).unwrap()),
+            SECURITY_AGENT_SHA256
+        );
     }
 
     #[test]
