@@ -327,6 +327,18 @@ pub struct LauncherPrefs {
     pub junk_retention_days: u32,
     #[serde(default)]
     pub junk_reminder_snooze_until: u64,
+    #[serde(default = "default_home_view_mode")]
+    pub home_view_mode: String,
+    #[serde(default = "default_home_sort_by")]
+    pub home_sort_by: String,
+}
+
+fn default_home_view_mode() -> String {
+    "workspace".to_string()
+}
+
+fn default_home_sort_by() -> String {
+    "last_played".to_string()
 }
 
 fn default_segments_per_file() -> usize {
@@ -467,6 +479,8 @@ impl Default for LauncherPrefs {
             auto_cleanup_reminders: true,
             junk_retention_days: default_junk_retention_days(),
             junk_reminder_snooze_until: 0,
+            home_view_mode: default_home_view_mode(),
+            home_sort_by: default_home_sort_by(),
         }
     }
 }

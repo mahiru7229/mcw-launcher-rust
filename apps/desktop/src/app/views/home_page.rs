@@ -102,8 +102,408 @@ impl McwApp {
             });
     }
 
+    fn render_home_library_grid(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use std::collections::BTreeMap;
+
+        let p = self.palette;
+        let q = self.home_grid_search.trim().to_ascii_lowercase();
+        let filtered: Vec<Instance> = self
+            .instances
+            .iter()
+            .filter(|inst| {
+                if q.is_empty() {
+                    return true;
+                }
+                inst.name.to_ascii_lowercase().contains(&q)
+                    || inst.version_id.to_ascii_lowercase().contains(&q)
+                    || inst.mod_loader.name.to_ascii_lowercase().contains(&q)
+                    || inst.group.to_ascii_lowercase().contains(&q)
+                    || inst
+                        .tags
+                        .iter()
+                        .any(|t| t.to_ascii_lowercase().contains(&q))
+            })
+            .cloned()
+            .collect();
+
+        let sorted = sort_instances_for_grid(&filtered, &self.prefs.home_sort_by);
+        for inst in &sorted {
+            self.ensure_instance_icon(inst, ctx);
+        }
+
+        if sorted.is_empty() {
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(Margin::same(24))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("No instances match your current filter.")
+                                .color(p.text_muted),
+                        );
+                    });
+                });
+            return;
+        }
+
+        // Order named groups alphabetically first, followed by Ungrouped
+        let mut grouped: BTreeMap<(u8, String), Vec<Instance>> = BTreeMap::new();
+        for inst in sorted {
+            let trimmed = inst.group.trim();
+            let key = if trimmed.is_empty() {
+                (1u8, "Ungrouped".to_string())
+            } else {
+                (0u8, trimmed.to_string())
+            };
+            grouped.entry(key).or_default().push(inst);
+        }
+
+        let mut launch_instance_id: Option<String> = None;
+        let mut stop_instance_id: Option<String> = None;
+        let mut open_instance_id: Option<String> = None;
+        let mut manual_dl_instance_id: Option<String> = None;
+
+        ScrollArea::vertical()
+            .id_salt("home_library_grid_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let avail_w = ui.available_width().max(240.0);
+                let cols = (((avail_w + 10.0) / 260.0).floor() as usize).clamp(1, 5);
+                let gap = 10.0;
+                let card_w =
+                    ((avail_w - gap * (cols.saturating_sub(1) as f32)) / cols as f32).max(200.0);
+
+                for ((_, group_name), items) in &grouped {
+                    let is_collapsed = self.collapsed_home_groups.contains(group_name);
+                    let arrow = if is_collapsed { "▸" } else { "▾" };
+                    let hdr_lbl = format!("{arrow} {group_name} ({})", items.len());
+                    if ui
+                        .add(
+                            Button::new(RichText::new(hdr_lbl).strong().size(13.0).color(p.text))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::NONE),
+                        )
+                        .clicked()
+                    {
+                        if is_collapsed {
+                            self.collapsed_home_groups.remove(group_name);
+                        } else {
+                            self.collapsed_home_groups.insert(group_name.clone());
+                        }
+                    }
+
+                    if is_collapsed {
+                        ui.add_space(4.0);
+                        continue;
+                    }
+                    ui.add_space(4.0);
+
+                    for row in items.chunks(cols) {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = gap;
+                            for inst in row {
+                                let is_sel = self.selected_instance_id.as_deref()
+                                    == Some(inst.instance_id.as_str());
+                                let pending_manual = self
+                                    .pending_manual_counts
+                                    .get(&inst.instance_id)
+                                    .copied()
+                                    .unwrap_or(0);
+                                let is_running = matches!(
+                                    self.launch_states.get(&inst.instance_id),
+                                    Some(LaunchState::Running { .. })
+                                );
+                                let is_preparing = matches!(
+                                    self.launch_states.get(&inst.instance_id),
+                                    Some(LaunchState::Preparing(_))
+                                );
+                                let (status_lbl, status_col) = if is_running {
+                                    ("Running".to_string(), p.accent)
+                                } else if is_preparing {
+                                    ("Preparing".to_string(), p.warning)
+                                } else if pending_manual > 0 {
+                                    (format!("Missing ({pending_manual})"), p.warning)
+                                } else if inst.last_launch_state == "crashed" {
+                                    ("Crashed".to_string(), p.danger)
+                                } else {
+                                    ("Ready".to_string(), p.accent)
+                                };
+
+                                ui.vertical(|ui| {
+                                    Frame::new()
+                                        .fill(p.surface)
+                                        .stroke(Stroke::new(
+                                            if is_sel { 1.5_f32 } else { 1.0_f32 },
+                                            if is_sel { p.accent } else { p.border },
+                                        ))
+                                        .corner_radius(CornerRadius::same(12))
+                                        .inner_margin(Margin::same(12))
+                                        .show(ui, |ui| {
+                                            ui.set_width((card_w - 26.0).max(174.0));
+                                            ui.set_min_height(108.0);
+                                            ui.horizontal(|ui| {
+                                                self.render_instance_icon(ui, inst, 38.0);
+                                                ui.add_space(6.0);
+                                                ui.vertical(|ui| {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(&inst.name)
+                                                                .strong()
+                                                                .size(13.5)
+                                                                .color(p.text),
+                                                        )
+                                                        .truncate(),
+                                                    );
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(format!(
+                                                                "MC {} · {}",
+                                                                inst.version_id,
+                                                                display_loader_name(
+                                                                    &inst.mod_loader.name
+                                                                )
+                                                            ))
+                                                            .monospace()
+                                                            .size(11.0)
+                                                            .color(p.text_muted),
+                                                        )
+                                                        .truncate(),
+                                                    );
+                                                });
+                                            });
+                                            ui.add_space(6.0);
+                                            ui.horizontal_wrapped(|ui| {
+                                                let (dot_r, _) = ui.allocate_exact_size(
+                                                    Vec2::splat(8.0),
+                                                    Sense::hover(),
+                                                );
+                                                ui.painter().circle_filled(
+                                                    dot_r.center(),
+                                                    3.5,
+                                                    status_col,
+                                                );
+                                                ui.label(
+                                                    RichText::new(&status_lbl)
+                                                        .size(11.0)
+                                                        .color(p.text_muted),
+                                                );
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "· {}",
+                                                        format_duration(
+                                                            inst.total_playtime_seconds
+                                                        )
+                                                    ))
+                                                    .size(11.0)
+                                                    .color(p.text_muted),
+                                                );
+                                            });
+                                            ui.add_space(8.0);
+                                            ui.horizontal_wrapped(|ui| {
+                                                if is_running {
+                                                    if ui
+                                                        .add(
+                                                            Button::new(
+                                                                RichText::new("Stop")
+                                                                    .color(Color32::WHITE)
+                                                                    .size(11.5)
+                                                                    .strong(),
+                                                            )
+                                                            .fill(p.danger)
+                                                            .corner_radius(CornerRadius::same(7)),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        stop_instance_id =
+                                                            Some(inst.instance_id.clone());
+                                                    }
+                                                } else if is_preparing {
+                                                    ui.add_enabled(
+                                                        false,
+                                                        Button::new(
+                                                            RichText::new("Preparing...")
+                                                                .size(11.5),
+                                                        )
+                                                        .corner_radius(CornerRadius::same(7)),
+                                                    );
+                                                } else if pending_manual > 0 {
+                                                    if ui
+                                                        .add(
+                                                            Button::new(
+                                                                RichText::new("Missing Mods")
+                                                                    .color(Color32::BLACK)
+                                                                    .size(11.5)
+                                                                    .strong(),
+                                                            )
+                                                            .fill(p.warning)
+                                                            .corner_radius(CornerRadius::same(7)),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        manual_dl_instance_id =
+                                                            Some(inst.instance_id.clone());
+                                                    }
+                                                } else if ui
+                                                    .add(
+                                                        Button::new(
+                                                            RichText::new("Play")
+                                                                .color(p.accent_text)
+                                                                .size(11.5)
+                                                                .strong(),
+                                                        )
+                                                        .fill(p.accent)
+                                                        .corner_radius(CornerRadius::same(7)),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    launch_instance_id =
+                                                        Some(inst.instance_id.clone());
+                                                }
+                                                if ui
+                                                    .add(
+                                                        Button::new(
+                                                            RichText::new("Open").size(11.5),
+                                                        )
+                                                        .corner_radius(CornerRadius::same(7)),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    open_instance_id =
+                                                        Some(inst.instance_id.clone());
+                                                }
+                                            });
+                                        });
+                                });
+                            }
+                        });
+                        ui.add_space(gap);
+                    }
+                    ui.add_space(6.0);
+                }
+            });
+
+        if let Some(id) = stop_instance_id {
+            if let Some(LaunchState::Running { control, .. }) = self.launch_states.get(&id) {
+                control.request_stop();
+            }
+        } else if let Some(id) = launch_instance_id {
+            if self.selected_instance_id.as_deref() != Some(id.as_str()) {
+                self.selected_instance_id = Some(id);
+                self.sync_selected_from_cache();
+            }
+            self.start_launch(ctx);
+        } else if let Some(id) = manual_dl_instance_id {
+            self.open_manual_downloads_for(&id, ctx);
+        } else if let Some(id) = open_instance_id {
+            self.prefs.home_view_mode = "workspace".to_string();
+            self.save_prefs();
+            self.request_instance_switch(id, ctx);
+        }
+    }
+
     fn render_home_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let p = self.palette;
+        if !self.instances.is_empty() {
+            let mut prefs_dirty = false;
+            let mut open_create_grid = false;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 4.0);
+                let is_grid = self.prefs.home_view_mode == "grid";
+                let mode_lbl = if is_grid {
+                    "View: Library Grid"
+                } else {
+                    "View: Workspace"
+                };
+                let mut picked_mode = if is_grid {
+                    "grid".to_string()
+                } else {
+                    "workspace".to_string()
+                };
+                egui::ComboBox::from_id_salt("cb_home_view_mode")
+                    .selected_text(mode_lbl)
+                    .width(156.0)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut picked_mode,
+                            "workspace".to_string(),
+                            "Workspace View",
+                        );
+                        ui.selectable_value(&mut picked_mode, "grid".to_string(), "Library Grid");
+                    });
+                if picked_mode != self.prefs.home_view_mode {
+                    self.prefs.home_view_mode = picked_mode;
+                    prefs_dirty = true;
+                }
+
+                if self.prefs.home_view_mode == "grid" {
+                    ui.add(
+                        TextEdit::singleline(&mut self.home_grid_search)
+                            .hint_text("Filter instances...")
+                            .desired_width(200.0),
+                    );
+                    let sort_lbl = match self.prefs.home_sort_by.as_str() {
+                        "playtime" => "Sort: Playtime",
+                        "name" => "Sort: Name",
+                        _ => "Sort: Last Played",
+                    };
+                    let mut picked_sort = match self.prefs.home_sort_by.as_str() {
+                        "playtime" => "playtime".to_string(),
+                        "name" => "name".to_string(),
+                        _ => "last_played".to_string(),
+                    };
+                    egui::ComboBox::from_id_salt("cb_home_sort_by")
+                        .selected_text(sort_lbl)
+                        .width(152.0)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut picked_sort,
+                                "last_played".to_string(),
+                                "Sort: Last Played",
+                            );
+                            ui.selectable_value(
+                                &mut picked_sort,
+                                "playtime".to_string(),
+                                "Sort: Playtime",
+                            );
+                            ui.selectable_value(&mut picked_sort, "name".to_string(), "Sort: Name");
+                        });
+                    if picked_sort != self.prefs.home_sort_by {
+                        self.prefs.home_sort_by = picked_sort;
+                        prefs_dirty = true;
+                    }
+                    if ui
+                        .add(
+                            Button::new(
+                                RichText::new("+ Create Instance")
+                                    .color(p.accent_text)
+                                    .strong(),
+                            )
+                            .fill(p.accent)
+                            .corner_radius(CornerRadius::same(8)),
+                        )
+                        .clicked()
+                    {
+                        open_create_grid = true;
+                    }
+                }
+            });
+            if prefs_dirty {
+                self.save_prefs();
+            }
+            if open_create_grid {
+                self.open_create_instance_dialog(ctx);
+            }
+            ui.add_space(6.0);
+            if self.prefs.home_view_mode == "grid" {
+                self.render_home_library_grid(ui, ctx);
+                return;
+            }
+        }
         let Some(inst) = self.selected_instance().cloned() else {
             Frame::new()
                 .fill(p.surface)

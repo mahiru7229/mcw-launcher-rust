@@ -7055,15 +7055,81 @@ pub(crate) fn matches_mod_filter(
     }
 }
 
+/// Sorts instances for the Home Library Grid View (`last_played`, `playtime`, or `name`).
+pub(crate) fn sort_instances_for_grid(instances: &[Instance], sort_by: &str) -> Vec<Instance> {
+    let mut out = instances.to_vec();
+    out.sort_by(|a, b| match sort_by {
+        "playtime" => b
+            .total_playtime_seconds
+            .cmp(&a.total_playtime_seconds)
+            .then_with(|| {
+                a.name
+                    .to_ascii_lowercase()
+                    .cmp(&b.name.to_ascii_lowercase())
+            }),
+        "name" => a
+            .name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+            .then_with(|| a.instance_id.cmp(&b.instance_id)),
+        _ => b
+            .last_played
+            .cmp(&a.last_played)
+            .then_with(|| b.total_playtime_seconds.cmp(&a.total_playtime_seconds))
+            .then_with(|| {
+                a.name
+                    .to_ascii_lowercase()
+                    .cmp(&b.name.to_ascii_lowercase())
+            }),
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         apply_lan_agent_option, format_modlist_export, is_account_or_token_error,
         matches_mod_filter, normalize_mod_stem, resolve_account_for_instance,
-        resolve_unique_mod_filename, AccountSource, InstanceSettings, StoredAccount,
+        resolve_unique_mod_filename, sort_instances_for_grid, AccountSource, Instance,
+        InstanceSettings, StoredAccount,
     };
     use mcw_mods::{ModInfo, ModLoaderTag};
     use std::path::PathBuf;
+
+    #[test]
+    fn sorts_instances_for_library_grid() {
+        let mut a = Instance::new("a", "Zeta Pack", "1.20.1");
+        a.last_played = "2026-11-20T10:00:00Z".to_string();
+        a.total_playtime_seconds = 100;
+
+        let mut b = Instance::new("b", "Alpha Pack", "1.20.1");
+        b.last_played = "2026-11-24T10:00:00Z".to_string();
+        b.total_playtime_seconds = 50;
+
+        let mut c = Instance::new("c", "Middle Pack", "1.20.1");
+        c.last_played = String::new();
+        c.total_playtime_seconds = 900;
+
+        let list = vec![a, b, c];
+
+        let by_recent: Vec<String> = sort_instances_for_grid(&list, "last_played")
+            .into_iter()
+            .map(|i| i.instance_id)
+            .collect();
+        assert_eq!(by_recent, vec!["b", "a", "c"]);
+
+        let by_playtime: Vec<String> = sort_instances_for_grid(&list, "playtime")
+            .into_iter()
+            .map(|i| i.instance_id)
+            .collect();
+        assert_eq!(by_playtime, vec!["c", "a", "b"]);
+
+        let by_name: Vec<String> = sort_instances_for_grid(&list, "name")
+            .into_iter()
+            .map(|i| i.instance_id)
+            .collect();
+        assert_eq!(by_name, vec!["b", "c", "a"]);
+    }
 
     #[test]
     fn filters_mods_by_query_and_status() {
