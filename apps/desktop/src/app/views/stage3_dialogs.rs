@@ -856,6 +856,43 @@ impl McwApp {
                 });
             ui.add_space(8.0);
         }
+
+        // Card 5: Universal Launcher Importer (Prism / MultiMC / Modrinth App / CurseForge App / Vanilla)
+        let univ_title = "Universal Launcher Importer";
+        let univ_desc = "Copy instances, mods, worlds, resource packs, and shaders safely from Prism Launcher, MultiMC, Modrinth App, CurseForge App, or Vanilla .minecraft (source stays read-only).";
+        let univ_btn = "Import from Other Launchers...";
+        if crate::app::views::settings_modal::settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                univ_title,
+                univ_desc,
+                univ_btn,
+                "prism multimc modrinth curseforge vanilla import",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                crate::app::views::settings_modal::render_settings_search_badge(ui, p, &cat_title);
+            }
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(univ_title).strong());
+                    ui.label(RichText::new(univ_desc).size(11.5).color(p.text_muted));
+                    ui.add_space(8.0);
+                    let btn = Button::new(RichText::new(univ_btn).color(p.accent_text).strong())
+                        .fill(p.accent);
+                    if ui.add(btn).clicked() {
+                        self.open_universal_import_modal(ctx);
+                    }
+                });
+            ui.add_space(8.0);
+        }
         matched
     }
 

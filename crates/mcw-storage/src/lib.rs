@@ -7,6 +7,7 @@ pub mod instance_store;
 pub mod migration;
 pub mod paths;
 pub mod run_lock;
+pub mod universal_import;
 
 pub use atomic_fs::{atomic_write_bytes, atomic_write_json, atomic_write_text};
 pub use backup::{BackupInfo, BackupManager, RestoreOutcome};
@@ -30,6 +31,10 @@ pub use migration::{
 };
 pub use paths::LauncherPaths;
 pub use run_lock::{InstanceRunLock, LockState, RunningInstanceInfo};
+pub use universal_import::{
+    default_root_candidates_for_kind, detect_default_launcher_roots, import_external_instances,
+    inspect_external_launcher, DiscoveredExternalInstance, ExternalLauncherKind,
+};
 
 use thiserror::Error;
 

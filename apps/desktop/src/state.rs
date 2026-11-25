@@ -14,9 +14,9 @@ use mcw_runtime::{
     ProcessControl, ProcessExitReport,
 };
 use mcw_storage::{
-    BackupInfo, CachedVersionInfo, ContentStoreStats, JunkScanReport, PythonMigrationInspection,
-    PythonMigrationResult, RestoreOutcome, StorageCleanupReport, StorageSummary,
-    UnusedVersionCandidate,
+    BackupInfo, CachedVersionInfo, ContentStoreStats, DiscoveredExternalInstance, JunkScanReport,
+    PythonMigrationInspection, PythonMigrationResult, RestoreOutcome, StorageCleanupReport,
+    StorageSummary, UnusedVersionCandidate,
 };
 use mcw_updater::{StagedUpdate, UpdateCheckResult};
 use std::path::PathBuf;
@@ -513,6 +513,12 @@ pub enum AppEvent {
         instance_id: String,
         kind: ContentKind,
         result: Result<usize, String>,
+    },
+    UniversalFolderPicked(Option<std::path::PathBuf>),
+    UniversalImportScanned(Result<Vec<DiscoveredExternalInstance>, String>),
+    UniversalImportFinished {
+        task_id: u64,
+        result: Result<Vec<String>, String>,
     },
 }
 

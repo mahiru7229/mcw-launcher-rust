@@ -136,6 +136,7 @@ impl McwApp {
             let mut open = self.show_create_modal;
             let mut browse_modpacks_clicked = false;
             let mut open_py_import = false;
+            let mut open_universal_import = false;
             let notice = self.modal_notice_for("mcw_modal_create_instance");
             let (keep_open, dismiss_notice) = render_in_app_modal(
                 ctx,
@@ -509,6 +510,13 @@ impl McwApp {
                                             open_py_import = true;
                                             open = false;
                                         }
+                                        if ui
+                                            .button("Import from Other Launchers...")
+                                            .clicked()
+                                        {
+                                            open_universal_import = true;
+                                            open = false;
+                                        }
                                         if ui.button(self.t("common.close")).clicked() {
                                             open = false;
                                         }
@@ -529,6 +537,9 @@ impl McwApp {
             } else if open_py_import {
                 self.show_create_modal = false;
                 self.open_python_import_window(ctx);
+            } else if open_universal_import {
+                self.show_create_modal = false;
+                self.open_universal_import_modal(ctx);
             } else if !open {
                 self.show_create_modal = false;
             }
@@ -2463,6 +2474,266 @@ impl McwApp {
         self.render_storage_relocated_modal(ctx);
         self.render_screenshot_preview_modal(ctx);
         self.render_mod_cart_modal(ctx);
+        self.render_universal_import_modal(ctx);
+    }
+
+    pub(crate) fn render_universal_import_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_universal_import_modal {
+            return;
+        }
+        let p = self.palette;
+        let mut open = self.show_universal_import_modal;
+        let mut switched_kind: Option<ExternalLauncherKind> = None;
+        let mut browse_clicked = false;
+        let mut scan_clicked = false;
+        let mut import_clicked = false;
+
+        let selected_count = self
+            .universal_import_items
+            .iter()
+            .filter(|i| self.universal_import_selected.contains(&i.id_key))
+            .count();
+        let can_import = selected_count > 0
+            && !self.universal_import_scanning
+            && !self.universal_import_importing;
+        let notice = self.modal_notice_for("mcw_modal_universal_import");
+
+        let (keep_open, dismiss_notice) = render_in_app_modal(
+            ctx,
+            "mcw_modal_universal_import",
+            "Import from Other Launchers",
+            [660.0, 520.0],
+            [480.0, 380.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                egui::TopBottomPanel::bottom("mcw_universal_import_footer")
+                    .frame(
+                        Frame::new()
+                            .fill(p.canvas)
+                            .inner_margin(egui::Margin::symmetric(0, 8)),
+                    )
+                    .show_inside(ui, |ui| {
+                        ui.separator();
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            let primary_lbl = if self.universal_import_importing {
+                                "Importing...".to_string()
+                            } else {
+                                format!("Import Selected ({selected_count})")
+                            };
+                            let btn = Button::new(
+                                RichText::new(primary_lbl).color(p.accent_text).strong(),
+                            )
+                            .fill(p.accent);
+                            if ui.add_enabled(can_import, btn).clicked() {
+                                import_clicked = true;
+                            }
+                            if ui.button(self.t("common.close")).clicked() {
+                                open = false;
+                            }
+                        });
+                    });
+
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "Safely copy instances, mods, worlds, resource packs, shaders, and notes into MCW Launcher without modifying the source launcher.",
+                        )
+                        .size(11.5)
+                        .color(p.text_muted),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Source Launcher:").strong());
+                    let mut picked_kind = self.universal_import_kind;
+                    egui::ComboBox::from_id_salt("cb_universal_import_kind")
+                        .selected_text(self.universal_import_kind.label())
+                        .width(240.0)
+                        .show_ui(ui, |ui| {
+                            for kind in ExternalLauncherKind::ALL {
+                                ui.selectable_value(&mut picked_kind, kind, kind.label());
+                            }
+                        });
+                    if picked_kind != self.universal_import_kind {
+                        switched_kind = Some(picked_kind);
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Folder:").strong());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let scan_btn = Button::new(
+                            RichText::new(if self.universal_import_scanning {
+                                "Scanning..."
+                            } else {
+                                "Scan"
+                            })
+                            .color(p.accent_text)
+                            .strong(),
+                        )
+                        .fill(p.accent);
+                        if ui
+                            .add_enabled(
+                                !self.universal_import_scanning && !self.universal_import_importing,
+                                scan_btn,
+                            )
+                            .clicked()
+                        {
+                            scan_clicked = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.universal_import_folder_picking
+                                    && !self.universal_import_importing,
+                                Button::new("Browse..."),
+                            )
+                            .clicked()
+                        {
+                            browse_clicked = true;
+                        }
+                        let edit_w = ui.available_width().max(160.0);
+                        ui.add(
+                            TextEdit::singleline(&mut self.universal_import_path)
+                                .hint_text("Select launcher root or .minecraft folder...")
+                                .desired_width(edit_w),
+                        );
+                    });
+                });
+
+                if let Some(ref err) = self.universal_import_error {
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(RichText::new(err).color(p.danger)).wrap());
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Discovered Instances ({})",
+                            self.universal_import_items.len()
+                        ))
+                        .strong(),
+                    );
+                    if !self.universal_import_items.is_empty() {
+                        if ui.small_button("Select All").clicked() {
+                            self.universal_import_selected = self
+                                .universal_import_items
+                                .iter()
+                                .map(|i| i.id_key.clone())
+                                .collect();
+                        }
+                        if ui.small_button("Clear").clicked() {
+                            self.universal_import_selected.clear();
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+
+                egui::ScrollArea::vertical()
+                    .id_salt("universal_import_list_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if self.universal_import_scanning {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Scanning launcher directory...");
+                            });
+                            return;
+                        }
+                        if self.universal_import_items.is_empty() {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(
+                                        "No instances found yet. Choose a source launcher and click Scan (or Browse to its instances/profiles/.minecraft directory).",
+                                    )
+                                    .size(12.0)
+                                    .color(p.text_muted),
+                                )
+                                .wrap(),
+                            );
+                            return;
+                        }
+
+                        for item in &self.universal_import_items {
+                            let mut checked = self.universal_import_selected.contains(&item.id_key);
+                            Frame::new()
+                                .fill(p.surface)
+                                .stroke(Stroke::new(
+                                    1.0_f32,
+                                    if checked { p.accent } else { p.border },
+                                ))
+                                .corner_radius(CornerRadius::same(10))
+                                .inner_margin(egui::Margin::same(10))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal_wrapped(|ui| {
+                                        if ui.checkbox(&mut checked, "").changed() {
+                                            if checked {
+                                                self.universal_import_selected
+                                                    .insert(item.id_key.clone());
+                                            } else {
+                                                self.universal_import_selected.remove(&item.id_key);
+                                            }
+                                        }
+                                        ui.vertical(|ui| {
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(RichText::new(&item.name).strong());
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "MC {} - {}",
+                                                        item.version_id,
+                                                        display_loader_name(&item.loader_name)
+                                                    ))
+                                                    .size(11.5)
+                                                    .color(p.accent),
+                                                );
+                                            });
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} mod(s) - {} world(s) - {}",
+                                                    item.mod_count,
+                                                    item.world_count,
+                                                    item.mc_dir.display()
+                                                ))
+                                                .size(11.0)
+                                                .color(p.text_muted),
+                                            );
+                                        });
+                                    });
+                                });
+                            ui.add_space(4.0);
+                        }
+                    });
+            },
+        );
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
+        self.show_universal_import_modal = open;
+
+        if let Some(kind) = switched_kind {
+            self.switch_universal_import_kind(kind, ctx);
+        } else if browse_clicked {
+            self.universal_import_folder_picking = true;
+            let tx = self.tx.clone();
+            let ctx_c = ctx.clone();
+            pick_folder_dialog_async("Select Launcher Folder".to_string(), move |picked| {
+                let _ = tx.send(AppEvent::UniversalFolderPicked(picked));
+                ctx_c.request_repaint();
+            });
+        } else if scan_clicked {
+            self.start_universal_import_scan(ctx);
+        } else if import_clicked {
+            self.start_universal_import(ctx);
+        }
     }
 
     pub(crate) fn render_mod_cart_modal(&mut self, ctx: &egui::Context) {

@@ -1386,7 +1386,7 @@ pub fn migrate_from_python_1_8(
     Ok(report)
 }
 
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in WalkDir::new(from).into_iter().filter_map(|e| e.ok()) {
         let rel = entry

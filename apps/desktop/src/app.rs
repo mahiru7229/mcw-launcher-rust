@@ -66,12 +66,13 @@ use mcw_runtime::{
     LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
-    inspect_python_launcher, migrate_from_python_launcher, BackupInfo, BackupManager,
-    CachedVersionInfo, ConflictStrategy, ContentStore, ContentStoreStats, HealthSeverity,
-    InstanceHealthManager, InstanceHealthReport, InstanceHealthState, InstanceRunLock,
-    InstanceStore, JunkScanReport, LauncherPaths, PythonMigrationInspection,
-    PythonMigrationOptions, PythonMigrationResult, StartupRecoveryService, StorageCleanupService,
-    StorageSummary, UnusedVersionCandidate,
+    default_root_candidates_for_kind, detect_default_launcher_roots, import_external_instances,
+    inspect_external_launcher, inspect_python_launcher, migrate_from_python_launcher, BackupInfo,
+    BackupManager, CachedVersionInfo, ConflictStrategy, ContentStore, ContentStoreStats,
+    DiscoveredExternalInstance, ExternalLauncherKind, HealthSeverity, InstanceHealthManager,
+    InstanceHealthReport, InstanceHealthState, InstanceRunLock, InstanceStore, JunkScanReport,
+    LauncherPaths, PythonMigrationInspection, PythonMigrationOptions, PythonMigrationResult,
+    StartupRecoveryService, StorageCleanupService, StorageSummary, UnusedVersionCandidate,
 };
 use mcw_updater::{ReleaseInfo, UpdateChannel, UpdateCheckResult, UpdateChecker, UpdateInstaller};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -608,6 +609,15 @@ pub struct McwApp {
     python_import_themes: bool,
     python_import_running: bool,
     python_import_result: Option<PythonMigrationResult>,
+    show_universal_import_modal: bool,
+    universal_import_kind: ExternalLauncherKind,
+    universal_import_path: String,
+    universal_import_folder_picking: bool,
+    universal_import_scanning: bool,
+    universal_import_importing: bool,
+    universal_import_items: Vec<DiscoveredExternalInstance>,
+    universal_import_selected: HashSet<String>,
+    universal_import_error: Option<String>,
 
     // v1.0.0-rc.1: Branding logo, navigation history, scale apply, LAN agent creation toggles, splash screen
     app_logo_texture: Option<egui::TextureHandle>,
@@ -1069,6 +1079,15 @@ impl McwApp {
             python_import_themes: true,
             python_import_running: false,
             python_import_result: None,
+            show_universal_import_modal: false,
+            universal_import_kind: ExternalLauncherKind::PrismLauncher,
+            universal_import_path: String::new(),
+            universal_import_folder_picking: false,
+            universal_import_scanning: false,
+            universal_import_importing: false,
+            universal_import_items: Vec::new(),
+            universal_import_selected: HashSet::new(),
+            universal_import_error: None,
             app_logo_texture,
             nav_history: Vec::new(),
             nav_history_idx: 0,
@@ -1226,6 +1245,7 @@ impl McwApp {
             || self.show_theme_issues_window
             || self.show_unsaved_changes_window
             || self.show_python_import_window
+            || self.show_universal_import_modal
             || (self.show_junk_cleanup_modal && self.junk_scan_report.is_some())
     }
 
@@ -1275,6 +1295,8 @@ impl McwApp {
             Some("mcw_modal_update_dialog")
         } else if self.show_python_import_window {
             Some("mcw_modal_python_import")
+        } else if self.show_universal_import_modal {
+            Some("mcw_modal_universal_import")
         } else if self.show_junk_cleanup_modal && self.junk_scan_report.is_some() {
             Some("mcw_modal_junk_cleanup")
         } else if self.show_first_run_wizard {

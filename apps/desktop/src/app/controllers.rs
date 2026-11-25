@@ -4452,6 +4452,65 @@ impl McwApp {
                         self.notice_banner = Some((summary, true));
                     }
                 }
+                AppEvent::UniversalFolderPicked(picked) => {
+                    self.universal_import_folder_picking = false;
+                    if let Some(path) = picked {
+                        self.universal_import_path = path.display().to_string();
+                        self.start_universal_import_scan(ctx);
+                    }
+                }
+                AppEvent::UniversalImportScanned(res) => {
+                    self.universal_import_scanning = false;
+                    match res {
+                        Ok(items) => {
+                            self.universal_import_error = None;
+                            self.universal_import_selected =
+                                items.iter().map(|i| i.id_key.clone()).collect();
+                            self.universal_import_items = items;
+                        }
+                        Err(err) => {
+                            self.universal_import_items.clear();
+                            self.universal_import_selected.clear();
+                            self.universal_import_error = Some(err);
+                        }
+                    }
+                }
+                AppEvent::UniversalImportFinished { task_id, result } => {
+                    self.finish_task(task_id);
+                    self.universal_import_importing = false;
+                    match result {
+                        Ok(ids) => {
+                            self.reload_instances();
+                            if let Some(first) = ids.first() {
+                                self.selected_instance_id = Some(first.clone());
+                            }
+                            self.sync_selected_from_cache();
+                            let msg = if ids.is_empty() {
+                                "No external instances were imported (missing Minecraft folders)."
+                                    .to_string()
+                            } else {
+                                format!(
+                                    "Imported {} instance(s) from {}.",
+                                    ids.len(),
+                                    self.universal_import_kind.label()
+                                )
+                            };
+                            self.push_global_log(format!("[IMPORT] {msg}"));
+                            self.notice_banner = Some((msg, ids.is_empty()));
+                            if !ids.is_empty() {
+                                self.show_universal_import_modal = false;
+                            }
+                        }
+                        Err(err) => {
+                            self.push_global_log(format!(
+                                "[ERROR] [IMPORT] External launcher import failed: {err}"
+                            ));
+                            self.universal_import_error = Some(err.clone());
+                            self.notice_banner =
+                                Some((format!("Universal import failed: {err}"), true));
+                        }
+                    }
+                }
             }
         }
     }
@@ -7610,6 +7669,113 @@ impl McwApp {
                 installed_count,
                 dep_count,
                 failed,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn open_universal_import_modal(&mut self, ctx: &egui::Context) {
+        self.show_universal_import_modal = true;
+        self.universal_import_error = None;
+        if self.universal_import_path.trim().is_empty() {
+            let detected = detect_default_launcher_roots();
+            if let Some((kind, path)) = detected.into_iter().next() {
+                self.universal_import_kind = kind;
+                self.universal_import_path = path.display().to_string();
+            } else if let Some(cand) = default_root_candidates_for_kind(self.universal_import_kind)
+                .into_iter()
+                .next()
+            {
+                self.universal_import_path = cand.display().to_string();
+            }
+        }
+        let trimmed = self.universal_import_path.trim();
+        if !trimmed.is_empty() && std::path::Path::new(trimmed).is_dir() {
+            self.start_universal_import_scan(ctx);
+        }
+    }
+
+    pub(crate) fn switch_universal_import_kind(
+        &mut self,
+        kind: ExternalLauncherKind,
+        ctx: &egui::Context,
+    ) {
+        self.universal_import_kind = kind;
+        self.universal_import_items.clear();
+        self.universal_import_selected.clear();
+        self.universal_import_error = None;
+
+        let candidates = default_root_candidates_for_kind(kind);
+        let picked = candidates
+            .iter()
+            .find(|p| p.is_dir())
+            .cloned()
+            .or_else(|| candidates.into_iter().next());
+        self.universal_import_path = picked.map(|p| p.display().to_string()).unwrap_or_default();
+
+        let trimmed = self.universal_import_path.trim();
+        if !trimmed.is_empty() && std::path::Path::new(trimmed).is_dir() {
+            self.start_universal_import_scan(ctx);
+        }
+    }
+
+    pub(crate) fn start_universal_import_scan(&mut self, ctx: &egui::Context) {
+        if self.universal_import_scanning {
+            return;
+        }
+        let raw_root = self.universal_import_path.trim().to_string();
+        if raw_root.is_empty() {
+            self.universal_import_error =
+                Some("Enter or browse to a launcher folder to scan.".to_string());
+            return;
+        }
+        self.universal_import_scanning = true;
+        self.universal_import_error = None;
+        let kind = self.universal_import_kind;
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn_blocking(move || {
+            let res = inspect_external_launcher(kind, std::path::Path::new(&raw_root))
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::UniversalImportScanned(res));
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_universal_import(&mut self, ctx: &egui::Context) {
+        if self.universal_import_importing {
+            return;
+        }
+        let selected: Vec<DiscoveredExternalInstance> = self
+            .universal_import_items
+            .iter()
+            .filter(|i| self.universal_import_selected.contains(&i.id_key))
+            .cloned()
+            .collect();
+        if selected.is_empty() {
+            self.universal_import_error =
+                Some("Select at least one instance to import.".to_string());
+            return;
+        }
+        self.universal_import_importing = true;
+        self.universal_import_error = None;
+        let task_id = self.begin_task(
+            format!("Import {} External Instance(s)", selected.len()),
+            format!(
+                "Copying mods, configs, and worlds from {}...",
+                self.universal_import_kind.label()
+            ),
+        );
+        let dest_paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn_blocking(move || {
+            let res = import_external_instances(&dest_paths, &selected).map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::UniversalImportFinished {
+                task_id,
+                result: res,
             });
             ctx_c.request_repaint();
         });
