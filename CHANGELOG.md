@@ -2,6 +2,24 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.3.0-beta.3] - 2026-11-25
+
+### Added
+- **HTTP & SOCKS5 Proxy Settings (`mcw-net`, `mcw-desktop`)**:
+  - Enabled the `reqwest` `"socks"` feature and added global proxy configuration (`ProxyConfig`, `apply_global_proxy`, `set_global_proxy_config`) across launcher HTTP clients.
+  - Added **HTTP** and **SOCKS5** proxy controls (`None`, `HTTP`, `SOCKS5`, host, port, optional username/password) inside **Launcher Settings -> Downloads**.
+- **Resource Pack & Shader `pack.png` Icons + Modrinth Update Checker (`mcw-mods`, `mcw-providers`, `mcw-desktop`)**:
+  - Added `pack.png` thumbnail extraction (`read_pack_icon_png`) for Resource Packs and Shader Packs (`.zip` archives and extracted folders) with cached desktop preview thumbnails.
+  - Added `ContentPackUpdateCandidate` and `ModUpdateManager::{check_content_pack_updates, apply_content_pack_updates}` backed by Modrinth version lookup, exposed in the Resource Packs & Shaders tabs.
+- **Crash Auto-Log, Log Level Filter & Crash Cause Summary (`mcw-runtime`, `mcw-desktop`)**:
+  - Added `CrashCauseSummary` and `analyze_crash_cause` to diagnose common Minecraft crash patterns (`OutOfMemoryError`, missing dependency/class, Java version mismatch, LWJGL/OpenGL, Mixin failure).
+  - Added **Auto-open Logs on Crash** (`auto_open_logs_on_crash` in *Launcher Settings -> Updates / General* and Logs controls), an `All` / `INFO` / `WARN` / `ERROR` `ComboBox` level filter (`matches_log_level`), and an inline crash cause summary banner in the Logs tab.
+- **Universal Launcher Importer (`mcw-storage`, `mcw-desktop`)**:
+  - Added read-only auto-detection, inspection, and selective copy import (`ExternalLauncherKind`, `detect_default_launcher_roots`, `inspect_external_launcher`, `import_external_instances`) supporting **Prism Launcher / MultiMC**, **Modrinth App**, **CurseForge App**, and **Vanilla `.minecraft`**.
+  - Added the centered **In-App Universal Launcher Importer** modal (`mcw_modal_universal_import`) accessible from **Create Instance -> Modpacks** and **Launcher Settings -> Storage**.
+
+---
+
 ## [1.3.0-beta.2] - 2026-11-25
 
 ### Added
