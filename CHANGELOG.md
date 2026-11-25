@@ -2,6 +2,30 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.3.0-beta.4] - 2026-11-25
+
+### Added
+- **Modrinth-Style Inline Detail View & Rich Provider Metadata (`mcw-providers`, `mcw-desktop`)**:
+  - Clicking any card in **Mod & Modpacks** (or an instance inline browser) now opens a Modrinth-style **Inline Detail View** inside the main results frame with `← Back to Results`, icon, categories/loaders/compatibility chips, action buttons (**Install**, **`+ Cart`**, **Open Web Page**, **Source**, **Issues**), an async full overview preview, and a horizontal **Gallery** thumbnail strip.
+  - Added `ModrinthClient::get_project` (`ModrinthProjectDetail`, `ModrinthGalleryImage`) and `CurseForgeClient::get_mod_description` (`strip_html_to_preview`), and populated **CurseForge creator attribution** (`by <author>` via `CurseForgeMod::primary_author`).
+- **In-App Accent Color Picker Modal (`mcw-desktop`)**:
+  - Added a centered HSV **Accent Color Picker** modal (`mcw_modal_color_picker`) opened by clicking the accent swatch or **`Pick Color...`** in *Launcher Settings -> Appearance*, with two-way `#RRGGBB` hex sync and quick color presets.
+- **Conditional Vanilla Snapshots in Instance Settings (`mcw-desktop`)**:
+  - Added a **`Show Snapshots`** checkbox next to Target Minecraft & Mod Loader when **Mod Loader** is set to **Vanilla** (`edit_runtime_show_snapshots`), mixing snapshot versions cleanly into the Minecraft Version `ComboBox` when enabled.
+
+### Changed & Temporarily Removed
+- **Mods Tab Sliding Toggle Switch (`mcw-desktop`)**: Replaced the plain `Enabled`/`Disabled` text button on mod cards in the Mods tab with a sliding pill toggle switch + explicit state label (`render_mod_toggle_switch`) to avoid action-vs-status confusion.
+- **Unified Typography `Apply` / `Reset Defaults` (`mcw-desktop`)**: Staged `UI Font`, `UI Scale`, and `Font Size` in *Launcher Settings -> Appearance* with live `Preview` sizing and explicit **`Apply`** / **`Reset Defaults`** buttons so slider drags no longer shift UI layout underneath the cursor.
+- **Remote-Only GitHub Changelog (`mcw-desktop`)**: Removed the compile-time `include_str!("../../../CHANGELOG.md")` embed so `CHANGELOG.md` always loads directly from GitHub Raw on opening the Changelog page, with clear loading/offline retry UX.
+- **Temporary Removal of Repair Button (`Repair Center & Health`)**: The **`Repair`** action button inside *Repair Center & Health* currently has known issues and has been temporarily removed (alongside leaving `Refresh` & `Close` intact) so users can follow diagnostic messages directly; repair automation will return fixed in a future update.
+
+### Fixed
+- **Asset Cache Verification & Zero-Rewrite Fast Path (`mcw-minecraft`)**: Fixed `AssetManager::ensure_assets` (`collect_missing_asset_requests`) to reuse cached 0-byte objects alongside non-empty assets, skip `download_batch` completely with zero SSD writes when all assets are present, and display explicit `<cached> cached` vs `<missing> missing` progress.
+- **Content Browser Truncation & Tab Search Reset (`mcw-desktop`)**: Prevented long mod descriptions from pushing into the download count and `+ Cart` button, and automatically cleared stale search filters when switching Mod & Modpacks categories or instance tabs.
+- **About Modal Footer Responsive Layout (`mcw-desktop`)**: Fixed button overlap between **`Report Issue...`** and **`Close`** inside the About modal footer.
+
+---
+
 ## [1.3.0-beta.3] - 2026-11-25
 
 ### Added
