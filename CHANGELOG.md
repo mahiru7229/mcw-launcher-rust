@@ -2,6 +2,23 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.3.1] - 2026-11-25
+
+### Security
+- **Minecraft2Shell Protection (`tools/mcw_security_agent`, `mcw-runtime`, `mcw-minecraft`, `mcw-desktop`)**:
+  - Added bundled pure-Java **`mcw-security-agent.jar`** (`SecurityAgentManager`, SHA-256 verified on extraction) that instruments `org.lwjgl.util.freetype.FreeType` (`nFT_Load_Glyph`, `nFT_Load_Char`, `FT_Load_Glyph`, `FT_Load_Char`) to force `FT_LOAD_NO_HINTING` (`0x2`), blocking TrueType `Ins_SHZ` hinting bytecode execution responsible for the **`bikini/minecraft2shell`** heap OOB write -> native RCE vulnerability across Vanilla, Fabric, Quilt, Forge, and NeoForge.
+  - Added `ArgumentBuilder::uses_lwjgl_freetype` to automatically attach the Security Agent whenever `org.lwjgl:lwjgl-freetype` is present (Minecraft `24w03a` / `1.20.5+`, `1.21.x`, and `26.x`).
+- **Pre-Launch Server Resource Pack Warning Modal (`mcw-desktop`)**:
+  - Before launching a FreeType-enabled version, MCW scans `servers.dat` for entries with **Auto-Accept Server Resource Packs** enabled (`acceptTextures = 1`) and displays an In-App Centered Modal (`mcw_modal_security_rp_confirm`) warning directly about `bikini/minecraft2shell` RCE risks, showing live Security Agent status, per-server **Delete Server** buttons, **"I know what I'm doing (Trust & Don't Ask Again)"** (persisted per instance in `trusted_resource_pack_servers`), and **Cancel Launch**.
+- **Dedicated Security Settings Tab (`mcw-desktop`)**:
+  - Added **Security** category to *Launcher Settings* with toggles for Minecraft2Shell runtime mitigation (enabled by default), pre-launch Server Resource Pack warnings (enabled by default), and clearing trusted servers on the selected instance.
+
+### Added
+- **JSON `$schema` Support (`schemas/`, `mcw-models`, `mcw-desktop`)**:
+  - Added Draft-07 JSON Schemas (`schemas/launcher-settings.schema.json`, `schemas/instance-settings.schema.json`, `schemas/instance.schema.json`) and automatic `$schema` metadata fields across `config/launcher_settings.json`, `instances/<id>/settings.json`, and `instances/<id>/instance.json` with backward-compatible deserialization.
+
+---
+
 ## [1.3.0] - 2026-11-25
 
 ### Highlights
