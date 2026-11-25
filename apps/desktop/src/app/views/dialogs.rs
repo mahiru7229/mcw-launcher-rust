@@ -2462,6 +2462,367 @@ impl McwApp {
         self.render_junk_cleanup_modal(ctx);
         self.render_storage_relocated_modal(ctx);
         self.render_screenshot_preview_modal(ctx);
+        self.render_mod_cart_modal(ctx);
+    }
+
+    pub(crate) fn render_mod_cart_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_mod_cart_modal {
+            return;
+        }
+        let p = self.palette;
+        let eligible_instances: Vec<Instance> = self
+            .instances
+            .iter()
+            .filter(|i| !i.mod_loader.is_vanilla())
+            .cloned()
+            .collect();
+
+        if let Some(ref cur_id) = self.mod_cart_target_instance_id {
+            if !eligible_instances.iter().any(|i| &i.instance_id == cur_id) {
+                self.mod_cart_target_instance_id =
+                    eligible_instances.first().map(|i| i.instance_id.clone());
+            }
+        } else {
+            self.mod_cart_target_instance_id =
+                eligible_instances.first().map(|i| i.instance_id.clone());
+        }
+
+        let target_inst = self
+            .mod_cart_target_instance_id
+            .as_deref()
+            .and_then(|id| eligible_instances.iter().find(|i| i.instance_id == id))
+            .cloned();
+        let is_offline = self.connectivity_status == ConnectivityStatus::Offline;
+
+        let mut open = self.show_mod_cart_modal;
+        let mut recheck = false;
+        let mut clear_all = false;
+        let mut start_install = false;
+        let mut remove_provider: Option<CartModProvider> = None;
+        let mut new_target_id: Option<String> = None;
+        let title = format!("Review & Confirm Mod Downloads ({})", self.mod_cart.len());
+        let notice = self.modal_notice_for("mcw_modal_mod_cart");
+
+        let (keep_open, dismiss_notice) = render_in_app_modal(
+            ctx,
+            "mcw_modal_mod_cart",
+            &title,
+            [640.0, 500.0],
+            [460.0, 360.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Target Instance:").strong());
+                    if eligible_instances.is_empty() {
+                        ui.label(
+                            RichText::new(
+                                "No modded instances (Fabric / Quilt / Forge / NeoForge) found.",
+                            )
+                            .color(p.warning),
+                        );
+                    } else {
+                        let cur_lbl = target_inst
+                            .as_ref()
+                            .map(|i| {
+                                format!(
+                                    "{} (MC {} - {})",
+                                    i.name,
+                                    i.version_id,
+                                    display_loader_name(&i.mod_loader.name)
+                                )
+                            })
+                            .unwrap_or_else(|| "Select instance...".to_string());
+                        let mut picked =
+                            self.mod_cart_target_instance_id.clone().unwrap_or_default();
+                        egui::ComboBox::from_id_salt("cb_mod_cart_target_inst")
+                            .selected_text(&cur_lbl)
+                            .width(340.0)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for inst in &eligible_instances {
+                                    let lbl = format!(
+                                        "{} (MC {} - {})",
+                                        inst.name,
+                                        inst.version_id,
+                                        display_loader_name(&inst.mod_loader.name)
+                                    );
+                                    ui.selectable_value(&mut picked, inst.instance_id.clone(), lbl);
+                                }
+                            });
+                        if !picked.is_empty()
+                            && self.mod_cart_target_instance_id.as_deref() != Some(picked.as_str())
+                        {
+                            new_target_id = Some(picked);
+                        }
+                    }
+                });
+
+                if is_offline {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(
+                            "Offline mode: connect to the internet to resolve dependencies and download mods.",
+                        )
+                        .size(11.5)
+                        .color(p.warning),
+                    );
+                }
+
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    if self.mod_cart_resolving {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new(
+                                "Resolving compatible versions and required dependencies...",
+                            )
+                            .size(11.5)
+                            .color(p.text_muted),
+                        );
+                    } else {
+                        let dep_count = self
+                            .mod_cart_preview
+                            .iter()
+                            .filter(|e| e.is_dependency)
+                            .count();
+                        let err_count = self
+                            .mod_cart_preview
+                            .iter()
+                            .filter(|e| e.error.is_some())
+                            .count();
+                        let mut summary = format!(
+                            "{} selected mod(s) · {} required dependency(ies)",
+                            self.mod_cart.len(),
+                            dep_count
+                        );
+                        if err_count > 0 {
+                            summary.push_str(&format!(" · {err_count} issue(s)"));
+                        }
+                        ui.label(RichText::new(summary).size(11.5).color(if err_count > 0 {
+                            p.warning
+                        } else {
+                            p.text_muted
+                        }));
+                    }
+                });
+
+                ui.add_space(6.0);
+                let show_preview = !self.mod_cart_resolving && !self.mod_cart_preview.is_empty();
+                let preview_snapshot = self.mod_cart_preview.clone();
+                let cart_snapshot = self.mod_cart.clone();
+
+                ScrollArea::vertical()
+                    .id_salt("mod_cart_review_scroll")
+                    .max_height(280.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        if cart_snapshot.is_empty() {
+                            ui.label(
+                                RichText::new("Your download cart is empty.").color(p.text_muted),
+                            );
+                        } else if show_preview {
+                            for entry in &preview_snapshot {
+                                let stroke_col = if entry.error.is_some() {
+                                    p.danger
+                                } else if entry.is_dependency {
+                                    p.warning
+                                } else {
+                                    p.border
+                                };
+                                Frame::new()
+                                    .fill(p.surface)
+                                    .stroke(Stroke::new(1.0_f32, stroke_col))
+                                    .corner_radius(CornerRadius::same(8))
+                                    .inner_margin(egui::Margin::symmetric(10, 6))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label(RichText::new(&entry.title).strong());
+                                                    ui.label(
+                                                        RichText::new(
+                                                            entry.provider.provider_label(),
+                                                        )
+                                                        .size(10.5)
+                                                        .color(p.text_muted),
+                                                    );
+                                                    if entry.is_dependency {
+                                                        ui.label(
+                                                            RichText::new("Required Dependency")
+                                                                .strong()
+                                                                .size(10.5)
+                                                                .color(p.warning),
+                                                        );
+                                                        if let Some(ref by) = entry.required_by {
+                                                            ui.label(
+                                                                RichText::new(format!("for {by}"))
+                                                                    .size(10.5)
+                                                                    .color(p.text_muted),
+                                                            );
+                                                        }
+                                                    }
+                                                });
+                                                if let (Some(ver), Some(fname)) = (
+                                                    entry.resolved_version.as_deref(),
+                                                    entry.resolved_file_name.as_deref(),
+                                                ) {
+                                                    ui.label(
+                                                        RichText::new(format!("{ver} · {fname}"))
+                                                            .monospace()
+                                                            .size(11.0)
+                                                            .color(p.text_muted),
+                                                    );
+                                                }
+                                                if let Some(ref err) = entry.error {
+                                                    ui.label(
+                                                        RichText::new(err)
+                                                            .size(11.0)
+                                                            .color(p.danger),
+                                                    );
+                                                }
+                                            });
+                                            if !entry.is_dependency {
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        if ui
+                                                            .button(
+                                                                RichText::new("Remove")
+                                                                    .size(11.0)
+                                                                    .color(p.danger),
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            remove_provider =
+                                                                Some(entry.provider.clone());
+                                                        }
+                                                    },
+                                                );
+                                            }
+                                        });
+                                    });
+                                ui.add_space(4.0);
+                            }
+                        } else {
+                            for item in &cart_snapshot {
+                                Frame::new()
+                                    .fill(p.surface)
+                                    .stroke(Stroke::new(1.0_f32, p.border))
+                                    .corner_radius(CornerRadius::same(8))
+                                    .inner_margin(egui::Margin::symmetric(10, 6))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(&item.title).strong());
+                                            ui.label(
+                                                RichText::new(item.provider.provider_label())
+                                                    .size(11.0)
+                                                    .color(p.text_muted),
+                                            );
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button(
+                                                            RichText::new("Remove")
+                                                                .size(11.0)
+                                                                .color(p.danger),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        remove_provider =
+                                                            Some(item.provider.clone());
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    });
+                                ui.add_space(4.0);
+                            }
+                        }
+                    });
+
+                ui.add_space(10.0);
+                let has_any_installable = !self.mod_cart.is_empty()
+                    && (self.mod_cart_preview.is_empty()
+                        || self
+                            .mod_cart_preview
+                            .iter()
+                            .any(|e| !e.is_dependency && e.error.is_none()));
+                let can_install = has_any_installable
+                    && !self.mod_cart_resolving
+                    && target_inst.is_some()
+                    && !is_offline;
+
+                ui.horizontal_wrapped(|ui| {
+                    let install_btn = Button::new(
+                        RichText::new(format!("Install All ({})", self.mod_cart.len()))
+                            .color(p.accent_text)
+                            .strong(),
+                    )
+                    .fill(p.accent)
+                    .corner_radius(CornerRadius::same(8));
+                    if ui.add_enabled(can_install, install_btn).clicked() {
+                        start_install = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.mod_cart.is_empty()
+                                && !self.mod_cart_resolving
+                                && target_inst.is_some()
+                                && !is_offline,
+                            Button::new("Re-check Dependencies"),
+                        )
+                        .clicked()
+                    {
+                        recheck = true;
+                    }
+                    if ui
+                        .add_enabled(!self.mod_cart.is_empty(), Button::new("Clear Cart"))
+                        .clicked()
+                    {
+                        clear_all = true;
+                    }
+                    if ui.button(self.t("common.close")).clicked() {
+                        open = false;
+                    }
+                });
+            },
+        );
+
+        if !keep_open {
+            open = false;
+        }
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
+        if let Some(tid) = new_target_id {
+            self.mod_cart_target_instance_id = Some(tid);
+            self.mod_cart_preview.clear();
+            recheck = true;
+        }
+        if let Some(prov) = remove_provider {
+            self.mod_cart.retain(|x| x.provider != prov);
+            self.mod_cart_preview.clear();
+            if !self.mod_cart.is_empty() {
+                recheck = true;
+            }
+        }
+        if clear_all {
+            self.mod_cart.clear();
+            self.mod_cart_preview.clear();
+            open = false;
+        }
+        self.show_mod_cart_modal = open;
+        if start_install {
+            self.show_mod_cart_modal = false;
+            self.start_install_mod_cart(ctx);
+        } else if recheck && open {
+            self.start_resolve_mod_cart_preview(ctx);
+        }
     }
 
     pub(crate) fn render_modpack_install_dialog(&mut self, ctx: &egui::Context) {

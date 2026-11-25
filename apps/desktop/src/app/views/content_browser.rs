@@ -69,6 +69,35 @@ struct ContentBrowserActions {
     page_delta: i32,
     switch_instance: Option<String>,
     pending_install: Option<BrowserInstallAction>,
+    toggle_cart: Option<ModCartItem>,
+    open_cart: bool,
+    clear_cart: bool,
+}
+
+fn cart_item_for_entry(entry: &BrowserEntry) -> Option<ModCartItem> {
+    match &entry.action {
+        BrowserInstallAction::ModrinthModPicker {
+            slug,
+            title,
+            icon,
+            content_kind: None,
+        } => Some(ModCartItem {
+            provider: CartModProvider::Modrinth { slug: slug.clone() },
+            title: title.clone(),
+            icon_url: icon.clone(),
+        }),
+        BrowserInstallAction::CurseForgeModPicker {
+            mod_id,
+            title,
+            icon,
+            content_kind: None,
+        } => Some(ModCartItem {
+            provider: CartModProvider::CurseForge { mod_id: *mod_id },
+            title: title.clone(),
+            icon_url: icon.clone(),
+        }),
+        _ => None,
+    }
 }
 
 impl McwApp {
@@ -156,6 +185,9 @@ impl McwApp {
         let mut page_delta: i32 = 0;
         let mut switch_instance: Option<String> = None;
         let mut pending_install: Option<BrowserInstallAction> = None;
+        let mut toggle_cart: Option<ModCartItem> = None;
+        let mut open_cart = false;
+        let mut clear_cart = false;
 
         // Row 1: Title + Subtitle (left) and Back button (right for inline instance tab)
         ui.horizontal_wrapped(|ui| {
@@ -425,6 +457,47 @@ impl McwApp {
                         }
                     });
                 });
+                if cat == BrowserCategory::Mods
+                    && matches!(
+                        prov,
+                        BrowserProvider::Modrinth | BrowserProvider::CurseForge
+                    )
+                    && !self.mod_cart.is_empty()
+                {
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "Download Cart: {} mod(s) selected",
+                                self.mod_cart.len()
+                            ))
+                            .strong()
+                            .size(11.5)
+                            .color(p.accent),
+                        );
+                        if ui
+                            .add(
+                                Button::new(
+                                    RichText::new(format!(
+                                        "Review & Confirm ({})",
+                                        self.mod_cart.len()
+                                    ))
+                                    .color(p.accent_text)
+                                    .strong()
+                                    .size(11.5),
+                                )
+                                .fill(p.accent)
+                                .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            open_cart = true;
+                        }
+                        if ui.button("Clear Cart").clicked() {
+                            clear_cart = true;
+                        }
+                    });
+                }
             });
 
         ui.add_space(10.0);
@@ -575,6 +648,64 @@ impl McwApp {
                                                                         pending_install = Some(
                                                                             entry.action.clone(),
                                                                         );
+                                                                    }
+                                                                    if cat == BrowserCategory::Mods {
+                                                                        if let Some(cart_item) =
+                                                                            cart_item_for_entry(
+                                                                                entry,
+                                                                            )
+                                                                        {
+                                                                            let in_cart = self
+                                                                                .mod_cart
+                                                                                .iter()
+                                                                                .any(|x| {
+                                                                                    x.provider
+                                                                                        == cart_item
+                                                                                            .provider
+                                                                                });
+                                                                            let cbtn = Button::new(
+                                                                                RichText::new(
+                                                                                    if in_cart {
+                                                                                        "In Cart ✓"
+                                                                                    } else {
+                                                                                        "+ Cart"
+                                                                                    },
+                                                                                )
+                                                                                .size(11.0)
+                                                                                .color(if in_cart {
+                                                                                    p.accent
+                                                                                } else {
+                                                                                    p.text
+                                                                                }),
+                                                                            )
+                                                                            .fill(if in_cart {
+                                                                                with_alpha(
+                                                                                    p.accent, 40,
+                                                                                )
+                                                                            } else {
+                                                                                p.elevated
+                                                                            })
+                                                                            .stroke(if in_cart {
+                                                                                Stroke::new(
+                                                                                    1.0_f32,
+                                                                                    p.accent,
+                                                                                )
+                                                                            } else {
+                                                                                Stroke::NONE
+                                                                            })
+                                                                            .corner_radius(
+                                                                                CornerRadius::same(
+                                                                                    7,
+                                                                                ),
+                                                                            );
+                                                                            if ui
+                                                                                .add(cbtn)
+                                                                                .clicked()
+                                                                            {
+                                                                                toggle_cart =
+                                                                                    Some(cart_item);
+                                                                            }
+                                                                        }
                                                                     }
                                                                     if !entry
                                                                         .metric_label
@@ -823,6 +954,43 @@ impl McwApp {
                                             ui.label(RichText::new(msg).size(11.5).color(col));
                                         }
 
+                                        if cat == BrowserCategory::Mods {
+                                            if let Some(cart_item) = cart_item_for_entry(entry) {
+                                                let in_cart = self
+                                                    .mod_cart
+                                                    .iter()
+                                                    .any(|x| x.provider == cart_item.provider);
+                                                ui.add_space(10.0);
+                                                let cart_lbl = if in_cart {
+                                                    "Remove from Cart ✓"
+                                                } else {
+                                                    "Add to Cart (+ Cart)"
+                                                };
+                                                let cart_btn = Button::new(
+                                                    RichText::new(cart_lbl).color(if in_cart {
+                                                        p.accent
+                                                    } else {
+                                                        p.text
+                                                    }),
+                                                )
+                                                .fill(if in_cart {
+                                                    with_alpha(p.accent, 40)
+                                                } else {
+                                                    p.elevated
+                                                })
+                                                .stroke(if in_cart {
+                                                    Stroke::new(1.0_f32, p.accent)
+                                                } else {
+                                                    Stroke::new(1.0_f32, p.border)
+                                                })
+                                                .min_size(Vec2::new(ui.available_width(), 32.0))
+                                                .corner_radius(CornerRadius::same(8));
+                                                if ui.add(cart_btn).clicked() {
+                                                    toggle_cart = Some(cart_item);
+                                                }
+                                            }
+                                        }
+
                                         if let Some(ref url) = entry.web_url {
                                             ui.add_space(10.0);
                                             if ui
@@ -853,6 +1021,9 @@ impl McwApp {
             page_delta,
             switch_instance,
             pending_install,
+            toggle_cart,
+            open_cart,
+            clear_cart,
         }
     }
 
@@ -861,6 +1032,16 @@ impl McwApp {
         actions: ContentBrowserActions,
         ctx: &egui::Context,
     ) {
+        if let Some(item) = actions.toggle_cart {
+            self.toggle_mod_cart_item(item);
+        }
+        if actions.clear_cart {
+            self.mod_cart.clear();
+            self.mod_cart_preview.clear();
+        }
+        if actions.open_cart {
+            self.open_mod_cart_modal(ctx);
+        }
         if let Some(new_id) = actions.switch_instance {
             self.selected_instance_id = Some(new_id);
             self.sync_selected_from_cache();

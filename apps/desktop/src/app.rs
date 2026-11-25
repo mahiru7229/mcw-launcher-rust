@@ -10,8 +10,9 @@ use crate::background::{decode_user_image, BackgroundManager};
 use crate::i18n::{LanguageManager, LauncherPrefs};
 use crate::skin_render::{default_skin_face_rgba, render_skin_face_rgba};
 use crate::state::{
-    ActiveTask, AppEvent, BrowserCategory, BrowserProvider, ChannelLogSink, ChannelProgressSink,
-    ModVersionChoice, ModpackChannel, ModpackVersionOption,
+    ActiveTask, AppEvent, BrowserCategory, BrowserProvider, CartModProvider, CartResolvedEntry,
+    ChannelLogSink, ChannelProgressSink, ModCartItem, ModVersionChoice, ModpackChannel,
+    ModpackVersionOption,
 };
 use crate::theme::{
     apply_custom_accent, apply_theme_palette, configure_fonts_with_spec, format_hex_color,
@@ -414,6 +415,12 @@ pub struct McwApp {
     selected_mod_files: HashSet<String>,
     collapsed_home_groups: HashSet<String>,
     home_grid_search: String,
+    mod_cart: Vec<ModCartItem>,
+    show_mod_cart_modal: bool,
+    mod_cart_resolving: bool,
+    mod_cart_request_id: u64,
+    mod_cart_preview: Vec<CartResolvedEntry>,
+    mod_cart_target_instance_id: Option<String>,
 
     // Detected system physical RAM (MB) for Forge (min(PC_RAM, 8192)) vs general (min(PC_RAM, 4096))
     pc_ram_mb: u32,
@@ -883,6 +890,12 @@ impl McwApp {
             selected_mod_files: HashSet::new(),
             collapsed_home_groups: HashSet::new(),
             home_grid_search: String::new(),
+            mod_cart: Vec::new(),
+            show_mod_cart_modal: false,
+            mod_cart_resolving: false,
+            mod_cart_request_id: 0,
+            mod_cart_preview: Vec::new(),
+            mod_cart_target_instance_id: None,
             pc_ram_mb: detect_total_memory_mb(),
             launch_task_ids: HashMap::new(),
             modpack_dialog: ModpackInstallDialogState::default(),
@@ -1173,6 +1186,7 @@ impl McwApp {
             || self.screenshot_preview_path.is_some()
             || self.version_picker_open
             || self.install_target_open
+            || self.show_mod_cart_modal
             || self.modpack_dialog.open
             || !self.open_manual_modals.is_empty()
             || (self.show_all_tasks_modal && self.active_tasks.len() > 2)
@@ -1206,6 +1220,8 @@ impl McwApp {
             Some("mcw_modal_duplicate_mod")
         } else if self.install_target_open {
             Some("mcw_modal_install_target")
+        } else if self.show_mod_cart_modal {
+            Some("mcw_modal_mod_cart")
         } else if self.version_picker_open {
             Some("mcw_modal_version_picker")
         } else if self.modpack_dialog.open {

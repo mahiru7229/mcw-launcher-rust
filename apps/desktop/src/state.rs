@@ -140,6 +140,39 @@ impl ActiveTask {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CartModProvider {
+    Modrinth { slug: String },
+    CurseForge { mod_id: u64 },
+}
+
+impl CartModProvider {
+    pub fn provider_label(&self) -> &'static str {
+        match self {
+            Self::Modrinth { .. } => "Modrinth",
+            Self::CurseForge { .. } => "CurseForge",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModCartItem {
+    pub provider: CartModProvider,
+    pub title: String,
+    pub icon_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CartResolvedEntry {
+    pub provider: CartModProvider,
+    pub title: String,
+    pub is_dependency: bool,
+    pub required_by: Option<String>,
+    pub resolved_version: Option<String>,
+    pub resolved_file_name: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModpackChannel {
     Release,
@@ -457,6 +490,18 @@ pub enum AppEvent {
         path: PathBuf,
         size: [usize; 2],
         rgba: Vec<u8>,
+    },
+    ModCartPreviewReady {
+        request_id: u64,
+        instance_id: String,
+        entries: Vec<CartResolvedEntry>,
+    },
+    ModCartInstallFinished {
+        task_id: u64,
+        instance_id: String,
+        installed_count: usize,
+        dep_count: usize,
+        failed: Vec<String>,
     },
 }
 

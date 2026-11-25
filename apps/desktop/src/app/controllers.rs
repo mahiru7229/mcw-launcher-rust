@@ -4303,6 +4303,58 @@ impl McwApp {
                         }
                     }
                 }
+                AppEvent::ModCartPreviewReady {
+                    request_id,
+                    instance_id,
+                    entries,
+                } => {
+                    if request_id == self.mod_cart_request_id
+                        && self.mod_cart_target_instance_id.as_deref() == Some(instance_id.as_str())
+                    {
+                        self.mod_cart_resolving = false;
+                        self.mod_cart_preview = entries;
+                    }
+                }
+                AppEvent::ModCartInstallFinished {
+                    task_id,
+                    instance_id,
+                    installed_count,
+                    dep_count,
+                    failed,
+                } => {
+                    self.finish_task(task_id);
+                    self.mods_cache.remove(&instance_id);
+                    if self.selected_instance_id.as_deref() == Some(instance_id.as_str()) {
+                        self.load_mods_async(&instance_id, ctx, true);
+                    }
+                    if failed.is_empty() {
+                        self.mod_cart.clear();
+                        self.mod_cart_preview.clear();
+                        let msg = if dep_count > 0 {
+                            format!(
+                                "Installed {installed_count} mod(s) (+ {dep_count} dependency file(s)) into '{instance_id}'."
+                            )
+                        } else {
+                            format!("Installed {installed_count} mod(s) into '{instance_id}'.")
+                        };
+                        self.push_global_log(format!("[MOD CART] {msg}"));
+                        self.notice_banner = Some((msg, false));
+                    } else {
+                        self.mod_cart.retain(|item| {
+                            failed
+                                .iter()
+                                .any(|f| f.starts_with(&format!("{}:", item.title)))
+                        });
+                        self.mod_cart_preview.clear();
+                        let summary = format!(
+                            "Installed {installed_count} mod(s) (+ {dep_count} dependencies); {} failed ({}).",
+                            failed.len(),
+                            failed.join("; ")
+                        );
+                        self.push_global_log(format!("[ERROR] [MOD CART] {summary}"));
+                        self.notice_banner = Some((summary, true));
+                    }
+                }
             }
         }
     }
@@ -6726,6 +6778,591 @@ impl McwApp {
             .insert(icon_path.to_path_buf(), tex.clone());
         tex
     }
+
+    pub(crate) fn toggle_mod_cart_item(&mut self, item: ModCartItem) {
+        toggle_mod_cart_item_in_list(&mut self.mod_cart, item);
+        self.mod_cart_preview.clear();
+    }
+
+    pub(crate) fn open_mod_cart_modal(&mut self, ctx: &egui::Context) {
+        let valid_current = self
+            .mod_cart_target_instance_id
+            .as_deref()
+            .and_then(|id| self.instances.iter().find(|i| i.instance_id == id))
+            .is_some_and(|i| !i.mod_loader.is_vanilla());
+        if !valid_current {
+            self.mod_cart_target_instance_id = self
+                .selected_instance()
+                .filter(|i| !i.mod_loader.is_vanilla())
+                .or_else(|| self.instances.iter().find(|i| !i.mod_loader.is_vanilla()))
+                .map(|i| i.instance_id.clone());
+        }
+        self.show_mod_cart_modal = true;
+        self.start_resolve_mod_cart_preview(ctx);
+    }
+
+    pub(crate) fn start_resolve_mod_cart_preview(&mut self, ctx: &egui::Context) {
+        let Some(target_id) = self.mod_cart_target_instance_id.clone() else {
+            self.mod_cart_resolving = false;
+            self.mod_cart_preview.clear();
+            return;
+        };
+        let Some(inst) = self
+            .instances
+            .iter()
+            .find(|i| i.instance_id == target_id && !i.mod_loader.is_vanilla())
+            .cloned()
+        else {
+            self.mod_cart_resolving = false;
+            self.mod_cart_preview.clear();
+            return;
+        };
+        if self.mod_cart.is_empty() || self.connectivity_status == ConnectivityStatus::Offline {
+            self.mod_cart_resolving = false;
+            self.mod_cart_preview.clear();
+            return;
+        }
+
+        self.mod_cart_request_id = self.mod_cart_request_id.wrapping_add(1);
+        let request_id = self.mod_cart_request_id;
+        self.mod_cart_resolving = true;
+        self.mod_cart_preview.clear();
+
+        let cart = self.mod_cart.clone();
+        let cache_path = self.paths.cache_root.join("providers.sqlite");
+        let cf_api_key = self.resolved_cf_api_key();
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            use std::collections::{HashMap, HashSet, VecDeque};
+
+            let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+            let mr_opt = ModrinthClient::new(cache.clone()).ok();
+            let cf_opt = CurseForgeClient::new(cf_api_key, cache).ok();
+
+            let mut cart_mr_projects: HashSet<String> = HashSet::new();
+            let mut cart_cf_ids: HashSet<u64> = HashSet::new();
+            for item in &cart {
+                match &item.provider {
+                    CartModProvider::Modrinth { slug } => {
+                        cart_mr_projects.insert(slug.clone());
+                    }
+                    CartModProvider::CurseForge { mod_id } => {
+                        cart_cf_ids.insert(*mod_id);
+                    }
+                }
+            }
+
+            let mut seen_mr: HashSet<String> = HashSet::new();
+            let mut seen_cf: HashSet<u64> = HashSet::new();
+            let mut mr_dep_queue: VecDeque<(String, Option<String>, String)> = VecDeque::new();
+            let mut cf_dep_queue: VecDeque<(u64, String)> = VecDeque::new();
+            let mut entries: Vec<CartResolvedEntry> = Vec::with_capacity(cart.len());
+
+            for item in &cart {
+                match &item.provider {
+                    CartModProvider::Modrinth { slug } => {
+                        let Some(ref mr) = mr_opt else {
+                            entries.push(CartResolvedEntry {
+                                provider: item.provider.clone(),
+                                title: item.title.clone(),
+                                is_dependency: false,
+                                required_by: None,
+                                resolved_version: None,
+                                resolved_file_name: None,
+                                error: Some("Modrinth client unavailable.".to_string()),
+                            });
+                            continue;
+                        };
+                        match mr
+                            .list_versions(
+                                slug,
+                                Some(&inst.mod_loader.name),
+                                Some(&inst.version_id),
+                            )
+                            .await
+                        {
+                            Ok(list) => {
+                                if let Some(ver) = list.into_iter().next() {
+                                    cart_mr_projects.insert(ver.project_id.clone());
+                                    seen_mr.insert(ver.project_id.clone());
+                                    let fname = ver.primary_file().map(|f| f.filename.clone());
+                                    let err = if fname.is_none() {
+                                        Some("No downloadable file found.".to_string())
+                                    } else {
+                                        None
+                                    };
+                                    entries.push(CartResolvedEntry {
+                                        provider: item.provider.clone(),
+                                        title: item.title.clone(),
+                                        is_dependency: false,
+                                        required_by: None,
+                                        resolved_version: Some(ver.version_number.clone()),
+                                        resolved_file_name: fname,
+                                        error: err,
+                                    });
+                                    for dep in &ver.dependencies {
+                                        if dep.dependency_type.eq_ignore_ascii_case("required") {
+                                            if let Some(ref pid) = dep.project_id {
+                                                mr_dep_queue.push_back((
+                                                    pid.clone(),
+                                                    dep.version_id.clone(),
+                                                    item.title.clone(),
+                                                ));
+                                            } else if let Some(ref vid) = dep.version_id {
+                                                mr_dep_queue.push_back((
+                                                    String::new(),
+                                                    Some(vid.clone()),
+                                                    item.title.clone(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    entries.push(CartResolvedEntry {
+                                        provider: item.provider.clone(),
+                                        title: item.title.clone(),
+                                        is_dependency: false,
+                                        required_by: None,
+                                        resolved_version: None,
+                                        resolved_file_name: None,
+                                        error: Some(format!(
+                                            "No compatible version for MC {} ({})",
+                                            inst.version_id, inst.mod_loader.name
+                                        )),
+                                    });
+                                }
+                            }
+                            Err(err) => {
+                                entries.push(CartResolvedEntry {
+                                    provider: item.provider.clone(),
+                                    title: item.title.clone(),
+                                    is_dependency: false,
+                                    required_by: None,
+                                    resolved_version: None,
+                                    resolved_file_name: None,
+                                    error: Some(err.to_string()),
+                                });
+                            }
+                        }
+                    }
+                    CartModProvider::CurseForge { mod_id } => {
+                        let Some(ref cf) = cf_opt else {
+                            entries.push(CartResolvedEntry {
+                                provider: item.provider.clone(),
+                                title: item.title.clone(),
+                                is_dependency: false,
+                                required_by: None,
+                                resolved_version: None,
+                                resolved_file_name: None,
+                                error: Some("CurseForge client unavailable.".to_string()),
+                            });
+                            continue;
+                        };
+                        match cf
+                            .get_mod_files(
+                                *mod_id,
+                                Some(&inst.version_id),
+                                Some(&inst.mod_loader.name),
+                            )
+                            .await
+                        {
+                            Ok(files) => {
+                                if let Some(f) = files.into_iter().next() {
+                                    seen_cf.insert(*mod_id);
+                                    entries.push(CartResolvedEntry {
+                                        provider: item.provider.clone(),
+                                        title: item.title.clone(),
+                                        is_dependency: false,
+                                        required_by: None,
+                                        resolved_version: Some(f.display_name.clone()),
+                                        resolved_file_name: Some(f.file_name.clone()),
+                                        error: None,
+                                    });
+                                    for dep in &f.dependencies {
+                                        if dep.relation_type == 3 {
+                                            cf_dep_queue
+                                                .push_back((dep.mod_id, item.title.clone()));
+                                        }
+                                    }
+                                } else {
+                                    entries.push(CartResolvedEntry {
+                                        provider: item.provider.clone(),
+                                        title: item.title.clone(),
+                                        is_dependency: false,
+                                        required_by: None,
+                                        resolved_version: None,
+                                        resolved_file_name: None,
+                                        error: Some(format!(
+                                            "No compatible file for MC {} ({})",
+                                            inst.version_id, inst.mod_loader.name
+                                        )),
+                                    });
+                                }
+                            }
+                            Err(err) => {
+                                entries.push(CartResolvedEntry {
+                                    provider: item.provider.clone(),
+                                    title: item.title.clone(),
+                                    is_dependency: false,
+                                    required_by: None,
+                                    resolved_version: None,
+                                    resolved_file_name: None,
+                                    error: Some(err.to_string()),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(ref mr) = mr_opt {
+                while let Some((proj, pinned_vid, req_by)) = mr_dep_queue.pop_front() {
+                    if entries.len() >= 120 {
+                        break;
+                    }
+                    if !proj.is_empty()
+                        && (cart_mr_projects.contains(&proj) || seen_mr.contains(&proj))
+                    {
+                        continue;
+                    }
+                    let ver_res = if let Some(ref vid) = pinned_vid {
+                        mr.get_version(vid).await.map(Some)
+                    } else {
+                        mr.list_versions(&proj, Some(&inst.mod_loader.name), Some(&inst.version_id))
+                            .await
+                            .map(|list| list.into_iter().next())
+                    };
+                    match ver_res {
+                        Ok(Some(ver)) => {
+                            if cart_mr_projects.contains(&ver.project_id)
+                                || !seen_mr.insert(ver.project_id.clone())
+                            {
+                                continue;
+                            }
+                            let slug_or_pid = if proj.is_empty() {
+                                ver.project_id.clone()
+                            } else {
+                                proj.clone()
+                            };
+                            let fname = ver.primary_file().map(|f| f.filename.clone());
+                            let dep_title = if !ver.name.trim().is_empty() {
+                                ver.name.clone()
+                            } else if let Some(ref f) = fname {
+                                f.clone()
+                            } else {
+                                slug_or_pid.clone()
+                            };
+                            entries.push(CartResolvedEntry {
+                                provider: CartModProvider::Modrinth { slug: slug_or_pid },
+                                title: dep_title,
+                                is_dependency: true,
+                                required_by: Some(req_by.clone()),
+                                resolved_version: Some(ver.version_number.clone()),
+                                resolved_file_name: fname,
+                                error: None,
+                            });
+                            for dep in &ver.dependencies {
+                                if dep.dependency_type.eq_ignore_ascii_case("required") {
+                                    if let Some(ref pid) = dep.project_id {
+                                        if !seen_mr.contains(pid) && !cart_mr_projects.contains(pid)
+                                        {
+                                            mr_dep_queue.push_back((
+                                                pid.clone(),
+                                                dep.version_id.clone(),
+                                                req_by.clone(),
+                                            ));
+                                        }
+                                    } else if let Some(ref vid) = dep.version_id {
+                                        mr_dep_queue.push_back((
+                                            String::new(),
+                                            Some(vid.clone()),
+                                            req_by.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        _ if !proj.is_empty() && seen_mr.insert(proj.clone()) => {
+                            entries.push(CartResolvedEntry {
+                                provider: CartModProvider::Modrinth { slug: proj.clone() },
+                                title: format!("Dependency ({proj})"),
+                                is_dependency: true,
+                                required_by: Some(req_by),
+                                resolved_version: None,
+                                resolved_file_name: None,
+                                error: Some(
+                                    "Could not pre-resolve required dependency version."
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if let Some(ref cf) = cf_opt {
+                struct CfDepResolved {
+                    mod_id: u64,
+                    required_by: String,
+                    version: Option<String>,
+                    file_name: Option<String>,
+                    error: Option<String>,
+                }
+                let mut cf_deps_resolved: Vec<CfDepResolved> = Vec::new();
+                while let Some((dep_id, req_by)) = cf_dep_queue.pop_front() {
+                    if cf_deps_resolved.len() >= 40 {
+                        break;
+                    }
+                    if cart_cf_ids.contains(&dep_id) || !seen_cf.insert(dep_id) {
+                        continue;
+                    }
+                    match cf
+                        .get_mod_files(dep_id, Some(&inst.version_id), Some(&inst.mod_loader.name))
+                        .await
+                    {
+                        Ok(files) => {
+                            if let Some(f) = files.into_iter().next() {
+                                for sub in &f.dependencies {
+                                    if sub.relation_type == 3 && !seen_cf.contains(&sub.mod_id) {
+                                        cf_dep_queue.push_back((sub.mod_id, req_by.clone()));
+                                    }
+                                }
+                                cf_deps_resolved.push(CfDepResolved {
+                                    mod_id: dep_id,
+                                    required_by: req_by,
+                                    version: Some(f.display_name.clone()),
+                                    file_name: Some(f.file_name.clone()),
+                                    error: None,
+                                });
+                            } else {
+                                cf_deps_resolved.push(CfDepResolved {
+                                    mod_id: dep_id,
+                                    required_by: req_by,
+                                    version: None,
+                                    file_name: None,
+                                    error: Some("No compatible dependency file found.".to_string()),
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            cf_deps_resolved.push(CfDepResolved {
+                                mod_id: dep_id,
+                                required_by: req_by,
+                                version: None,
+                                file_name: None,
+                                error: Some(e.to_string()),
+                            });
+                        }
+                    }
+                }
+                let dep_ids: Vec<u64> = cf_deps_resolved.iter().map(|d| d.mod_id).collect();
+                let mut title_map: HashMap<u64, String> = HashMap::new();
+                if !dep_ids.is_empty() {
+                    if let Ok(mods_meta) = cf.get_mods_batch(&dep_ids).await {
+                        for m in mods_meta {
+                            title_map.insert(m.id, m.name);
+                        }
+                    }
+                }
+                for dep in cf_deps_resolved {
+                    let title = title_map
+                        .get(&dep.mod_id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("CurseForge Mod #{}", dep.mod_id));
+                    entries.push(CartResolvedEntry {
+                        provider: CartModProvider::CurseForge { mod_id: dep.mod_id },
+                        title,
+                        is_dependency: true,
+                        required_by: Some(dep.required_by),
+                        resolved_version: dep.version,
+                        resolved_file_name: dep.file_name,
+                        error: dep.error,
+                    });
+                }
+            }
+
+            let _ = tx.send(AppEvent::ModCartPreviewReady {
+                request_id,
+                instance_id: inst.instance_id,
+                entries,
+            });
+            ctx_c.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_install_mod_cart(&mut self, ctx: &egui::Context) {
+        let Some(target_id) = self.mod_cart_target_instance_id.clone() else {
+            return;
+        };
+        let Some(inst) = self
+            .instances
+            .iter()
+            .find(|i| i.instance_id == target_id && !i.mod_loader.is_vanilla())
+            .cloned()
+        else {
+            self.notice_banner = Some((
+                "Select a valid modded instance to install the cart.".to_string(),
+                true,
+            ));
+            return;
+        };
+        if self.mod_cart.is_empty() {
+            return;
+        }
+        let cart = self.mod_cart.clone();
+        let total = cart.len() as u64;
+        let (task_id, task_ctrl) = self.begin_task_with_control(
+            format!("Batch Mod Install ({})", cart.len()),
+            format!("Preparing {} mod(s) for {}...", cart.len(), inst.name),
+        );
+        let inst_dir = self.paths.instance_dir(&inst.instance_id);
+        let mods_dir = self.paths.minecraft_dir(&inst.instance_id).join("mods");
+        let cache_path = self.paths.cache_root.join("providers.sqlite");
+        let cf_api_key = self.resolved_cf_api_key();
+        let downloader = self.download_client.with_task_control(task_ctrl.clone());
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let _ = std::fs::create_dir_all(&mods_dir);
+            let cache = ApiCache::open(&cache_path).ok().map(Arc::new);
+            let mr_res = ModrinthClient::new(cache.clone());
+            let cf_res = CurseForgeClient::new(cf_api_key, cache);
+
+            let mut installed_count = 0usize;
+            let mut dep_count = 0usize;
+            let mut failed: Vec<String> = Vec::new();
+
+            for (idx, item) in cart.iter().enumerate() {
+                if task_ctrl.is_cancelled() {
+                    failed.push(format!("{}: Cancelled", item.title));
+                    continue;
+                }
+                let _ = tx.send(AppEvent::TaskProgress {
+                    task_id,
+                    message: format!("Installing {} ({}/{})...", item.title, idx + 1, total),
+                    current: idx as u64,
+                    total,
+                });
+                ctx_c.request_repaint();
+
+                match &item.provider {
+                    CartModProvider::Modrinth { slug } => match &mr_res {
+                        Ok(mr) => {
+                            match mr
+                                .install_with_dependencies(
+                                    slug,
+                                    &inst.version_id,
+                                    &inst.mod_loader.name,
+                                    &mods_dir,
+                                    &downloader,
+                                )
+                                .await
+                            {
+                                Ok(files) => {
+                                    installed_count += 1;
+                                    dep_count += files.iter().filter(|f| f.is_dependency).count();
+                                    for f in files {
+                                        let file_name = f
+                                            .file_path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        if !file_name.is_empty() {
+                                            let title = if f.is_dependency {
+                                                file_name.trim_end_matches(".jar").to_string()
+                                            } else {
+                                                item.title.clone()
+                                            };
+                                            let _ = ModProvenanceRegistry::record_install(
+                                                &inst_dir,
+                                                TrackedModEntry {
+                                                    project_id: f.project_id,
+                                                    provider: "modrinth".to_string(),
+                                                    title,
+                                                    file_name,
+                                                    version_id: f.version_number.clone(),
+                                                    version_number: f.version_number,
+                                                    locked: false,
+                                                    managed_by: None,
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    failed.push(format!("{}: {}", item.title, err));
+                                }
+                            }
+                        }
+                        Err(err) => failed.push(format!("{}: {}", item.title, err)),
+                    },
+                    CartModProvider::CurseForge { mod_id } => match &cf_res {
+                        Ok(cf) => {
+                            match cf
+                                .install_mod(
+                                    *mod_id,
+                                    None,
+                                    &inst.version_id,
+                                    &inst.mod_loader.name,
+                                    &mods_dir,
+                                    &downloader,
+                                )
+                                .await
+                            {
+                                Ok(dest_path) => {
+                                    installed_count += 1;
+                                    let file_name = dest_path
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    if !file_name.is_empty() {
+                                        let _ = ModProvenanceRegistry::record_install(
+                                            &inst_dir,
+                                            TrackedModEntry {
+                                                project_id: mod_id.to_string(),
+                                                provider: "curseforge".to_string(),
+                                                title: item.title.clone(),
+                                                file_name,
+                                                version_id: String::new(),
+                                                version_number: String::new(),
+                                                locked: false,
+                                                managed_by: None,
+                                            },
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    failed.push(format!("{}: {}", item.title, err));
+                                }
+                            }
+                        }
+                        Err(err) => failed.push(format!("{}: {}", item.title, err)),
+                    },
+                }
+            }
+
+            let _ = tx.send(AppEvent::TaskProgress {
+                task_id,
+                message: "Finalizing batch install...".to_string(),
+                current: total,
+                total,
+            });
+            let _ = tx.send(AppEvent::ModCartInstallFinished {
+                task_id,
+                instance_id: inst.instance_id,
+                installed_count,
+                dep_count,
+                failed,
+            });
+            ctx_c.request_repaint();
+        });
+    }
 }
 
 pub(crate) fn apply_lan_agent_option(settings: &mut InstanceSettings, enable: bool) {
@@ -7085,16 +7722,54 @@ pub(crate) fn sort_instances_for_grid(instances: &[Instance], sort_by: &str) -> 
     out
 }
 
+/// Toggles a mod item inside the download cart (deduplicating by provider identity).
+/// Returns `true` if added, `false` if removed.
+pub(crate) fn toggle_mod_cart_item_in_list(cart: &mut Vec<ModCartItem>, item: ModCartItem) -> bool {
+    if let Some(idx) = cart.iter().position(|x| x.provider == item.provider) {
+        cart.remove(idx);
+        false
+    } else {
+        cart.push(item);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         apply_lan_agent_option, format_modlist_export, is_account_or_token_error,
         matches_mod_filter, normalize_mod_stem, resolve_account_for_instance,
-        resolve_unique_mod_filename, sort_instances_for_grid, AccountSource, Instance,
-        InstanceSettings, StoredAccount,
+        resolve_unique_mod_filename, sort_instances_for_grid, toggle_mod_cart_item_in_list,
+        AccountSource, CartModProvider, Instance, InstanceSettings, ModCartItem, StoredAccount,
     };
     use mcw_mods::{ModInfo, ModLoaderTag};
     use std::path::PathBuf;
+
+    #[test]
+    fn mod_cart_deduplicates_and_toggles_items() {
+        let mut cart = Vec::new();
+        let sodium = ModCartItem {
+            provider: CartModProvider::Modrinth {
+                slug: "sodium".to_string(),
+            },
+            title: "Sodium".to_string(),
+            icon_url: None,
+        };
+        let jei = ModCartItem {
+            provider: CartModProvider::CurseForge { mod_id: 238222 },
+            title: "JEI".to_string(),
+            icon_url: None,
+        };
+
+        assert!(toggle_mod_cart_item_in_list(&mut cart, sodium.clone()));
+        assert!(toggle_mod_cart_item_in_list(&mut cart, jei.clone()));
+        assert_eq!(cart.len(), 2);
+
+        // Toggling an existing provider entry removes it instead of duplicating
+        assert!(!toggle_mod_cart_item_in_list(&mut cart, sodium));
+        assert_eq!(cart.len(), 1);
+        assert_eq!(cart[0].title, "JEI");
+    }
 
     #[test]
     fn sorts_instances_for_library_grid() {
