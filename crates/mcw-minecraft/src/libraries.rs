@@ -4,6 +4,7 @@ use mcw_models::minecraft::{DownloadArtifact, VersionMetadata};
 use mcw_models::progress::{ProgressEvent, ProgressSink, ProgressStage};
 use mcw_net::{DownloadClient, DownloadRequest};
 use mcw_storage::LauncherPaths;
+use sha1::{Digest, Sha1};
 use std::fs::{self, File};
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -178,6 +179,70 @@ impl<'a> LibraryManager<'a> {
 
         fs::write(&marker_path, b"ok")?;
         Ok(())
+    }
+
+    /// Removes stale FreeType native libraries (`*freetype*`) and their extraction markers from
+    /// `natives/<version>/` before extracting an updated `lwjgl-freetype` native JAR.
+    pub fn clean_freetype_natives(natives_dir: &Path) -> Result<usize> {
+        if !natives_dir.is_dir() {
+            return Ok(0);
+        }
+        let mut removed = 0usize;
+        for entry in fs::read_dir(natives_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if path.is_file() && name.contains("freetype") {
+                fs::remove_file(&path)?;
+                removed += 1;
+            }
+        }
+        let marker_dir = natives_dir.join(".extracted");
+        if marker_dir.is_dir() {
+            for entry in fs::read_dir(&marker_dir)? {
+                let entry = entry?;
+                let p = entry.path();
+                if p.is_file() {
+                    let _ = fs::remove_file(&p);
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Verifies that a [`DownloadArtifact`] exists on disk inside `libraries/` and matches its SHA-1
+    /// (when a SHA-1 checksum is present in metadata).
+    pub fn verify_artifact_on_disk(&self, artifact: &DownloadArtifact) -> Result<bool> {
+        Self::verify_artifact_on_disk_at(&self.paths.libraries_dir(), artifact)
+    }
+
+    /// Static variant of [`Self::verify_artifact_on_disk`] for offline security assessments.
+    pub fn verify_artifact_on_disk_at(
+        libs_dir: &Path,
+        artifact: &DownloadArtifact,
+    ) -> Result<bool> {
+        let Some(ref rel) = artifact.path else {
+            return Ok(false);
+        };
+        let dest = LauncherPaths::safe_join_relative(libs_dir, rel)?;
+        if !dest.is_file() {
+            return Ok(false);
+        }
+        if let Some(ref expected_sha1) = artifact.sha1 {
+            let trimmed = expected_sha1.trim().to_ascii_lowercase();
+            if !trimmed.is_empty() {
+                let bytes = fs::read(&dest)?;
+                let mut hasher = Sha1::new();
+                hasher.update(&bytes);
+                let digest = hasher.finalize();
+                let mut hex = String::with_capacity(40);
+                for b in digest {
+                    hex.push_str(&format!("{b:02x}"));
+                }
+                return Ok(hex == trimmed);
+            }
+        }
+        Ok(fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false))
     }
 }
 

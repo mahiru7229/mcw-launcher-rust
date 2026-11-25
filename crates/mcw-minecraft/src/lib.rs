@@ -13,6 +13,8 @@ pub mod preflight;
 pub mod repair;
 pub mod rules;
 pub mod screenshots;
+pub mod security;
+pub mod security_policy;
 pub mod servers;
 pub mod worlds;
 
@@ -36,6 +38,14 @@ pub use preflight::{
 pub use repair::{RepairReport, RepairService};
 pub use rules::LibraryRules;
 pub use screenshots::{ScreenshotInfo, ScreenshotManager};
+pub use security::{
+    FreetypeLibraryStatus, InstanceSecurityAssessment, LibrarySyncOutcome, MojangLibrarySync,
+    SecurityManager, SecurityStatus,
+};
+pub use security_policy::{
+    AgentLifecycleStage, PolicyValidity, ResolvedSecurityPolicy, SecurityPolicy,
+    SecurityPolicyService, SignedPolicyEnvelope, REMOTE_SECURITY_POLICY_URL,
+};
 pub use servers::{SavedServer, ServerManager};
 pub use worlds::{is_quick_play_supported, WorldInfo, WorldManager};
 
