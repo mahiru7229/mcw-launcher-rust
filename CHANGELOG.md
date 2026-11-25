@@ -2,6 +2,24 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.3.0-beta.2] - 2026-11-25
+
+### Added
+- **Multi-Mod Download Cart ("Select for Download" -> "Review & Confirm") (`mcw-desktop`)**:
+  - Added **`+ Cart`** / **`In Cart ✓`** toggles on **Modrinth** and **CurseForge** mod search results and detail panes, paired with a **`Review & Confirm (N)`** toolbar strip.
+  - Added the centered **In-App Mod Cart Modal** (`mcw_modal_mod_cart`) with a non-Vanilla target instance `ComboBox`, asynchronous compatible-version and recursive required-dependency preview (`start_resolve_mod_cart_preview`), per-item issue display, and tracked batch installation (`start_install_mod_cart`) updating `ModProvenanceRegistry`.
+- **Bulk Mod Management & Status/Search Filtering (`mcw-desktop`)**:
+  - Added instant search filtering (`name`, `file_name`, `mod_id`) and a `ComboBox` status filter (`All`, `Enabled`, `Disabled`, `Updates Available`, `Incompatible`) in the Mods tab (`matches_mod_filter`).
+  - Added multi-select checkboxes, **Select Visible**, **Clear Selection**, and a bulk action bar supporting batch **Enable**, **Disable**, **Lock**, **Unlock**, and **Remove** alongside individual **`Enabled`/`Disabled`** toggle buttons.
+- **Collapsible Library Grid View on `Home` (`mcw-desktop`)**:
+  - Added a persisted **View Mode** switcher (`Workspace View` / `Library Grid`) and sort preference (`Last Played`, `Playtime`, `Name`) in `LauncherPrefs` (`sort_instances_for_grid`).
+  - Added a responsive multi-column card grid organized by collapsible instance groups (`Ungrouped` + custom groups) with text filtering, status pills, playtime summaries, and quick **`Play`** / **`Open`** controls.
+- **Selective File Tree for Modpack Exports (`mcw-providers`, `mcw-desktop`)**:
+  - Added `ModpackInstaller::scan_export_candidates` (`ExportTreeEntry`) and extended `ModpackExportOptions` with `excluded_paths` and `extra_included_paths` while guarding against duplicate ZIP entries in `ModpackInstaller::export_instance`.
+  - Added a collapsible **"Customize Files to Export"** parent/child checkbox tree inside **Export Modpack** across `.mrpack`, `.mcwpack`, and profile `.zip` exports.
+
+---
+
 ## [1.3.0-beta.1] - 2026-11-25
 
 ### Added
