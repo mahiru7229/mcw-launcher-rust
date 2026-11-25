@@ -297,12 +297,184 @@ impl McwApp {
         ui.add_space(6.0);
 
         if self.selected_mods.is_empty() {
+            self.selected_mod_files.clear();
             let msg = if self.loading_mods.contains(&inst.instance_id) {
                 "Scanning mods/ in background..."
             } else {
                 "No mods installed in this instance's mods/ folder. Click '+ Add Mod' to browse Modrinth or CurseForge."
             };
             ui.label(RichText::new(msg).color(p.text_muted));
+            return;
+        }
+
+        if modpack_protected && self.mod_status_filter == "updates" {
+            self.mod_status_filter = "all".to_string();
+        }
+        let installed_names: std::collections::HashSet<&str> = self
+            .selected_mods
+            .iter()
+            .map(|m| m.file_name.as_str())
+            .collect();
+        self.selected_mod_files
+            .retain(|name| installed_names.contains(name.as_str()));
+
+        let update_clean_names: std::collections::HashSet<String> = if modpack_protected {
+            std::collections::HashSet::new()
+        } else {
+            self.mod_update_candidates
+                .iter()
+                .filter(|c| c.update_available)
+                .map(|c| {
+                    c.current_file_name
+                        .trim_end_matches(".disabled")
+                        .to_string()
+                })
+                .collect()
+        };
+
+        let visible_mods: Vec<mcw_mods::ModInfo> = self
+            .selected_mods
+            .iter()
+            .filter(|m| {
+                let clean = m.file_name.trim_end_matches(".disabled");
+                let has_upd = update_clean_names.contains(clean);
+                matches_mod_filter(
+                    m,
+                    &self.mod_search_query,
+                    &self.mod_status_filter,
+                    &inst.mod_loader.name,
+                    has_upd,
+                )
+            })
+            .cloned()
+            .collect();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                TextEdit::singleline(&mut self.mod_search_query)
+                    .hint_text("Filter installed mods...")
+                    .desired_width(210.0),
+            );
+            let cur_filter_lbl = match self.mod_status_filter.as_str() {
+                "enabled" => "Enabled",
+                "disabled" => "Disabled",
+                "updates" => "Updates Available",
+                "incompatible" => "Incompatible",
+                _ => "All",
+            };
+            egui::ComboBox::from_id_salt("cb_mod_status_filter")
+                .selected_text(cur_filter_lbl)
+                .width(150.0)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.mod_status_filter, "all".to_string(), "All");
+                    ui.selectable_value(
+                        &mut self.mod_status_filter,
+                        "enabled".to_string(),
+                        "Enabled",
+                    );
+                    ui.selectable_value(
+                        &mut self.mod_status_filter,
+                        "disabled".to_string(),
+                        "Disabled",
+                    );
+                    if !modpack_protected {
+                        ui.selectable_value(
+                            &mut self.mod_status_filter,
+                            "updates".to_string(),
+                            "Updates Available",
+                        );
+                    }
+                    ui.selectable_value(
+                        &mut self.mod_status_filter,
+                        "incompatible".to_string(),
+                        "Incompatible",
+                    );
+                });
+            if ui
+                .add_enabled(!visible_mods.is_empty(), Button::new("Select Visible"))
+                .clicked()
+            {
+                for m in &visible_mods {
+                    self.selected_mod_files.insert(m.file_name.clone());
+                }
+            }
+            if ui
+                .add_enabled(
+                    !self.selected_mod_files.is_empty(),
+                    Button::new("Clear Selection"),
+                )
+                .clicked()
+            {
+                self.selected_mod_files.clear();
+            }
+            if visible_mods.len() != self.selected_mods.len() {
+                ui.label(
+                    RichText::new(format!(
+                        "Showing {} / {}",
+                        visible_mods.len(),
+                        self.selected_mods.len()
+                    ))
+                    .size(11.5)
+                    .color(p.text_muted),
+                );
+            }
+        });
+        ui.add_space(6.0);
+
+        #[derive(Clone, Copy)]
+        enum BulkModAction {
+            Enable,
+            Disable,
+            Lock,
+            Unlock,
+            Remove,
+        }
+        let mut bulk_action: Option<BulkModAction> = None;
+        if !self.selected_mod_files.is_empty() {
+            Frame::new()
+                .fill(p.elevated)
+                .stroke(Stroke::new(1.0_f32, p.accent))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!("{} selected", self.selected_mod_files.len()))
+                                .strong()
+                                .color(p.accent),
+                        );
+                        if ui.button("Enable").clicked() {
+                            bulk_action = Some(BulkModAction::Enable);
+                        }
+                        if ui.button("Disable").clicked() {
+                            bulk_action = Some(BulkModAction::Disable);
+                        }
+                        if !modpack_protected {
+                            if ui.button("Lock").clicked() {
+                                bulk_action = Some(BulkModAction::Lock);
+                            }
+                            if ui.button("Unlock").clicked() {
+                                bulk_action = Some(BulkModAction::Unlock);
+                            }
+                        }
+                        if ui.button(RichText::new("Remove").color(p.danger)).clicked() {
+                            bulk_action = Some(BulkModAction::Remove);
+                        }
+                        if ui.button("Clear").clicked() {
+                            self.selected_mod_files.clear();
+                        }
+                    });
+                });
+            ui.add_space(6.0);
+        }
+
+        if visible_mods.is_empty() {
+            ui.label(
+                RichText::new("No installed mods match the current search or status filter.")
+                    .color(p.text_muted),
+            );
             return;
         }
 
@@ -314,19 +486,30 @@ impl McwApp {
             .id_salt("local_mods_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for m in &self.selected_mods {
+                for m in &visible_mods {
                     let compat = is_loader_compatible(m.loader, &inst.mod_loader.name);
+                    let mut is_sel = self.selected_mod_files.contains(&m.file_name);
                     Frame::new()
                         .fill(p.surface)
-                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .stroke(Stroke::new(
+                            1.0_f32,
+                            if is_sel { p.accent } else { p.border },
+                        ))
                         .corner_radius(CornerRadius::same(10))
                         .inner_margin(egui::Margin::symmetric(10, 6))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
-                                let mut enabled = m.enabled;
-                                if ui.checkbox(&mut enabled, "").changed() {
-                                    toggle_action = Some((m.file_name.clone(), enabled));
+                                if ui
+                                    .checkbox(&mut is_sel, "")
+                                    .on_hover_text("Select for bulk action")
+                                    .changed()
+                                {
+                                    if is_sel {
+                                        self.selected_mod_files.insert(m.file_name.clone());
+                                    } else {
+                                        self.selected_mod_files.remove(&m.file_name);
+                                    }
                                 }
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
@@ -416,12 +599,103 @@ impl McwApp {
                                             }
                                         }
                                     }
+                                    let (state_lbl, state_col) = if m.enabled {
+                                        ("Enabled", p.accent)
+                                    } else {
+                                        ("Disabled", p.text_muted)
+                                    };
+                                    if ui
+                                        .button(
+                                            RichText::new(state_lbl).size(11.0).color(state_col),
+                                        )
+                                        .on_hover_text("Click to toggle enabled/disabled")
+                                        .clicked()
+                                    {
+                                        toggle_action = Some((m.file_name.clone(), !m.enabled));
+                                    }
                                 });
                             });
                         });
                     ui.add_space(4.0);
                 }
             });
+
+        if let Some(action) = bulk_action {
+            let targets: Vec<mcw_mods::ModInfo> = self
+                .selected_mods
+                .iter()
+                .filter(|m| self.selected_mod_files.contains(&m.file_name))
+                .cloned()
+                .collect();
+            let mut changed = 0usize;
+            let mut errors = 0usize;
+            match action {
+                BulkModAction::Enable | BulkModAction::Disable => {
+                    let enable = matches!(action, BulkModAction::Enable);
+                    let mgr = ModManager::new(&mods_dir);
+                    for m in &targets {
+                        if m.enabled != enable {
+                            match mgr.set_enabled(&m.file_name, enable) {
+                                Ok(_) => changed += 1,
+                                Err(_) => errors += 1,
+                            }
+                        }
+                    }
+                    let verb = if enable { "Enabled" } else { "Disabled" };
+                    self.notice_banner = Some((
+                        if errors > 0 {
+                            format!("{verb} {changed} mod(s), {errors} failed.")
+                        } else {
+                            format!("{verb} {changed} mod(s).")
+                        },
+                        errors > 0,
+                    ));
+                    self.mods_cache.remove(&inst.instance_id);
+                    self.load_mods_async(&inst.instance_id, ctx, true);
+                }
+                BulkModAction::Lock | BulkModAction::Unlock => {
+                    let new_locked = matches!(action, BulkModAction::Lock);
+                    for m in &targets {
+                        if let Ok(true) = ModProvenanceRegistry::set_locked_by_filename(
+                            &inst_dir,
+                            &m.file_name,
+                            new_locked,
+                        ) {
+                            changed += 1;
+                            let clean = m.file_name.trim_end_matches(".disabled");
+                            for c in &mut self.mod_update_candidates {
+                                if c.current_file_name.trim_end_matches(".disabled") == clean {
+                                    c.locked = new_locked;
+                                }
+                            }
+                        }
+                    }
+                    let verb = if new_locked { "Locked" } else { "Unlocked" };
+                    self.notice_banner = Some((format!("{verb} {changed} tracked mod(s)."), false));
+                }
+                BulkModAction::Remove => {
+                    let mgr = ModManager::new(&mods_dir);
+                    for m in &targets {
+                        match mgr.delete(&m.file_name) {
+                            Ok(()) => changed += 1,
+                            Err(_) => errors += 1,
+                        }
+                    }
+                    self.notice_banner = Some((
+                        if errors > 0 {
+                            format!("Removed {changed} mod(s), {errors} failed.")
+                        } else {
+                            format!("Removed {changed} mod(s).")
+                        },
+                        errors > 0,
+                    ));
+                    self.mods_cache.remove(&inst.instance_id);
+                    self.load_mods_async(&inst.instance_id, ctx, true);
+                }
+            }
+            self.selected_mod_files.clear();
+            return;
+        }
 
         if let Some((file_name, new_locked)) = lock_toggle_action {
             let _ =

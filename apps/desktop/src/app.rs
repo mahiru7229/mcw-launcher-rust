@@ -3,7 +3,7 @@ mod controllers_pages;
 pub(crate) mod platform;
 mod views;
 
-pub(crate) use controllers::format_modlist_export;
+pub(crate) use controllers::{format_modlist_export, matches_mod_filter};
 
 use self::platform::default_user_downloads_dir;
 use crate::background::{decode_user_image, BackgroundManager};
@@ -405,6 +405,9 @@ pub struct McwApp {
     screenshot_preview_rename_input: String,
     edit_instance_notes_text: String,
     instance_notes_baseline: String,
+    mod_search_query: String,
+    mod_status_filter: String,
+    selected_mod_files: HashSet<String>,
 
     // Detected system physical RAM (MB) for Forge (min(PC_RAM, 8192)) vs general (min(PC_RAM, 4096))
     pc_ram_mb: u32,
@@ -865,6 +868,9 @@ impl McwApp {
             screenshot_preview_rename_input: String::new(),
             edit_instance_notes_text: String::new(),
             instance_notes_baseline: String::new(),
+            mod_search_query: String::new(),
+            mod_status_filter: "all".to_string(),
+            selected_mod_files: HashSet::new(),
             pc_ram_mb: detect_total_memory_mb(),
             launch_task_ids: HashMap::new(),
             modpack_dialog: ModpackInstallDialogState::default(),

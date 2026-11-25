@@ -202,6 +202,9 @@ impl McwApp {
             self.edit_env_vars_text.clear();
         }
         self.mod_update_candidates.clear();
+        self.selected_mod_files.clear();
+        self.mod_search_query.clear();
+        self.mod_status_filter = "all".to_string();
         if let Some(ref inst_id) = self.selected_instance_id {
             let notes_path = self.paths.instance_dir(inst_id).join("notes.txt");
             let notes = std::fs::read_to_string(&notes_path).unwrap_or_default();
@@ -7026,15 +7029,110 @@ pub(crate) fn format_modlist_export(
     out
 }
 
+/// Evaluates whether an installed mod matches the current text query and status filter.
+pub(crate) fn matches_mod_filter(
+    m: &mcw_mods::ModInfo,
+    query: &str,
+    status_filter: &str,
+    loader_name: &str,
+    has_update: bool,
+) -> bool {
+    let q = query.trim().to_ascii_lowercase();
+    if !q.is_empty() {
+        let name_hit = m.name.to_ascii_lowercase().contains(&q);
+        let file_hit = m.file_name.to_ascii_lowercase().contains(&q);
+        let id_hit = m.mod_id.to_ascii_lowercase().contains(&q);
+        if !name_hit && !file_hit && !id_hit {
+            return false;
+        }
+    }
+    match status_filter {
+        "enabled" => m.enabled,
+        "disabled" => !m.enabled,
+        "updates" => has_update,
+        "incompatible" => !is_loader_compatible(m.loader, loader_name),
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         apply_lan_agent_option, format_modlist_export, is_account_or_token_error,
-        normalize_mod_stem, resolve_account_for_instance, resolve_unique_mod_filename,
-        AccountSource, InstanceSettings, StoredAccount,
+        matches_mod_filter, normalize_mod_stem, resolve_account_for_instance,
+        resolve_unique_mod_filename, AccountSource, InstanceSettings, StoredAccount,
     };
     use mcw_mods::{ModInfo, ModLoaderTag};
     use std::path::PathBuf;
+
+    #[test]
+    fn filters_mods_by_query_and_status() {
+        let sodium = ModInfo {
+            file_name: "sodium-0.5.8.jar".to_string(),
+            path: PathBuf::from("sodium-0.5.8.jar"),
+            enabled: true,
+            size_bytes: 1024,
+            mod_id: "sodium".to_string(),
+            name: "Sodium".to_string(),
+            version: "0.5.8".to_string(),
+            description: String::new(),
+            authors: Vec::new(),
+            loader: ModLoaderTag::Fabric,
+            required_java_major: 17,
+            embedded_mod_ids: Vec::new(),
+            depends: Vec::new(),
+        };
+        let forge_disabled = ModInfo {
+            file_name: "jei-forge-1.20.jar.disabled".to_string(),
+            path: PathBuf::from("jei-forge-1.20.jar.disabled"),
+            enabled: false,
+            size_bytes: 2048,
+            mod_id: "jei".to_string(),
+            name: "Just Enough Items".to_string(),
+            version: "15.2.0".to_string(),
+            description: String::new(),
+            authors: Vec::new(),
+            loader: ModLoaderTag::Forge,
+            required_java_major: 17,
+            embedded_mod_ids: Vec::new(),
+            depends: Vec::new(),
+        };
+
+        assert!(matches_mod_filter(&sodium, "", "all", "fabric", false));
+        assert!(matches_mod_filter(
+            &sodium, "sod", "enabled", "fabric", false
+        ));
+        assert!(!matches_mod_filter(
+            &sodium, "sod", "disabled", "fabric", false
+        ));
+        assert!(matches_mod_filter(
+            &sodium, "0.5.8", "updates", "fabric", true
+        ));
+        assert!(!matches_mod_filter(
+            &sodium, "0.5.8", "updates", "fabric", false
+        ));
+        assert!(matches_mod_filter(
+            &forge_disabled,
+            "jei",
+            "disabled",
+            "fabric",
+            false
+        ));
+        assert!(matches_mod_filter(
+            &forge_disabled,
+            "just enough",
+            "incompatible",
+            "fabric",
+            false
+        ));
+        assert!(!matches_mod_filter(
+            &sodium,
+            "",
+            "incompatible",
+            "fabric",
+            false
+        ));
+    }
 
     #[test]
     fn formats_modlist_as_markdown_and_text() {
