@@ -406,6 +406,163 @@ fn url_encode_component(raw: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrashCauseSummary {
+    pub title: String,
+    pub likely_cause: String,
+    pub suggestion: String,
+    pub culprit_hints: Vec<String>,
+}
+
+/// Analyzes recent game logs (and optional exit metadata) to produce a quick actionable crash summary.
+pub fn analyze_crash_cause(
+    lines: &[String],
+    exit_code: Option<i32>,
+    unsupported_class_version: bool,
+) -> CrashCauseSummary {
+    let joined = lines.join("\n");
+    let low = joined.to_ascii_lowercase();
+    let culprit_hints = extract_culprit_hints(lines);
+
+    if unsupported_class_version
+        || low.contains("unsupportedclassversionerror")
+        || low.contains("compiled by a more recent version of the java runtime")
+    {
+        return CrashCauseSummary {
+            title: "Java Version Mismatch".to_string(),
+            likely_cause:
+                "Minecraft or an installed mod requires a newer Java runtime than the one configured."
+                    .to_string(),
+            suggestion:
+                "Open Instance Settings -> Java Runtime and switch to a matching Java (e.g. Java 17 or Java 21)."
+                    .to_string(),
+            culprit_hints,
+        };
+    }
+
+    if low.contains("java.lang.outofmemoryerror")
+        || low.contains("out of memory")
+        || low.contains("gc overhead limit exceeded")
+    {
+        return CrashCauseSummary {
+            title: "Out of Memory (OutOfMemoryError)".to_string(),
+            likely_cause:
+                "The JVM ran out of heap memory while loading mods, textures, or world chunks."
+                    .to_string(),
+            suggestion:
+                "Increase Maximum RAM (MB) in Instance Settings -> Memory or close heavy background apps."
+                    .to_string(),
+            culprit_hints,
+        };
+    }
+
+    if low.contains("missing or unsupported mandatory dependencies")
+        || low.contains("could not find required mod")
+        || low.contains("missingmodsexception")
+        || low.contains("requires any version of")
+        || low.contains("mod resolution failed")
+    {
+        return CrashCauseSummary {
+            title: "Missing or Incompatible Mod Dependency".to_string(),
+            likely_cause:
+                "A mod failed loader resolution due to a missing dependency or incompatible Minecraft/loader version."
+                    .to_string(),
+            suggestion:
+                "Check the Mods tab compatibility report or install the missing dependency mod."
+                    .to_string(),
+            culprit_hints,
+        };
+    }
+
+    if low.contains("mixinapplyerror")
+        || low.contains("mixintransformererror")
+        || low.contains("critical injection failure")
+    {
+        return CrashCauseSummary {
+            title: "Mod Mixin Conflict".to_string(),
+            likely_cause:
+                "Two or more mods failed to apply a Mixin patch on the same Minecraft class."
+                    .to_string(),
+            suggestion:
+                "Check the suspected mod/mixin hints below and test updating or toggling one of them."
+                    .to_string(),
+            culprit_hints,
+        };
+    }
+
+    if low.contains("glfw error")
+        || low.contains("pixel format not accelerated")
+        || low.contains("no opengl context")
+        || low.contains("opengl error")
+    {
+        return CrashCauseSummary {
+            title: "Graphics / OpenGL Driver Error".to_string(),
+            likely_cause:
+                "The graphics driver rejected OpenGL context creation or encountered a GLFW initialization failure."
+                    .to_string(),
+            suggestion:
+                "Update your GPU drivers or toggle 'Prefer dedicated GPU' in Launcher Settings."
+                    .to_string(),
+            culprit_hints,
+        };
+    }
+
+    if low.contains("exception_access_violation")
+        || low.contains("a fatal error has been detected by the java runtime")
+        || low.contains("hs_err_pid")
+    {
+        return CrashCauseSummary {
+            title: "JVM / Native Library Crash".to_string(),
+            likely_cause:
+                "The JVM exited via a native crash (graphics driver, shader/native mod, or incompatible Java build)."
+                    .to_string(),
+            suggestion:
+                "Try disabling shaders/overlays (e.g. RTSS/Discord overlay) or switch Java runtime builds."
+                    .to_string(),
+            culprit_hints,
+        };
+    }
+
+    let code_label = exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    CrashCauseSummary {
+        title: format!("Minecraft Exited Unexpectedly (code {code_label})"),
+        likely_cause:
+            "The game exited with a non-zero status without matching a specific signature above."
+                .to_string(),
+        suggestion:
+            "Switch the log level filter to ERROR below, open Latest Crash Report, or upload logs to mclo.gs."
+                .to_string(),
+        culprit_hints,
+    }
+}
+
+fn extract_culprit_hints(lines: &[String]) -> Vec<String> {
+    let mut hints = Vec::new();
+    for line in lines.iter().rev() {
+        if hints.len() >= 4 {
+            break;
+        }
+        let low = line.to_ascii_lowercase();
+        let relevant = low.contains("suspected mods")
+            || low.contains("caused by:")
+            || low.contains("mixinapplyerror")
+            || low.contains("mixintransformererror")
+            || low.contains("failure message:")
+            || (low.contains(".jar") && (low.contains("error") || low.contains("exception")));
+        if relevant {
+            let clean = sanitize_log_text(line.trim());
+            let clipped: String = clean.chars().take(160).collect();
+            if !clipped.is_empty() && !hints.contains(&clipped) {
+                hints.push(clipped);
+            }
+        }
+    }
+    hints.reverse();
+    hints
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,5 +622,36 @@ mod tests {
         assert!(bundle_zip.is_file());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn analyzes_common_minecraft_crash_causes() {
+        let oom = analyze_crash_cause(
+            &["[Render thread/ERROR]: java.lang.OutOfMemoryError: Java heap space".to_string()],
+            Some(1),
+            false,
+        );
+        assert!(oom.title.contains("Out of Memory"));
+
+        let jver = analyze_crash_cause(&[], Some(1), true);
+        assert!(jver.title.contains("Java Version Mismatch"));
+
+        let mixin = analyze_crash_cause(
+            &[
+                "[main/ERROR]: MixinApplyError from mod sodium-0.5.jar".to_string(),
+                "Caused by: org.spongepowered.asm.mixin.transformer.throwables.MixinTransformerError".to_string(),
+            ],
+            Some(-1),
+            false,
+        );
+        assert!(mixin.title.contains("Mixin Conflict"));
+        assert!(!mixin.culprit_hints.is_empty());
+
+        let missing = analyze_crash_cause(
+            &["[main/ERROR]: Could not find required mod: fabric-api".to_string()],
+            Some(1),
+            false,
+        );
+        assert!(missing.title.contains("Missing or Incompatible"));
     }
 }

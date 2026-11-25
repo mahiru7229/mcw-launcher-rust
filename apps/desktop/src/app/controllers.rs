@@ -3383,12 +3383,14 @@ impl McwApp {
                     match report {
                         Ok(rep) => match rep.classification {
                             ExitClassification::Normal => {
+                                self.crash_summaries.remove(&instance_id);
                                 self.notice_banner = Some((
                                     format!("Game closed cleanly ({}s).", rep.duration_secs),
                                     false,
                                 ));
                             }
                             ExitClassification::StoppedByUser => {
+                                self.crash_summaries.remove(&instance_id);
                                 self.notice_banner =
                                     Some(("Game stopped by user.".to_string(), false));
                             }
@@ -3398,6 +3400,39 @@ impl McwApp {
                                     rep.unsupported_class_version,
                                 );
                                 self.notice_banner = Some((diag.banner_text(), true));
+
+                                let mut analysis_lines: Vec<String> = self
+                                    .instance_logs
+                                    .get(&instance_id)
+                                    .map(|v| v.iter().map(|l| l.text.clone()).collect())
+                                    .unwrap_or_default();
+                                let mc_dir = self.paths.minecraft_dir(&instance_id);
+                                if let Some(crash_file) = find_latest_crash_report(&mc_dir) {
+                                    if let Ok(raw) = std::fs::read_to_string(&crash_file) {
+                                        for l in raw.lines().take(80) {
+                                            analysis_lines.push(l.to_string());
+                                        }
+                                    }
+                                }
+                                let summary = analyze_crash_cause(
+                                    &analysis_lines,
+                                    rep.exit_code,
+                                    rep.unsupported_class_version,
+                                );
+                                self.crash_summaries.insert(instance_id.clone(), summary);
+
+                                if self.prefs.auto_open_logs_on_crash {
+                                    self.active_page = AppPage::Home;
+                                    self.prefs.home_view_mode = "workspace".to_string();
+                                    if self.selected_instance_id.as_deref()
+                                        != Some(instance_id.as_str())
+                                    {
+                                        self.selected_instance_id = Some(instance_id);
+                                        self.sync_selected_from_cache();
+                                    }
+                                    self.active_tab = DetailTab::Logs;
+                                    self.instance_inline_browser = None;
+                                }
                             }
                         },
                         Err(err) => {
@@ -7950,16 +7985,54 @@ pub(crate) fn toggle_mod_cart_item_in_list(cart: &mut Vec<ModCartItem>, item: Mo
     }
 }
 
+/// Evaluates whether a log line matches `"all"`, `"info"`, `"warn"`, or `"error"` level filters.
+pub(crate) fn matches_log_level(line: &str, is_stderr: bool, level_filter: &str) -> bool {
+    let up = line.to_ascii_uppercase();
+    let is_err = is_stderr
+        || up.contains("[ERROR]")
+        || up.contains("/ERROR]")
+        || up.contains("[FATAL]")
+        || up.contains("/FATAL]")
+        || up.contains("EXCEPTION");
+    let is_warn = !is_err && (up.contains("[WARN]") || up.contains("/WARN]"));
+    match level_filter {
+        "error" => is_err,
+        "warn" => is_warn,
+        "info" => !is_err && !is_warn,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         apply_lan_agent_option, format_modlist_export, is_account_or_token_error,
-        matches_mod_filter, normalize_mod_stem, resolve_account_for_instance,
+        matches_log_level, matches_mod_filter, normalize_mod_stem, resolve_account_for_instance,
         resolve_unique_mod_filename, sort_instances_for_grid, toggle_mod_cart_item_in_list,
         AccountSource, CartModProvider, Instance, InstanceSettings, ModCartItem, StoredAccount,
     };
     use mcw_mods::{ModInfo, ModLoaderTag};
     use std::path::PathBuf;
+
+    #[test]
+    fn filters_log_lines_by_level() {
+        let info_line = "[12:00:00] [main/INFO]: Loading 42 mods";
+        let warn_line = "[12:00:01] [main/WARN]: Missing optional config key";
+        let err_line = "[12:00:02] [Render thread/ERROR]: Failed to bind shader";
+
+        assert!(matches_log_level(info_line, false, "all"));
+        assert!(matches_log_level(info_line, false, "info"));
+        assert!(!matches_log_level(info_line, false, "warn"));
+        assert!(!matches_log_level(info_line, false, "error"));
+
+        assert!(matches_log_level(warn_line, false, "warn"));
+        assert!(!matches_log_level(warn_line, false, "info"));
+        assert!(!matches_log_level(warn_line, false, "error"));
+
+        assert!(matches_log_level(err_line, false, "error"));
+        assert!(matches_log_level("raw stderr line", true, "error"));
+        assert!(!matches_log_level("raw stderr line", true, "info"));
+    }
 
     #[test]
     fn mod_cart_deduplicates_and_toggles_items() {

@@ -341,6 +341,8 @@ pub struct LauncherPrefs {
     pub proxy_username: String,
     #[serde(default)]
     pub proxy_password: String,
+    #[serde(default = "default_true")]
+    pub auto_open_logs_on_crash: bool,
 }
 
 fn default_proxy_mode() -> String {
@@ -504,6 +506,7 @@ impl Default for LauncherPrefs {
             proxy_port: default_proxy_port(),
             proxy_username: String::new(),
             proxy_password: String::new(),
+            auto_open_logs_on_crash: true,
         }
     }
 }

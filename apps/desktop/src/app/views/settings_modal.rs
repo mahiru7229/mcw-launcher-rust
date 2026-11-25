@@ -447,7 +447,7 @@ impl McwApp {
                 &startup_title,
                 &snap_lbl,
                 &dbg_lbl,
-                "minimize launcher window remember size dedicated gpu notification auto-dismiss timeout seconds",
+                "minimize launcher window remember size dedicated gpu notification auto-dismiss timeout seconds crash auto open logs",
             ],
         ) {
             matched += 1;
@@ -492,6 +492,15 @@ impl McwApp {
                         .checkbox(
                             &mut self.prefs.prefer_dedicated_gpu,
                             "Prefer dedicated GPU for Java / Minecraft launches",
+                        )
+                        .changed()
+                    {
+                        *prefs_dirty = true;
+                    }
+                    if ui
+                        .checkbox(
+                            &mut self.prefs.auto_open_logs_on_crash,
+                            "Auto-open Logs tab when game crashes",
                         )
                         .changed()
                     {

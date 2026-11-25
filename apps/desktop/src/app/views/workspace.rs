@@ -1431,6 +1431,30 @@ impl McwApp {
             .join(format!("{}-latest.log", inst.instance_id));
 
         ui.horizontal_wrapped(|ui| {
+            let lvl_lbl = match self.logs_level_filter.as_str() {
+                "info" => "Level: INFO",
+                "warn" => "Level: WARN",
+                "error" => "Level: ERROR",
+                _ => "Level: All",
+            };
+            egui::ComboBox::from_id_salt("cb_log_level_filter")
+                .selected_text(lvl_lbl)
+                .width(118.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.logs_level_filter,
+                        "all".to_string(),
+                        "Level: All",
+                    );
+                    ui.selectable_value(&mut self.logs_level_filter, "info".to_string(), "INFO");
+                    ui.selectable_value(&mut self.logs_level_filter, "warn".to_string(), "WARN");
+                    ui.selectable_value(&mut self.logs_level_filter, "error".to_string(), "ERROR");
+                });
+            ui.add(
+                TextEdit::singleline(&mut self.logs_tab_search)
+                    .hint_text("Filter logs...")
+                    .desired_width(170.0),
+            );
             ui.checkbox(&mut self.logs_errors_only, "Stderr / Errors only");
             if ui.button("Copy Logs").clicked() {
                 if let Some(lines) = self.instance_logs.get(&inst.instance_id) {
@@ -1549,6 +1573,53 @@ impl McwApp {
 
         ui.add_space(6.0);
 
+        if let Some(summary) = self.crash_summaries.get(&inst.instance_id).cloned() {
+            let mut dismiss_crash = false;
+            Frame::new()
+                .fill(p.elevated)
+                .stroke(Stroke::new(1.0_f32, p.danger))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!("Crash Summary: {}", summary.title))
+                                .strong()
+                                .color(p.danger),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button("Dismiss").clicked() {
+                                dismiss_crash = true;
+                            }
+                        });
+                    });
+                    ui.label(
+                        RichText::new(&summary.likely_cause)
+                            .size(12.0)
+                            .color(p.text),
+                    );
+                    ui.label(
+                        RichText::new(format!("Suggestion: {}", summary.suggestion))
+                            .size(11.5)
+                            .color(p.accent),
+                    );
+                    for hint in &summary.culprit_hints {
+                        ui.label(
+                            RichText::new(format!("• {hint}"))
+                                .monospace()
+                                .size(11.0)
+                                .color(p.text_muted),
+                        );
+                    }
+                });
+            if dismiss_crash {
+                self.crash_summaries.remove(&inst.instance_id);
+            }
+            ui.add_space(6.0);
+        }
+
+        let needle = self.logs_tab_search.trim().to_ascii_lowercase();
         Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0_f32, p.border))
@@ -1570,19 +1641,45 @@ impl McwApp {
                     .auto_shrink([false, false])
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
+                        let mut shown = 0usize;
                         for line in lines.unwrap() {
-                            let is_err = line.stream == LogStream::Stderr
-                                || line.text.contains("ERROR")
-                                || line.text.contains("Exception");
+                            let is_stderr = line.stream == LogStream::Stderr;
+                            let up = line.text.to_ascii_uppercase();
+                            let is_err = is_stderr
+                                || up.contains("ERROR")
+                                || up.contains("FATAL")
+                                || up.contains("EXCEPTION");
                             if self.logs_errors_only && !is_err {
                                 continue;
                             }
-                            let color = if is_err { p.danger } else { p.text };
+                            if !matches_log_level(&line.text, is_stderr, &self.logs_level_filter) {
+                                continue;
+                            }
+                            if !needle.is_empty()
+                                && !line.text.to_ascii_lowercase().contains(&needle)
+                            {
+                                continue;
+                            }
+                            shown += 1;
+                            let color = if is_err {
+                                p.danger
+                            } else if up.contains("[WARN]") || up.contains("/WARN]") {
+                                p.warning
+                            } else {
+                                p.text
+                            };
                             ui.label(
                                 RichText::new(&line.text)
                                     .monospace()
                                     .size(11.5)
                                     .color(color),
+                            );
+                        }
+                        if shown == 0 {
+                            ui.label(
+                                RichText::new("No log lines match the current filter.")
+                                    .monospace()
+                                    .color(p.text_muted),
                             );
                         }
                     });

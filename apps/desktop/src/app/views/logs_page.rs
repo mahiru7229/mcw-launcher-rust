@@ -86,6 +86,37 @@ impl McwApp {
                             .hint_text("Filter log lines...")
                             .desired_width(210.0),
                     );
+                    let lvl_lbl = match self.logs_level_filter.as_str() {
+                        "info" => "Level: INFO",
+                        "warn" => "Level: WARN",
+                        "error" => "Level: ERROR",
+                        _ => "Level: All",
+                    };
+                    egui::ComboBox::from_id_salt("cb_logs_page_level_filter")
+                        .selected_text(lvl_lbl)
+                        .width(122.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.logs_level_filter,
+                                "all".to_string(),
+                                "Level: All",
+                            );
+                            ui.selectable_value(
+                                &mut self.logs_level_filter,
+                                "info".to_string(),
+                                "INFO",
+                            );
+                            ui.selectable_value(
+                                &mut self.logs_level_filter,
+                                "warn".to_string(),
+                                "WARN",
+                            );
+                            ui.selectable_value(
+                                &mut self.logs_level_filter,
+                                "error".to_string(),
+                                "ERROR",
+                            );
+                        });
 
                     if self.logs_page_source == "__global__" {
                         let lines_snapshot: Vec<String> =
@@ -265,13 +296,19 @@ impl McwApp {
                         let mut shown = 0usize;
                         if self.logs_page_source == "__global__" {
                             for line in &self.global_logs {
+                                if !matches_log_level(line, false, &self.logs_level_filter) {
+                                    continue;
+                                }
                                 if !needle.is_empty()
                                     && !line.to_ascii_lowercase().contains(&needle)
                                 {
                                     continue;
                                 }
                                 shown += 1;
-                                let col = if line.contains("[WARN]") || line.contains("[ERROR]") {
+                                let up = line.to_ascii_uppercase();
+                                let col = if up.contains("[ERROR]") || up.contains("[FATAL]") {
+                                    p.danger
+                                } else if up.contains("[WARN]") {
                                     p.warning
                                 } else {
                                     p.text
@@ -280,10 +317,20 @@ impl McwApp {
                             }
                         } else if let Some(lines) = self.instance_logs.get(&self.logs_page_source) {
                             for line in lines {
-                                let is_err = matches!(line.stream, LogStream::Stderr)
-                                    || line.text.contains("ERROR")
-                                    || line.text.contains("Exception");
+                                let is_stderr = matches!(line.stream, LogStream::Stderr);
+                                let up = line.text.to_ascii_uppercase();
+                                let is_err = is_stderr
+                                    || up.contains("ERROR")
+                                    || up.contains("FATAL")
+                                    || up.contains("EXCEPTION");
                                 if self.logs_errors_only && !is_err {
+                                    continue;
+                                }
+                                if !matches_log_level(
+                                    &line.text,
+                                    is_stderr,
+                                    &self.logs_level_filter,
+                                ) {
                                     continue;
                                 }
                                 if !needle.is_empty()
@@ -292,7 +339,13 @@ impl McwApp {
                                     continue;
                                 }
                                 shown += 1;
-                                let col = if is_err { p.danger } else { p.text };
+                                let col = if is_err {
+                                    p.danger
+                                } else if up.contains("[WARN]") || up.contains("/WARN]") {
+                                    p.warning
+                                } else {
+                                    p.text
+                                };
                                 ui.label(
                                     RichText::new(&line.text).monospace().size(11.5).color(col),
                                 );

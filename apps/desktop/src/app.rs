@@ -3,7 +3,9 @@ mod controllers_pages;
 pub(crate) mod platform;
 mod views;
 
-pub(crate) use controllers::{format_modlist_export, matches_mod_filter, sort_instances_for_grid};
+pub(crate) use controllers::{
+    format_modlist_export, matches_log_level, matches_mod_filter, sort_instances_for_grid,
+};
 
 use self::platform::default_user_downloads_dir;
 use crate::background::{decode_user_image, BackgroundManager};
@@ -55,13 +57,13 @@ use mcw_providers::{
     ModrinthSearchHit, ModrinthSearchParams, TechnicClient, TechnicModpackSummary, TrackedModEntry,
 };
 use mcw_runtime::{
-    detect_preset, detect_total_memory_mb, find_latest_crash_report, get_preset_flags,
-    recommended_modpack_ram_mb, run_lifecycle_hook, DiagnosticsExporter, DiscordRpcService,
-    ExitClassification, FirstRunRecommendation, FirstRunRecommendationService, GameWindowActivator,
-    IssueReportBuilder, IssueReportInput, JavaDiagnostic, JavaDiagnosticsManager, JavaDiscovery,
-    JavaInstallation, JavaProvisioner, JavaRecoveryDiagnostics, JvmPresetId, LanAgentManager,
-    LaunchErrorPresenter, LogLine, LogStream, McLogsClient, ProcessControl, SupervisedProcess,
-    DEFAULT_DISCORD_CLIENT_ID,
+    analyze_crash_cause, detect_preset, detect_total_memory_mb, find_latest_crash_report,
+    get_preset_flags, recommended_modpack_ram_mb, run_lifecycle_hook, CrashCauseSummary,
+    DiagnosticsExporter, DiscordRpcService, ExitClassification, FirstRunRecommendation,
+    FirstRunRecommendationService, GameWindowActivator, IssueReportBuilder, IssueReportInput,
+    JavaDiagnostic, JavaDiagnosticsManager, JavaDiscovery, JavaInstallation, JavaProvisioner,
+    JavaRecoveryDiagnostics, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine,
+    LogStream, McLogsClient, ProcessControl, SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
     inspect_python_launcher, migrate_from_python_launcher, BackupInfo, BackupManager,
@@ -393,6 +395,9 @@ pub struct McwApp {
     versions_type_filter: String,
     logs_page_source: String,
     logs_page_filter: String,
+    logs_level_filter: String,
+    logs_tab_search: String,
+    crash_summaries: HashMap<String, CrashCauseSummary>,
 
     // Async icon thumbnail texture cache for Mods, Packs, and Modpacks
     thumb_textures: HashMap<String, egui::TextureHandle>,
@@ -879,6 +884,9 @@ impl McwApp {
             versions_type_filter: "release".to_string(),
             logs_page_source: "__global__".to_string(),
             logs_page_filter: String::new(),
+            logs_level_filter: "all".to_string(),
+            logs_tab_search: String::new(),
+            crash_summaries: HashMap::new(),
             thumb_textures: HashMap::new(),
             loading_thumbs: HashSet::new(),
             thumb_lru_order: Vec::new(),
