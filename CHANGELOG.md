@@ -5,17 +5,20 @@ All notable changes to **MCW Launcher: Rust Edition** are documented in this fil
 ## [1.3.1] - 2026-11-25
 
 ### Security
-- **Minecraft2Shell Protection (`tools/mcw_security_agent`, `mcw-runtime`, `mcw-minecraft`, `mcw-desktop`)**:
-  - Added bundled pure-Java **`mcw-security-agent.jar`** (`SecurityAgentManager`, SHA-256 verified on extraction) that instruments `org.lwjgl.util.freetype.FreeType` (`nFT_Load_Glyph`, `nFT_Load_Char`, `FT_Load_Glyph`, `FT_Load_Char`) to force `FT_LOAD_NO_HINTING` (`0x2`), blocking TrueType `Ins_SHZ` hinting bytecode execution responsible for the **`bikini/minecraft2shell`** heap OOB write -> native RCE vulnerability across Vanilla, Fabric, Quilt, Forge, and NeoForge.
-  - Added `ArgumentBuilder::uses_lwjgl_freetype` to automatically attach the Security Agent whenever `org.lwjgl:lwjgl-freetype` is present (Minecraft `24w03a` / `1.20.5+`, `1.21.x`, and `26.x`).
-- **Pre-Launch Server Resource Pack Warning Modal (`mcw-desktop`)**:
-  - Before launching a FreeType-enabled version, MCW scans `servers.dat` for entries with **Auto-Accept Server Resource Packs** enabled (`acceptTextures = 1`) and displays an In-App Centered Modal (`mcw_modal_security_rp_confirm`) warning directly about `bikini/minecraft2shell` RCE risks, showing live Security Agent status, per-server **Delete Server** buttons, **"I know what I'm doing (Trust & Don't Ask Again)"** (persisted per instance in `trusted_resource_pack_servers`), and **Cancel Launch**.
-- **Dedicated Security Settings Tab (`mcw-desktop`)**:
-  - Added **Security** category to *Launcher Settings* with toggles for Minecraft2Shell runtime mitigation (enabled by default), pre-launch Server Resource Pack warnings (enabled by default), and clearing trusted servers on the selected instance.
+- **Two-Layer Minecraft2Shell Security Hotfix (`mcw-runtime`, `mcw-minecraft`, `mcw-desktop`, `tools/mcw_security_agent`)**:
+  - **Layer 1 — Mojang FreeType Library Sync (`MojangLibrarySync`, `LibraryManager`, `VersionManifestService`)**: Refreshes official `version_manifest_v2.json` and verifies SHA-1 checksums to detect and apply Mojang's patched **`org.lwjgl:lwjgl-freetype:3.4.3-mojang-2.15.0`** (`FreeType 2.15.0`, shipped on `26.3` and `26.4-pre-1`), cleaning stale FreeType natives while leaving unrelated dependencies untouched and providing full transactional backup + automatic rollback on failure or offline interruption.
+  - **Layer 2 — Independent Runtime Mitigation (`MCW Security Agent` / `mcw-security-agent.jar`)**: Pure-Java `--release 8` instrumentation agent attached automatically **only** to instances with unpatched `lwjgl-freetype` (`1.20.5`–`1.21.11`, `26.1`–`26.2`), forcing `FT_LOAD_NO_HINTING` (`0x2`) across `nFT_Load_Glyph`, `nFT_Load_Char`, `FT_Load_Glyph`, and `FT_Load_Char` to block `Ins_SHZ` hinting bytecode exploits. Emits a verified runtime status handshake (`mcw-security-agent-status.json`: `INITIALIZED` -> `ACTIVE_VERIFIED` / `INCOMPATIBLE` / `FAILED`), validates Java 8+ compatibility, omits automatically once patched Mojang FreeType is verified on disk, and supports clean independent uninstallation.
+- **MCW Security Manager (`SecurityManager`)**:
+  - Evaluates merged dependencies, on-disk SHA-1s, Java runtime compatibility, runtime verification status, and policy into 4 transparent states (**`PROTECTED`**, **`PARTIALLY_PROTECTED`**, **`UNPROTECTED`**, **`UNKNOWN`**) always accompanied by a clear human-readable description in Workspace, *Launcher Settings -> Security*, Launch Logs, and Pre-Launch confirmation prompts.
+- **Signed Remote Security Policy (`SecurityPolicyService`, `ring` Ed25519)**:
+  - Verifies remote policy metadata envelopes with Ed25519 signatures and explicit expiration checks (pure declarative metadata—no remote code execution) with offline baseline fallback (`3.4.3-mojang-2.15.0` verified SHA-1s).
+- **Pre-Launch Server Resource Pack Warning Modal (`mcw_modal_security_rp_confirm`)**:
+  - Scans `servers.dat` before launching FreeType-enabled versions for `acceptTextures = 1` auto-accept servers and shows the instance's full security assessment description, per-server **Delete Server**, **I know what I'm doing (Trust & Don't Ask Again)**, and **Cancel Launch** controls.
 
 ### Added
+- **Security Architecture & Lifecycle Documentation (`docs/security/`)**: Added `README.md`, `THREAT_MODEL.md`, `SECURITY_AGENT.md`, `LIBRARY_SYNC.md`, `LIFECYCLE.md`, and `TEST_PLAN.md`.
 - **JSON `$schema` Support (`schemas/`, `mcw-models`, `mcw-desktop`)**:
-  - Added Draft-07 JSON Schemas (`schemas/launcher-settings.schema.json`, `schemas/instance-settings.schema.json`, `schemas/instance.schema.json`) and automatic `$schema` metadata fields across `config/launcher_settings.json`, `instances/<id>/settings.json`, and `instances/<id>/instance.json` with backward-compatible deserialization.
+  - Added Draft-07 JSON Schemas (`schemas/launcher-settings.schema.json`, `schemas/instance-settings.schema.json`, `schemas/instance.schema.json`) and automatic `$schema` fields across `config/launcher_settings.json`, `instances/<id>/settings.json`, and `instances/<id>/instance.json`.
 
 ---
 
