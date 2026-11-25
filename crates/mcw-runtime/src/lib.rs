@@ -11,6 +11,7 @@ pub mod lan_agent;
 pub mod launcher;
 pub mod mclogs;
 pub mod provisioner;
+pub mod security_agent;
 pub mod supervisor;
 pub mod window_activator;
 
@@ -40,6 +41,7 @@ pub use launcher::{
 };
 pub use mclogs::{sanitize_log_text, McLogsClient, McLogsUploadResult};
 pub use provisioner::{AdoptiumRelease, JavaProvisioner};
+pub use security_agent::SecurityAgentManager;
 pub use supervisor::{
     detect_unsupported_class_version, ExitClassification, LogLine, LogSink, LogStream, NoopLogSink,
     ProcessControl, ProcessExitReport, SupervisedProcess,

@@ -204,6 +204,16 @@ impl ArgumentBuilder {
         major == 1 && ((7..=17).contains(&minor) || (minor == 18 && patch <= 1))
     }
 
+    /// Returns `true` when the resolved version metadata includes `org.lwjgl:lwjgl-freetype`,
+    /// which is used by Minecraft `24w03a` / `1.20.5` and newer (`minecraft2shell` attack surface).
+    pub fn uses_lwjgl_freetype(version: &VersionMetadata) -> bool {
+        version.libraries.iter().any(|lib| {
+            let name = lib.name.trim().to_ascii_lowercase();
+            name.starts_with("org.lwjgl:lwjgl-freetype:")
+                || name.contains("org.lwjgl:lwjgl-freetype")
+        })
+    }
+
     fn normalize_offline_identity_args(args: Vec<String>, auth: &Authentication) -> Vec<String> {
         let mut canonical = HashMap::new();
         canonical.insert("--username", auth.player_name.clone());
@@ -425,5 +435,40 @@ mod tests {
                 "unexpected mitigation for {safe}"
             );
         }
+    }
+
+    #[test]
+    fn detects_lwjgl_freetype_from_version_libraries() {
+        let mut meta = VersionMetadata {
+            id: "1.21.4".to_string(),
+            version_type: "release".to_string(),
+            main_class: "net.minecraft.client.main.Main".to_string(),
+            inherits_from: None,
+            asset_index: None,
+            assets: None,
+            downloads: None,
+            libraries: vec![mcw_models::minecraft::LibraryEntry {
+                name: "org.lwjgl:lwjgl:3.3.3".to_string(),
+                url: None,
+                downloads: None,
+                rules: vec![],
+                natives: None,
+                clientreq: None,
+            }],
+            java_version: None,
+            minecraft_arguments: None,
+            arguments: None,
+        };
+        assert!(!ArgumentBuilder::uses_lwjgl_freetype(&meta));
+
+        meta.libraries.push(mcw_models::minecraft::LibraryEntry {
+            name: "org.lwjgl:lwjgl-freetype:3.3.3".to_string(),
+            url: None,
+            downloads: None,
+            rules: vec![],
+            natives: None,
+            clientreq: None,
+        });
+        assert!(ArgumentBuilder::uses_lwjgl_freetype(&meta));
     }
 }
