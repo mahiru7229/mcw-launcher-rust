@@ -1,5 +1,6 @@
 use super::platform::*;
 use super::*;
+use std::fs;
 
 impl McwApp {
     pub(crate) fn t<'a>(&'a self, key: &'a str) -> &'a str {
@@ -21,6 +22,7 @@ impl McwApp {
     pub(crate) fn reload_instances(&mut self) {
         let store = InstanceStore::new(&self.paths);
         self.instances = store.list_instances().unwrap_or_default();
+        self.security_assessments.clear();
         if let Some(ref sel) = self.selected_instance_id {
             if !self.instances.iter().any(|i| &i.instance_id == sel) {
                 self.selected_instance_id = None;
@@ -31,6 +33,84 @@ impl McwApp {
         }
         self.refresh_pending_manual_counts();
         self.sync_selected_from_cache();
+    }
+
+    pub(crate) fn assess_instance_security(
+        &mut self,
+        inst: &Instance,
+    ) -> InstanceSecurityAssessment {
+        if let Some(cached) = self.security_assessments.get(&inst.instance_id) {
+            return cached.clone();
+        }
+        let assessment = compute_local_instance_security(
+            &self.paths,
+            inst,
+            self.prefs.mitigate_minecraft2shell,
+            &self.resolved_security_policy,
+        );
+        self.security_assessments
+            .insert(inst.instance_id.clone(), assessment.clone());
+        assessment
+    }
+
+    pub(crate) fn start_refresh_security_policy(&mut self, ctx: &egui::Context) {
+        if self.security_policy_refreshing {
+            return;
+        }
+        self.security_policy_refreshing = true;
+        let paths = self.paths.clone();
+        let client = self.download_client.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        self.runtime.spawn(async move {
+            let policy = SecurityPolicyService::refresh_from_remote(
+                &paths,
+                &client,
+                REMOTE_SECURITY_POLICY_URL,
+            )
+            .await;
+            let _ = tx.send(AppEvent::SecurityPolicyRefreshed(policy));
+            ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn start_sync_security_libraries(&mut self, inst: &Instance, ctx: &egui::Context) {
+        if self.security_sync_busy {
+            return;
+        }
+        self.security_sync_busy = true;
+        let paths = self.paths.clone();
+        let client = self.download_client.clone();
+        let inst = inst.clone();
+        let mitigate = self.prefs.mitigate_minecraft2shell;
+        let policy = self.resolved_security_policy.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        self.runtime.spawn(async move {
+            let outcome = match MojangLibrarySync::sync_freetype_for_version(
+                &paths,
+                &client,
+                &inst.version_id,
+                &policy,
+            )
+            .await
+            {
+                Ok(out) => out,
+                Err(err) => LibrarySyncOutcome::RolledBack {
+                    version_id: inst.version_id.clone(),
+                    reason: format!("Library sync failed: {err}"),
+                },
+            };
+            let assessment = Some(compute_local_instance_security(
+                &paths, &inst, mitigate, &policy,
+            ));
+            let _ = tx.send(AppEvent::SecurityLibrarySyncFinished {
+                instance_id: inst.instance_id,
+                outcome,
+                assessment,
+            });
+            ctx.request_repaint();
+        });
     }
 
     pub(crate) fn refresh_pending_manual_counts(&mut self) {
@@ -981,7 +1061,102 @@ impl McwApp {
                     }
                 }
 
-                let uses_freetype = ArgumentBuilder::uses_lwjgl_freetype(&prepared.metadata);
+                let base_sync_id = prepared
+                    .metadata
+                    .inherits_from
+                    .clone()
+                    .unwrap_or_else(|| prepared.metadata.id.clone());
+                let active_policy = SecurityPolicyService::load_cached(&paths);
+                if let Ok(sync_outcome) = MojangLibrarySync::sync_freetype_for_version(
+                    &paths,
+                    &client,
+                    &base_sync_id,
+                    &active_policy,
+                )
+                .await
+                {
+                    let sync_msg = match &sync_outcome {
+                        LibrarySyncOutcome::AlreadyUpToDate { description, .. } => {
+                            format!("[Security][Sync] {description}")
+                        }
+                        LibrarySyncOutcome::UpdatedPatchedFreetype { description, .. } => {
+                            if let Ok(raw) = fs::read_to_string(paths.version_json(&base_sync_id)) {
+                                if let Ok(fresh_base) =
+                                    serde_json::from_str::<mcw_models::minecraft::VersionMetadata>(&raw)
+                                {
+                                    let patched_ft: Vec<_> = fresh_base
+                                        .libraries
+                                        .into_iter()
+                                        .filter(|l| {
+                                            l.name
+                                                .to_ascii_lowercase()
+                                                .contains("org.lwjgl:lwjgl-freetype")
+                                        })
+                                        .collect();
+                                    if !patched_ft.is_empty()
+                                        && prepared.metadata.inherits_from.is_none()
+                                    {
+                                        prepared.metadata.libraries.retain(|l| {
+                                            !l.name
+                                                .to_ascii_lowercase()
+                                                .contains("org.lwjgl:lwjgl-freetype")
+                                        });
+                                        prepared.metadata.libraries.extend(patched_ft);
+                                    }
+                                }
+                            }
+                            format!("[Security][Sync] {description}")
+                        }
+                        LibrarySyncOutcome::NoPatchAvailable { description, .. } => {
+                            format!("[Security][Sync] {description}")
+                        }
+                        LibrarySyncOutcome::OfflineSkipped { description, .. } => {
+                            format!("[Security][Sync] {description}")
+                        }
+                        LibrarySyncOutcome::RolledBack { reason, .. } => {
+                            format!("[Security][Sync][WARN] {reason}")
+                        }
+                    };
+                    let _ = tx.send(AppEvent::LogReceived {
+                        instance_id: inst.instance_id.clone(),
+                        line: LogLine {
+                            stream: if matches!(sync_outcome, LibrarySyncOutcome::RolledBack { .. })
+                            {
+                                LogStream::Stderr
+                            } else {
+                                LogStream::Stdout
+                            },
+                            text: sync_msg,
+                        },
+                    });
+                }
+
+                let preflight_assessment = SecurityManager::assess_instance(
+                    &paths,
+                    &prepared.metadata,
+                    &inst.instance_id,
+                    mitigate_minecraft2shell,
+                    prepared.java.major,
+                    &active_policy,
+                );
+                let _ = tx.send(AppEvent::LogReceived {
+                    instance_id: inst.instance_id.clone(),
+                    line: LogLine {
+                        stream: if preflight_assessment.status == SecurityStatus::Unprotected {
+                            LogStream::Stderr
+                        } else {
+                            LogStream::Stdout
+                        },
+                        text: format!(
+                            "[Security] {} — {}",
+                            preflight_assessment.status.display_title(),
+                            preflight_assessment.description
+                        ),
+                    },
+                });
+
+                let uses_freetype =
+                    !matches!(preflight_assessment.freetype_status, FreetypeLibraryStatus::NotUsed);
                 if uses_freetype && warn_auto_accept_server_rp && !bypass_security_rp {
                     let mc_dir = paths.minecraft_dir(&inst.instance_id);
                     let trusted: HashSet<String> = settings
@@ -1012,41 +1187,29 @@ impl McwApp {
                             quick_play_server: quick_play_server.clone(),
                             risky_servers,
                             mitigation_enabled: mitigate_minecraft2shell,
+                            assessment_headline: preflight_assessment.headline.clone(),
+                            assessment_description: preflight_assessment.description.clone(),
                         });
                         ctx.request_repaint();
                         return Ok(None);
                     }
                 }
 
+                let attached_security_agent = preflight_assessment.should_attach_agent;
                 prepared.spec.jvm_args =
                     SecurityAgentManager::sanitize_user_jvm_args(&prepared.spec.jvm_args);
-                if uses_freetype {
-                    if mitigate_minecraft2shell {
-                        let sec_args = SecurityAgentManager::build_jvm_args(
-                            &paths.cache_root.join("security_agent"),
-                            &paths.instance_dir(&inst.instance_id),
-                            prepared.java.major,
-                        )
-                        .map_err(|e| e.to_string())?;
-                        let mut combined = sec_args;
-                        combined.extend(prepared.spec.jvm_args);
-                        prepared.spec.jvm_args = combined;
-                        let _ = tx.send(AppEvent::LogReceived {
-                            instance_id: inst.instance_id.clone(),
-                            line: LogLine {
-                                stream: LogStream::Stdout,
-                                text: "[Security] Minecraft2Shell (FreeType SHZ RCE) protection enabled via MCW Security Agent (FT_LOAD_NO_HINTING).".to_string(),
-                            },
-                        });
-                    } else {
-                        let _ = tx.send(AppEvent::LogReceived {
-                            instance_id: inst.instance_id.clone(),
-                            line: LogLine {
-                                stream: LogStream::Stderr,
-                                text: "[Security][WARN] Minecraft2Shell protection is DISABLED in Launcher Settings -> Security!".to_string(),
-                            },
-                        });
-                    }
+                if attached_security_agent {
+                    let sec_args = SecurityAgentManager::build_jvm_args(
+                        &paths.cache_root.join("security_agent"),
+                        &paths.instance_dir(&inst.instance_id),
+                        prepared.java.major,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let mut combined = sec_args;
+                    combined.extend(prepared.spec.jvm_args);
+                    prepared.spec.jvm_args = combined;
+                } else {
+                    SecurityAgentManager::reset_status_file(&paths.instance_dir(&inst.instance_id));
                 }
 
                 prepared.spec.jvm_args =
@@ -1143,6 +1306,40 @@ impl McwApp {
                 ctx.request_repaint();
 
                 let report = supervised.wait().await.map_err(|e| e.to_string())?;
+
+                if attached_security_agent {
+                    if let Some(rt) =
+                        SecurityAgentManager::read_runtime_status(&paths.instance_dir(&inst.instance_id))
+                    {
+                        let rt_msg = match rt.state {
+                            SecurityAgentRuntimeState::ActiveVerified => format!(
+                                "[Security] Runtime verification passed: ACTIVE_VERIFIED ({} FreeType method(s) patched -> FT_LOAD_NO_HINTING).",
+                                rt.patched_methods
+                            ),
+                            SecurityAgentRuntimeState::Initialized => "[Security] Agent initialized (FreeType class was not loaded during this session).".to_string(),
+                            SecurityAgentRuntimeState::Failed | SecurityAgentRuntimeState::Incompatible => format!(
+                                "[Security][WARN] Runtime protection verification FAILED ({:?}): {}",
+                                rt.state, rt.detail
+                            ),
+                            other => format!("[Security] Agent status: {other:?} ({})", rt.detail),
+                        };
+                        let _ = tx.send(AppEvent::LogReceived {
+                            instance_id: inst.instance_id.clone(),
+                            line: LogLine {
+                                stream: if matches!(
+                                    rt.state,
+                                    SecurityAgentRuntimeState::Failed
+                                        | SecurityAgentRuntimeState::Incompatible
+                                ) {
+                                    LogStream::Stderr
+                                } else {
+                                    LogStream::Stdout
+                                },
+                                text: rt_msg,
+                            },
+                        });
+                    }
+                }
 
                 if !settings.post_exit_command.trim().is_empty() {
                     let post_cmd = settings.post_exit_command.clone();
@@ -3442,8 +3639,12 @@ impl McwApp {
                 AppEvent::LogReceived { instance_id, line } => {
                     if line.text.starts_with("[LaunchCheck]")
                         || line.text.starts_with("[ForgePreflight]")
+                        || line.text.starts_with("[Security]")
                     {
                         self.push_global_log(format!("[{instance_id}] {}", line.text));
+                    }
+                    if line.text.contains("[MCW Security Agent]") {
+                        self.security_assessments.remove(&instance_id);
                     }
                     let entry = self.instance_logs.entry(instance_id).or_default();
                     if entry.len() >= MAX_LOG_LINES_PER_INSTANCE {
@@ -4301,6 +4502,8 @@ impl McwApp {
                     quick_play_server,
                     risky_servers,
                     mitigation_enabled,
+                    assessment_headline,
+                    assessment_description,
                 } => {
                     self.last_launch_log_msg.remove(&instance_id);
                     if let Some(tid) = self.launch_task_ids.remove(&instance_id) {
@@ -4317,6 +4520,49 @@ impl McwApp {
                     self.security_rp_confirm_server = quick_play_server;
                     self.security_rp_confirm_servers = risky_servers;
                     self.security_rp_confirm_mitigation_enabled = mitigation_enabled;
+                    self.security_rp_confirm_headline = assessment_headline;
+                    self.security_rp_confirm_description = assessment_description;
+                }
+                AppEvent::SecurityPolicyRefreshed(policy) => {
+                    self.security_policy_refreshing = false;
+                    let msg = format!(
+                        "Security policy: {} — {}",
+                        policy.validity.label(),
+                        policy.detail
+                    );
+                    self.push_global_log(format!("[SECURITY] {msg}"));
+                    self.notice_banner = Some((msg, false));
+                    self.resolved_security_policy = policy;
+                    self.security_assessments.clear();
+                }
+                AppEvent::SecurityLibrarySyncFinished {
+                    instance_id,
+                    outcome,
+                    assessment,
+                } => {
+                    self.security_sync_busy = false;
+                    if let Some(a) = assessment {
+                        self.security_assessments.insert(instance_id.clone(), a);
+                    } else {
+                        self.security_assessments.remove(&instance_id);
+                    }
+                    let (msg, is_err) = match outcome {
+                        LibrarySyncOutcome::AlreadyUpToDate { description, .. } => {
+                            (description, false)
+                        }
+                        LibrarySyncOutcome::UpdatedPatchedFreetype { description, .. } => {
+                            (description, false)
+                        }
+                        LibrarySyncOutcome::NoPatchAvailable { description, .. } => {
+                            (description, false)
+                        }
+                        LibrarySyncOutcome::OfflineSkipped { description, .. } => {
+                            (description, false)
+                        }
+                        LibrarySyncOutcome::RolledBack { reason, .. } => (reason, true),
+                    };
+                    self.push_global_log(format!("[SECURITY][SYNC] {msg}"));
+                    self.notice_banner = Some((msg, is_err));
                 }
                 AppEvent::PythonFolderPicked(picked) => {
                     self.python_import_folder_picking = false;
@@ -8630,6 +8876,100 @@ pub(crate) fn matches_log_level(line: &str, is_stderr: bool, level_filter: &str)
         "info" => !is_err && !is_warn,
         _ => true,
     }
+}
+
+pub(crate) fn compute_local_instance_security(
+    paths: &LauncherPaths,
+    inst: &Instance,
+    mitigate_minecraft2shell: bool,
+    policy: &ResolvedSecurityPolicy,
+) -> InstanceSecurityAssessment {
+    let base_json = paths.version_json(&inst.version_id);
+    let Ok(base_raw) = fs::read_to_string(&base_json) else {
+        return InstanceSecurityAssessment {
+            status: SecurityStatus::Unknown,
+            status_label: SecurityStatus::Unknown.as_str().to_string(),
+            headline: format!("Unknown — Metadata Pending ({})", inst.version_id),
+            description: format!(
+                "Unknown: Version metadata for Minecraft {} is not cached locally yet. MCW Security Manager will sync official Mojang checksums and verify FreeType libraries before launching.",
+                inst.version_id
+            ),
+            freetype_status: FreetypeLibraryStatus::Unknown,
+            should_attach_agent: false,
+            agent_runtime_state: SecurityAgentRuntimeState::NotLoaded,
+            policy_validity: policy.validity,
+            reasons: vec!["Local version.json not yet cached on disk.".to_string()],
+            recommended_action: Some(
+                "Click Sync Mojang Security Libraries or Launch once to download and verify metadata."
+                    .to_string(),
+            ),
+        };
+    };
+
+    let Ok(mut merged) = serde_json::from_str::<mcw_models::minecraft::VersionMetadata>(&base_raw)
+    else {
+        return InstanceSecurityAssessment {
+            status: SecurityStatus::Unknown,
+            status_label: SecurityStatus::Unknown.as_str().to_string(),
+            headline: format!("Unknown — Malformed Metadata ({})", inst.version_id),
+            description: format!(
+                "Unknown: Cached version metadata for Minecraft {} could not be parsed cleanly. Re-sync Mojang Security Libraries to verify files.",
+                inst.version_id
+            ),
+            freetype_status: FreetypeLibraryStatus::Unknown,
+            should_attach_agent: false,
+            agent_runtime_state: SecurityAgentRuntimeState::NotLoaded,
+            policy_validity: policy.validity,
+            reasons: vec!["Cached version.json could not be parsed.".to_string()],
+            recommended_action: Some("Click Sync Mojang Security Libraries.".to_string()),
+        };
+    };
+
+    // Include any cached modloader profile libraries if the instance uses Fabric/Quilt/Forge/NeoForge.
+    if !inst.mod_loader.is_vanilla() {
+        let loader_low = inst.mod_loader.name.trim().to_ascii_lowercase();
+        let loader_ver = inst.mod_loader.version.trim().to_ascii_lowercase();
+        let versions_dir = paths.cache_root.join("versions");
+        if let Ok(entries) = fs::read_dir(&versions_dir) {
+            for entry in entries.flatten() {
+                let dir_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if dir_name.contains(&inst.version_id.to_ascii_lowercase())
+                    && dir_name.contains(&loader_low)
+                    && (loader_ver.is_empty() || dir_name.contains(&loader_ver))
+                {
+                    let profile_json = entry
+                        .path()
+                        .join(format!("{}.json", entry.file_name().to_string_lossy()));
+                    if let Ok(lraw) = fs::read_to_string(profile_json) {
+                        if let Ok(lmeta) =
+                            serde_json::from_str::<mcw_models::minecraft::VersionMetadata>(&lraw)
+                        {
+                            merged.libraries.extend(lmeta.libraries);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let java_major = merged
+        .java_version
+        .as_ref()
+        .map(|j| j.major_version)
+        .unwrap_or_else(|| {
+            mcw_runtime::JavaMajorPolicy::required_for_minecraft(&inst.version_id, None)
+                .unwrap_or(21)
+        });
+
+    SecurityManager::assess_instance(
+        paths,
+        &merged,
+        &inst.instance_id,
+        mitigate_minecraft2shell,
+        java_major,
+        policy,
+    )
 }
 
 #[cfg(test)]

@@ -784,23 +784,42 @@ impl McwApp {
                             .wrap(),
                         );
                         ui.add_space(6.0);
-                        let (status_txt, status_col) = if mitigation_on {
-                            (
-                                "MCW Security Agent is ACTIVE (FT_LOAD_NO_HINTING forced), blocking known hinting bytecode exploits — however, removing untrusted auto-accept servers is still recommended.",
-                                p.accent,
-                            )
+                        if !self.security_rp_confirm_headline.trim().is_empty() {
+                            ui.label(
+                                RichText::new(&self.security_rp_confirm_headline)
+                                    .strong()
+                                    .size(12.0)
+                                    .color(if mitigation_on { p.warning } else { p.danger }),
+                            );
+                        }
+                        if !self.security_rp_confirm_description.trim().is_empty() {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&self.security_rp_confirm_description)
+                                        .size(11.5)
+                                        .color(p.text_muted),
+                                )
+                                .wrap(),
+                            );
                         } else {
-                            (
-                                "DANGER: MCW Security Agent is DISABLED in Launcher Settings -> Security! Launching and joining an untrusted server leaves your system directly exposed to native RCE.",
-                                p.danger,
-                            )
-                        };
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(status_txt).size(11.5).strong().color(status_col),
-                            )
-                            .wrap(),
-                        );
+                            let (status_txt, status_col) = if mitigation_on {
+                                (
+                                    "PARTIALLY PROTECTED: MCW Security Agent is ACTIVE (FT_LOAD_NO_HINTING forced), blocking known hinting bytecode exploits — however, removing untrusted auto-accept servers is still recommended.",
+                                    p.accent,
+                                )
+                            } else {
+                                (
+                                    "UNPROTECTED (DANGER): MCW Security Agent is DISABLED in Launcher Settings -> Security! Launching and joining an untrusted server leaves your system directly exposed to native RCE.",
+                                    p.danger,
+                                )
+                            };
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(status_txt).size(11.5).strong().color(status_col),
+                                )
+                                .wrap(),
+                            );
+                        }
                     });
 
                 ui.add_space(8.0);

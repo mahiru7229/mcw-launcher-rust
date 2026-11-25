@@ -30,10 +30,12 @@ use mcw_auth::{
     StoredAccount,
 };
 use mcw_minecraft::{
-    is_quick_play_supported, ArgumentBuilder, ForgePreflightManager, LanAgentTargetResolver,
-    LoaderDiagnosticsExporter, OptiFineManager, OptiFineState, RepairService, SavedServer,
-    ScreenshotInfo, ScreenshotManager, ServerManager, VanillaLaunchPipeline,
-    VersionManifestService, WorldInfo, WorldManager,
+    is_quick_play_supported, ForgePreflightManager, FreetypeLibraryStatus,
+    InstanceSecurityAssessment, LanAgentTargetResolver, LibrarySyncOutcome,
+    LoaderDiagnosticsExporter, MojangLibrarySync, OptiFineManager, OptiFineState, RepairService,
+    ResolvedSecurityPolicy, SavedServer, ScreenshotInfo, ScreenshotManager, SecurityManager,
+    SecurityPolicyService, SecurityStatus, ServerManager, VanillaLaunchPipeline,
+    VersionManifestService, WorldInfo, WorldManager, REMOTE_SECURITY_POLICY_URL,
 };
 use mcw_models::account::AccountSource;
 use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
@@ -63,8 +65,8 @@ use mcw_runtime::{
     FirstRunRecommendationService, GameWindowActivator, IssueReportBuilder, IssueReportInput,
     JavaDiagnostic, JavaDiagnosticsManager, JavaDiscovery, JavaInstallation, JavaProvisioner,
     JavaRecoveryDiagnostics, JvmPresetId, LanAgentManager, LaunchErrorPresenter, LogLine,
-    LogStream, McLogsClient, ProcessControl, SecurityAgentManager, SupervisedProcess,
-    DEFAULT_DISCORD_CLIENT_ID,
+    LogStream, McLogsClient, ProcessControl, SecurityAgentManager, SecurityAgentRuntimeState,
+    SupervisedProcess, DEFAULT_DISCORD_CLIENT_ID,
 };
 use mcw_storage::{
     default_root_candidates_for_kind, detect_default_launcher_roots, import_external_instances,
@@ -599,6 +601,12 @@ pub struct McwApp {
     security_rp_confirm_server: Option<String>,
     security_rp_confirm_servers: Vec<(usize, String, String)>,
     security_rp_confirm_mitigation_enabled: bool,
+    security_rp_confirm_headline: String,
+    security_rp_confirm_description: String,
+    resolved_security_policy: ResolvedSecurityPolicy,
+    security_policy_refreshing: bool,
+    security_sync_busy: bool,
+    security_assessments: HashMap<String, InstanceSecurityAssessment>,
     show_issue_report_window: bool,
     issue_report_summary: String,
     issue_report_markdown: String,
@@ -773,6 +781,7 @@ impl McwApp {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
 
+        let resolved_security_policy = SecurityPolicyService::load_cached(&paths);
         let mut app = Self {
             paths,
             runtime,
@@ -1092,6 +1101,12 @@ impl McwApp {
             security_rp_confirm_server: None,
             security_rp_confirm_servers: Vec::new(),
             security_rp_confirm_mitigation_enabled: true,
+            security_rp_confirm_headline: String::new(),
+            security_rp_confirm_description: String::new(),
+            resolved_security_policy,
+            security_policy_refreshing: false,
+            security_sync_busy: false,
+            security_assessments: HashMap::new(),
             show_issue_report_window: false,
             issue_report_summary: String::new(),
             issue_report_markdown: String::new(),

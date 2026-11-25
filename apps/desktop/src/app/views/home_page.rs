@@ -671,6 +671,46 @@ impl McwApp {
             });
         });
 
+        // Security assessment pill + clear human-readable description (never bare status alone)
+        let sec = self.assess_instance_security(&inst);
+        let (sec_bg, sec_fg) = match sec.status {
+            SecurityStatus::Protected => (
+                Color32::from_rgba_unmultiplied(p.accent.r(), p.accent.g(), p.accent.b(), 26),
+                p.accent,
+            ),
+            SecurityStatus::PartiallyProtected => (
+                Color32::from_rgba_unmultiplied(p.warning.r(), p.warning.g(), p.warning.b(), 28),
+                p.warning,
+            ),
+            SecurityStatus::Unprotected => (
+                Color32::from_rgba_unmultiplied(p.danger.r(), p.danger.g(), p.danger.b(), 30),
+                p.danger,
+            ),
+            SecurityStatus::Unknown => (p.surface, p.text_muted),
+        };
+        ui.add_space(6.0);
+        Frame::new()
+            .fill(sec_bg)
+            .stroke(Stroke::new(1.0_f32, sec_fg.gamma_multiply(0.75)))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(sec.status.display_title())
+                            .strong()
+                            .size(11.5)
+                            .color(sec_fg),
+                    );
+                    ui.label(
+                        RichText::new(format!("— {}", sec.description))
+                            .size(11.5)
+                            .color(p.text),
+                    );
+                });
+            });
+
         ui.add_space(12.0);
 
         // 2. Hero Action Bar: Play + `...` Actions menu + Quick Icon Buttons

@@ -260,6 +260,7 @@ impl McwApp {
                                             LauncherSettingsTab::Security => {
                                                 self.render_settings_security_tab(
                                                     ui,
+                                                    vp_ctx,
                                                     &mut prefs_dirty,
                                                     None,
                                                 );
@@ -318,6 +319,7 @@ impl McwApp {
                                         );
                                         matched += self.render_settings_security_tab(
                                             ui,
+                                            vp_ctx,
                                             &mut prefs_dirty,
                                             q,
                                         );
@@ -1601,6 +1603,7 @@ impl McwApp {
     fn render_settings_security_tab(
         &mut self,
         ui: &mut egui::Ui,
+        ctx: &egui::Context,
         prefs_dirty: &mut bool,
         search_q: Option<&str>,
     ) -> usize {
@@ -1614,6 +1617,124 @@ impl McwApp {
             ui.add_space(10.0);
         }
 
+        // Card 0: Security Policy + Mojang FreeType Library Sync & Selected Instance Assessment
+        let pol_title = "Mojang Library Sync & Signed Security Policy".to_string();
+        let pol_desc =
+            "Synchronizes verified FreeType 2.15.0+ libraries from Mojang manifests with SHA-1 verification and automatic rollback, governed by Ed25519-signed policy metadata."
+                .to_string();
+        if settings_card_matches(
+            search_q,
+            &[
+                &cat_title,
+                &pol_title,
+                &pol_desc,
+                "policy sync mojang freetype signature assessment protected",
+            ],
+        ) {
+            matched += 1;
+            if search_q.is_some() {
+                render_settings_search_badge(ui, p, &cat_title);
+            }
+            let policy_ver = self.resolved_security_policy.policy.policy_version.clone();
+            let policy_val = self.resolved_security_policy.validity.label();
+            let policy_detail = self.resolved_security_policy.detail.clone();
+            let selected_inst = self.selected_instance().cloned();
+            let sec_assess = selected_inst
+                .as_ref()
+                .map(|inst| self.assess_instance_security(inst));
+
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0_f32, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(&pol_title).strong().color(p.text));
+                    ui.add(
+                        egui::Label::new(RichText::new(&pol_desc).size(11.5).color(p.text_muted))
+                            .wrap(),
+                    );
+                    ui.add_space(6.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "Policy: {policy_ver} ({policy_val}) — {policy_detail}"
+                            ))
+                            .size(11.5)
+                            .color(p.text),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(4.0);
+                    if let (Some(inst), Some(assess)) =
+                        (selected_inst.as_ref(), sec_assess.as_ref())
+                    {
+                        let status_col = match assess.status {
+                            SecurityStatus::Protected => p.accent,
+                            SecurityStatus::PartiallyProtected => p.warning,
+                            SecurityStatus::Unprotected => p.danger,
+                            SecurityStatus::Unknown => p.text_muted,
+                        };
+                        ui.label(
+                            RichText::new(format!(
+                                "Selected Instance '{}': {}",
+                                inst.name, assess.headline
+                            ))
+                            .strong()
+                            .size(12.0)
+                            .color(status_col),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&assess.description)
+                                    .size(11.5)
+                                    .color(p.text_muted),
+                            )
+                            .wrap(),
+                        );
+                        if let Some(ref rec) = assess.recommended_action {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("Recommended: {rec}"))
+                                        .size(11.0)
+                                        .color(p.text),
+                                )
+                                .wrap(),
+                            );
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        let pol_lbl = if self.security_policy_refreshing {
+                            "Checking Signed Policy..."
+                        } else {
+                            "Check Signed Policy"
+                        };
+                        if ui
+                            .add_enabled(!self.security_policy_refreshing, Button::new(pol_lbl))
+                            .clicked()
+                        {
+                            self.start_refresh_security_policy(ctx);
+                        }
+                        if let Some(inst) = selected_inst {
+                            let sync_lbl = if self.security_sync_busy {
+                                "Syncing Mojang Libraries..."
+                            } else {
+                                "Sync Mojang Security Libraries"
+                            };
+                            if ui
+                                .add_enabled(!self.security_sync_busy, Button::new(sync_lbl))
+                                .clicked()
+                            {
+                                self.start_sync_security_libraries(&inst, ctx);
+                            }
+                        }
+                    });
+                });
+            ui.add_space(8.0);
+        }
+
         // Card 1: Minecraft2Shell Protection (FreeType SHZ native RCE)
         let m2s_title = self.t("security.minecraft2shell.title").to_string();
         let m2s_desc = self.t("security.minecraft2shell.description").to_string();
@@ -1625,13 +1746,17 @@ impl McwApp {
                 &m2s_title,
                 &m2s_desc,
                 &m2s_toggle,
-                "minecraft2shell freetype rce shz hinting security agent lwjgl",
+                "minecraft2shell freetype rce shz hinting security agent lwjgl uninstall",
             ],
         ) {
             matched += 1;
             if search_q.is_some() {
                 render_settings_search_badge(ui, p, &cat_title);
             }
+            let agent_cache_dir = self.paths.cache_root.join("security_agent");
+            let agent_installed = agent_cache_dir
+                .join(mcw_runtime::security_agent::SECURITY_AGENT_FILENAME)
+                .is_file();
             Frame::new()
                 .fill(p.surface)
                 .stroke(Stroke::new(
@@ -1654,18 +1779,38 @@ impl McwApp {
                         .wrap(),
                     );
                     ui.add_space(6.0);
-                    if ui
-                        .checkbox(&mut self.prefs.mitigate_minecraft2shell, &m2s_toggle)
-                        .changed()
-                    {
-                        *prefs_dirty = true;
-                    }
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .checkbox(&mut self.prefs.mitigate_minecraft2shell, &m2s_toggle)
+                            .changed()
+                        {
+                            *prefs_dirty = true;
+                            self.security_assessments.clear();
+                        }
+                        if agent_installed && ui.button("Uninstall Local Agent Cache").clicked() {
+                            match SecurityAgentManager::uninstall(&agent_cache_dir) {
+                                Ok(true) => {
+                                    self.notice_banner = Some((
+                                        "Removed local MCW Security Agent cache; re-extracts automatically if needed.".to_string(),
+                                        false,
+                                    ));
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    self.notice_banner = Some((
+                                        format!("Could not remove security agent cache: {e}"),
+                                        true,
+                                    ));
+                                }
+                            }
+                        }
+                    });
                     if !self.prefs.mitigate_minecraft2shell {
                         ui.add_space(4.0);
                         ui.add(
                             egui::Label::new(
                                 RichText::new(
-                                    "Warning: Disabling Minecraft2Shell protection exposes Minecraft 1.20.5+ clients to remote code execution via malicious server or resource-pack fonts.",
+                                    "Warning: Disabling Minecraft2Shell protection leaves unpatched Minecraft 1.20.5+ clients UNPROTECTED against remote code execution via malicious server or resource-pack fonts.",
                                 )
                                 .size(11.5)
                                 .color(p.danger),

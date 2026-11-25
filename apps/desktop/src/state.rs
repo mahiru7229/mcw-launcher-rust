@@ -1,6 +1,9 @@
 use eframe::egui::Context;
 use mcw_auth::{DeviceCodeResponse, StoredAccount};
-use mcw_minecraft::{OptiFineState, RepairReport, SavedServer, ScreenshotInfo, WorldInfo};
+use mcw_minecraft::{
+    InstanceSecurityAssessment, LibrarySyncOutcome, OptiFineState, RepairReport,
+    ResolvedSecurityPolicy, SavedServer, ScreenshotInfo, WorldInfo,
+};
 use mcw_models::progress::{ProgressEvent, ProgressSink};
 use mcw_mods::{ContentKind, ContentPackInfo, InstalledContentItem, ModInfo};
 use mcw_net::{ConnectivityStatus, TaskControl};
@@ -475,6 +478,14 @@ pub enum AppEvent {
         quick_play_server: Option<String>,
         risky_servers: Vec<(usize, String, String)>,
         mitigation_enabled: bool,
+        assessment_headline: String,
+        assessment_description: String,
+    },
+    SecurityPolicyRefreshed(ResolvedSecurityPolicy),
+    SecurityLibrarySyncFinished {
+        instance_id: String,
+        outcome: LibrarySyncOutcome,
+        assessment: Option<InstanceSecurityAssessment>,
     },
     PythonFolderPicked(Option<std::path::PathBuf>),
     PythonInspectionFinished {
