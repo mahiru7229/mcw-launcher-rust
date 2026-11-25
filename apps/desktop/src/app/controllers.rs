@@ -4542,6 +4542,28 @@ impl McwApp {
                         }
                     }
                 }
+                AppEvent::GalleryPreviewLoaded { url, result } => {
+                    if self.gallery_preview_url.as_deref() == Some(url.as_str()) {
+                        self.gallery_preview_loading = false;
+                        match result {
+                            Ok((size, rgba)) => {
+                                let color_img =
+                                    egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                                let tex = ctx.load_texture(
+                                    format!("mcw_gallery_preview_{url}"),
+                                    color_img,
+                                    egui::TextureOptions::LINEAR,
+                                );
+                                self.gallery_preview_texture = Some((url, tex));
+                                self.gallery_preview_error = None;
+                            }
+                            Err(err) => {
+                                self.gallery_preview_texture = None;
+                                self.gallery_preview_error = Some(err);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -8019,6 +8041,59 @@ impl McwApp {
                 None
             };
         self.browser_detail = payload;
+    }
+
+    pub(crate) fn open_gallery_preview(&mut self, url: String, ctx: &egui::Context) {
+        let trimmed = url.trim().to_string();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.gallery_preview_url = Some(trimmed.clone());
+        self.gallery_preview_error = None;
+        if self
+            .gallery_preview_texture
+            .as_ref()
+            .is_some_and(|(u, _)| u == &trimmed)
+        {
+            self.gallery_preview_loading = false;
+            return;
+        }
+        self.gallery_preview_texture = None;
+        self.gallery_preview_loading = true;
+        let tx = self.tx.clone();
+        let ctx_c = ctx.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let http = reqwest::Client::builder()
+                    .user_agent(mcw_models::user_agent())
+                    .timeout(Duration::from_secs(15))
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let resp = http.get(&trimmed).send().await.map_err(|e| e.to_string())?;
+                if !resp.status().is_success() {
+                    return Err(format!("HTTP {}", resp.status()));
+                }
+                let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+                let decoded = tokio::task::spawn_blocking(move || {
+                    let img = image::load_from_memory(&bytes)
+                        .map_err(|e| format!("Invalid image data: {e}"))?;
+                    let thumb = img.thumbnail(1280, 960).to_rgba8();
+                    let size = [thumb.width() as usize, thumb.height() as usize];
+                    Ok::<_, String>((size, thumb.into_raw()))
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                Ok::<_, String>(decoded)
+            }
+            .await;
+
+            let _ = tx.send(AppEvent::GalleryPreviewLoaded {
+                url: trimmed,
+                result: res,
+            });
+            ctx_c.request_repaint();
+        });
     }
 }
 

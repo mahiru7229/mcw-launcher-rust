@@ -2476,6 +2476,7 @@ impl McwApp {
         self.render_mod_cart_modal(ctx);
         self.render_universal_import_modal(ctx);
         self.render_color_picker_modal(ctx);
+        self.render_gallery_preview_modal(ctx);
     }
 
     pub(crate) fn render_color_picker_modal(&mut self, ctx: &egui::Context) {
@@ -4652,6 +4653,88 @@ impl McwApp {
                     self.notice_banner = Some((format!("Delete failed: {e}"), true));
                 }
             }
+        }
+    }
+
+    pub(crate) fn render_gallery_preview_modal(&mut self, ctx: &egui::Context) {
+        let Some(url) = self.gallery_preview_url.clone() else {
+            return;
+        };
+        let p = self.palette;
+        let notice = self.modal_notice_for("mcw_modal_gallery_preview");
+        let mut close = false;
+
+        let (keep_open, dismiss_notice) = render_in_app_modal(
+            ctx,
+            "mcw_modal_gallery_preview",
+            "Image Preview",
+            [780.0, 580.0],
+            [520.0, 400.0],
+            p,
+            notice.as_ref(),
+            |ui| {
+                let preview_h = 420.0_f32.min((ui.available_height() - 48.0).max(200.0));
+                let max_size = Vec2::new(ui.available_width().max(300.0), preview_h);
+                if self.gallery_preview_loading {
+                    ui.allocate_ui_with_layout(
+                        max_size,
+                        Layout::centered_and_justified(egui::Direction::LeftToRight),
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(
+                                    RichText::new("Loading full image preview...")
+                                        .color(p.text_muted),
+                                );
+                            });
+                        },
+                    );
+                } else if let Some((_, ref tex)) = self.gallery_preview_texture {
+                    ui.centered_and_justified(|ui| {
+                        ui.add(
+                            egui::Image::new(tex)
+                                .fit_to_exact_size(max_size)
+                                .corner_radius(CornerRadius::same(8)),
+                        );
+                    });
+                } else if let Some(ref err) = self.gallery_preview_error {
+                    ui.label(
+                        RichText::new(format!("Unable to load image preview: {err}"))
+                            .color(p.warning),
+                    );
+                } else {
+                    ui.label(RichText::new("No preview loaded.").color(p.text_muted));
+                }
+
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    let open_btn = Button::new(
+                        RichText::new("Open in Browser")
+                            .color(p.accent_text)
+                            .strong(),
+                    )
+                    .fill(p.accent);
+                    if ui.add(open_btn).clicked() {
+                        open_external(&url);
+                    }
+                    if ui.button("Copy Image URL").clicked() {
+                        ctx.copy_text(url.clone());
+                        self.notice_banner = Some(("Copied image URL.".to_string(), false));
+                    }
+                    if ui.button(self.t("common.close")).clicked() {
+                        close = true;
+                    }
+                });
+            },
+        );
+        if dismiss_notice {
+            self.notice_banner = None;
+        }
+        if !keep_open || close {
+            self.gallery_preview_url = None;
+            self.gallery_preview_loading = false;
+            self.gallery_preview_error = None;
+            self.gallery_preview_texture = None;
         }
     }
 }

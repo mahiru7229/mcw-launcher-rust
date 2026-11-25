@@ -732,7 +732,13 @@ pub fn strip_html_to_preview(html: &str, max_chars: usize) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
-        .replace("&nbsp;", " ");
+        .replace("&nbsp;", " ")
+        .replace("&ensp;", " ")
+        .replace("&emsp;", " ")
+        .replace("&thinsp;", " ")
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–")
+        .replace("&hellip;", "...");
 
     let mut clean_lines = Vec::new();
     let mut prev_blank = true;

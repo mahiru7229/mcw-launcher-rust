@@ -423,6 +423,10 @@ pub struct McwApp {
     screenshot_preview_path: Option<PathBuf>,
     screenshot_preview_texture: Option<(PathBuf, egui::TextureHandle)>,
     screenshot_preview_rename_input: String,
+    gallery_preview_url: Option<String>,
+    gallery_preview_loading: bool,
+    gallery_preview_error: Option<String>,
+    gallery_preview_texture: Option<(String, egui::TextureHandle)>,
     edit_instance_notes_text: String,
     instance_notes_baseline: String,
     mod_search_query: String,
@@ -933,6 +937,10 @@ impl McwApp {
             screenshot_preview_path: None,
             screenshot_preview_texture: None,
             screenshot_preview_rename_input: String::new(),
+            gallery_preview_url: None,
+            gallery_preview_loading: false,
+            gallery_preview_error: None,
+            gallery_preview_texture: None,
             edit_instance_notes_text: String::new(),
             instance_notes_baseline: String::new(),
             mod_search_query: String::new(),
@@ -1269,6 +1277,7 @@ impl McwApp {
             || self.show_python_import_window
             || self.show_universal_import_modal
             || self.show_color_picker_modal
+            || self.gallery_preview_url.is_some()
             || (self.show_junk_cleanup_modal && self.junk_scan_report.is_some())
     }
 
@@ -1304,6 +1313,8 @@ impl McwApp {
             Some("mcw_modal_delete_world")
         } else if self.screenshot_preview_path.is_some() {
             Some("mcw_modal_screenshot_preview")
+        } else if self.gallery_preview_url.is_some() {
+            Some("mcw_modal_gallery_preview")
         } else if self.show_rename_modal && has_inst {
             Some("mcw_modal_rename_instance")
         } else if self.show_group_tags_modal && has_inst {

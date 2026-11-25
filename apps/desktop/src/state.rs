@@ -524,6 +524,10 @@ pub enum AppEvent {
         key: String,
         result: Result<BrowserDetailPayload, String>,
     },
+    GalleryPreviewLoaded {
+        url: String,
+        result: Result<([usize; 2], Vec<u8>), String>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]

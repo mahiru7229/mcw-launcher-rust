@@ -74,6 +74,7 @@ struct ContentBrowserActions {
     clear_cart: bool,
     open_detail: Option<String>,
     close_detail: bool,
+    open_gallery_url: Option<String>,
 }
 
 fn cart_item_for_entry(entry: &BrowserEntry) -> Option<ModCartItem> {
@@ -204,6 +205,7 @@ impl McwApp {
         let mut clear_cart = false;
         let mut open_detail: Option<String> = None;
         let mut close_detail = false;
+        let mut open_gallery_url: Option<String> = None;
 
         // Row 1: Title + Subtitle (left) and Back button (right for inline instance tab)
         ui.horizontal_wrapped(|ui| {
@@ -815,7 +817,7 @@ impl McwApp {
                                                                     ui.horizontal(|ui| {
                                                                         for g_url in &d.gallery_urls
                                                                         {
-                                                                            Frame::new()
+                                                                            let gal_resp = Frame::new()
                                                                                 .fill(p.elevated)
                                                                                 .stroke(Stroke::new(
                                                                                     1.0_f32,
@@ -836,6 +838,23 @@ impl McwApp {
                                                                                         108.0,
                                                                                     );
                                                                                 });
+                                                                            if gal_resp
+                                                                                .response
+                                                                                .interact(
+                                                                                    egui::Sense::click(),
+                                                                                )
+                                                                                .on_hover_text(
+                                                                                    "Click to preview image",
+                                                                                )
+                                                                                .on_hover_cursor(
+                                                                                    egui::CursorIcon::PointingHand,
+                                                                                )
+                                                                                .clicked()
+                                                                            {
+                                                                                open_gallery_url = Some(
+                                                                                    g_url.clone(),
+                                                                                );
+                                                                            }
                                                                             ui.add_space(6.0);
                                                                         }
                                                                     });
@@ -951,8 +970,9 @@ impl McwApp {
                                                                 Vec2::new(text_w, 42.0),
                                                                 Layout::top_down(Align::Min),
                                                                 |ui| {
+                                                                    ui.set_width(text_w);
                                                                     ui.set_max_width(text_w);
-                                                                ui.horizontal(|ui| {
+                                                                    ui.horizontal(|ui| {
                                                                     ui.add(
                                                                         egui::Label::new(
                                                                             RichText::new(
@@ -981,8 +1001,7 @@ impl McwApp {
                                                                     }
                                                                 });
                                                                 if !entry.summary.is_empty() {
-                                                                    ui.add_sized(
-                                                                        [text_w, 16.0],
+                                                                    ui.add(
                                                                         egui::Label::new(
                                                                             RichText::new(
                                                                                 &entry.summary,
@@ -1426,6 +1445,7 @@ impl McwApp {
             clear_cart,
             open_detail,
             close_detail,
+            open_gallery_url,
         }
     }
 
@@ -1439,6 +1459,9 @@ impl McwApp {
         }
         if let Some(ref detail_key) = actions.open_detail {
             self.open_browser_inline_detail(detail_key, ctx);
+        }
+        if let Some(gal_url) = actions.open_gallery_url {
+            self.open_gallery_preview(gal_url, ctx);
         }
         if let Some(item) = actions.toggle_cart {
             self.toggle_mod_cart_item(item);
@@ -1804,6 +1827,235 @@ impl McwApp {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MdInlineSpan {
+    Text(String),
+    Bold(String),
+    Italic(String),
+    Code(String),
+    Link { label: String, url: String },
+}
+
+fn parse_markdown_inline_tokens(input: &str) -> Vec<MdInlineSpan> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut plain_buf = String::new();
+    let flush_plain = |buf: &mut String, dest: &mut Vec<MdInlineSpan>| {
+        if !buf.is_empty() {
+            dest.push(MdInlineSpan::Text(std::mem::take(buf)));
+        }
+    };
+
+    while i < input.len() {
+        let rest = &input[i..];
+
+        // Skip inline markdown image syntax ![alt](url)
+        if let Some(after_bang) = rest.strip_prefix("![") {
+            if let Some((alt, after_alt)) = after_bang.split_once(']') {
+                if let Some(after_paren) = after_alt.strip_prefix('(') {
+                    if let Some((url_part, _)) = after_paren.split_once(')') {
+                        i += 2 + alt.len() + 1 + 1 + url_part.len() + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Inline link [label](url)
+        if let Some(after_open) = rest.strip_prefix('[') {
+            if let Some((label, after_label)) = after_open.split_once(']') {
+                if let Some(after_paren) = after_label.strip_prefix('(') {
+                    if let Some((raw_url, _)) = after_paren.split_once(')') {
+                        let url = raw_url.trim();
+                        if !label.is_empty()
+                            && !url.is_empty()
+                            && !url.contains(char::is_whitespace)
+                        {
+                            flush_plain(&mut plain_buf, &mut out);
+                            out.push(MdInlineSpan::Link {
+                                label: label.to_string(),
+                                url: url.to_string(),
+                            });
+                            i += 1 + label.len() + 1 + 1 + raw_url.len() + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Inline bold **text**
+        if let Some(after_bold) = rest.strip_prefix("**") {
+            if let Some((inner, _)) = after_bold.split_once("**") {
+                if !inner.is_empty() {
+                    flush_plain(&mut plain_buf, &mut out);
+                    out.push(MdInlineSpan::Bold(inner.to_string()));
+                    i += 2 + inner.len() + 2;
+                    continue;
+                }
+            }
+        }
+
+        // Inline code `text`
+        if let Some(after_tick) = rest.strip_prefix('`') {
+            if let Some((inner, _)) = after_tick.split_once('`') {
+                if !inner.is_empty() {
+                    flush_plain(&mut plain_buf, &mut out);
+                    out.push(MdInlineSpan::Code(inner.to_string()));
+                    i += 1 + inner.len() + 1;
+                    continue;
+                }
+            }
+        }
+
+        // Inline italic *text*
+        if !rest.starts_with("**") {
+            if let Some(after_star) = rest.strip_prefix('*') {
+                if let Some((inner, _)) = after_star.split_once('*') {
+                    if !inner.is_empty() && !inner.starts_with(' ') {
+                        flush_plain(&mut plain_buf, &mut out);
+                        out.push(MdInlineSpan::Italic(inner.to_string()));
+                        i += 1 + inner.len() + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        plain_buf.push(ch);
+        i += ch.len_utf8();
+    }
+
+    flush_plain(&mut plain_buf, &mut out);
+    out
+}
+
+fn render_markdown_inline_line(
+    ui: &mut egui::Ui,
+    line: &str,
+    p: ThemePalette,
+    font_size: f32,
+    base_color: Color32,
+    force_bold: bool,
+) {
+    let spans = parse_markdown_inline_tokens(line);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for span in spans {
+            match span {
+                MdInlineSpan::Text(s) => {
+                    let parts: Vec<&str> = s.split(' ').collect();
+                    for (idx, word) in parts.iter().enumerate() {
+                        if !word.is_empty() {
+                            let mut rt = RichText::new(*word).size(font_size).color(base_color);
+                            if force_bold {
+                                rt = rt.strong();
+                            }
+                            ui.label(rt);
+                        }
+                        if idx + 1 < parts.len() {
+                            ui.label(RichText::new(" ").size(font_size));
+                        }
+                    }
+                }
+                MdInlineSpan::Bold(s) => {
+                    let parts: Vec<&str> = s.split(' ').collect();
+                    for (idx, word) in parts.iter().enumerate() {
+                        if !word.is_empty() {
+                            ui.label(
+                                RichText::new(*word)
+                                    .strong()
+                                    .size(font_size)
+                                    .color(base_color),
+                            );
+                        }
+                        if idx + 1 < parts.len() {
+                            ui.label(RichText::new(" ").size(font_size));
+                        }
+                    }
+                }
+                MdInlineSpan::Italic(s) => {
+                    let parts: Vec<&str> = s.split(' ').collect();
+                    for (idx, word) in parts.iter().enumerate() {
+                        if !word.is_empty() {
+                            ui.label(
+                                RichText::new(*word)
+                                    .italics()
+                                    .size(font_size)
+                                    .color(base_color),
+                            );
+                        }
+                        if idx + 1 < parts.len() {
+                            ui.label(RichText::new(" ").size(font_size));
+                        }
+                    }
+                }
+                MdInlineSpan::Code(s) => {
+                    Frame::new()
+                        .fill(p.elevated)
+                        .stroke(Stroke::new(1.0_f32, p.border))
+                        .corner_radius(CornerRadius::same(4))
+                        .inner_margin(Margin::symmetric(5, 1))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(s)
+                                    .monospace()
+                                    .size((font_size - 0.5).max(10.0))
+                                    .color(p.accent),
+                            );
+                        });
+                }
+                MdInlineSpan::Link { label, url } => {
+                    let parts: Vec<&str> = label.split(' ').collect();
+                    let mut clicked = false;
+                    for (idx, word) in parts.iter().enumerate() {
+                        if !word.is_empty() {
+                            let resp = ui
+                                .add(
+                                    egui::Label::new(
+                                        RichText::new(*word)
+                                            .size(font_size)
+                                            .color(p.accent)
+                                            .underline(),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text(&url)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if resp.clicked() {
+                                clicked = true;
+                            }
+                        }
+                        if idx + 1 < parts.len() {
+                            let resp = ui
+                                .add(
+                                    egui::Label::new(
+                                        RichText::new(" ")
+                                            .size(font_size)
+                                            .color(p.accent)
+                                            .underline(),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text(&url)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if resp.clicked() {
+                                clicked = true;
+                            }
+                        }
+                    }
+                    if clicked {
+                        open_external(&url);
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn render_project_overview_text(ui: &mut egui::Ui, overview: &str, p: ThemePalette) {
     for raw_line in overview.lines() {
         let line = raw_line.trim();
@@ -1813,21 +2065,61 @@ fn render_project_overview_text(ui: &mut egui::Ui, overview: &str, p: ThemePalet
         }
         if let Some(h) = line.strip_prefix("### ") {
             ui.add_space(3.0);
-            ui.add(egui::Label::new(RichText::new(h).strong().size(13.0).color(p.text)).wrap());
+            render_markdown_inline_line(ui, h, p, 13.0, p.text, true);
         } else if let Some(h) = line.strip_prefix("## ") {
             ui.add_space(4.0);
-            ui.add(egui::Label::new(RichText::new(h).strong().size(14.5).color(p.accent)).wrap());
+            render_markdown_inline_line(ui, h, p, 14.5, p.accent, true);
         } else if let Some(h) = line.strip_prefix("# ") {
             ui.add_space(4.0);
-            ui.add(egui::Label::new(RichText::new(h).strong().size(15.5).color(p.text)).wrap());
+            render_markdown_inline_line(ui, h, p, 15.5, p.text, true);
+        } else if let Some(quote) = line.strip_prefix("> ") {
+            Frame::new()
+                .fill(p.elevated)
+                .stroke(Stroke::new(1.0_f32, p.accent))
+                .corner_radius(CornerRadius::same(6))
+                .inner_margin(Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    render_markdown_inline_line(ui, quote, p, 12.0, p.text_muted, false);
+                });
         } else if let Some(bullet) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
             ui.horizontal_top(|ui| {
                 ui.add_space(6.0);
                 ui.label(RichText::new("•").color(p.accent));
-                ui.add(egui::Label::new(RichText::new(bullet).size(12.0).color(p.text)).wrap());
+                ui.add_space(4.0);
+                render_markdown_inline_line(ui, bullet, p, 12.0, p.text, false);
             });
         } else {
-            ui.add(egui::Label::new(RichText::new(line).size(12.0).color(p.text)).wrap());
+            render_markdown_inline_line(ui, line, p, 12.0, p.text, false);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_markdown_inline_tokens, MdInlineSpan};
+
+    #[test]
+    fn parses_markdown_inline_links_bold_italic_and_code() {
+        let spans = parse_markdown_inline_tokens(
+            "Visit [the Fabric Discord server](https://discord.gg/v6v4pMv), check **Sodium** & *Iris* with `v1.3.0`.",
+        );
+        assert_eq!(
+            spans,
+            vec![
+                MdInlineSpan::Text("Visit ".to_string()),
+                MdInlineSpan::Link {
+                    label: "the Fabric Discord server".to_string(),
+                    url: "https://discord.gg/v6v4pMv".to_string(),
+                },
+                MdInlineSpan::Text(", check ".to_string()),
+                MdInlineSpan::Bold("Sodium".to_string()),
+                MdInlineSpan::Text(" & ".to_string()),
+                MdInlineSpan::Italic("Iris".to_string()),
+                MdInlineSpan::Text(" with ".to_string()),
+                MdInlineSpan::Code("v1.3.0".to_string()),
+                MdInlineSpan::Text(".".to_string()),
+            ]
+        );
     }
 }
