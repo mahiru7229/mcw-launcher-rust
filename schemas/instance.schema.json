@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/mahiru7229/mcw-launcher-rust/main/schemas/instance.schema.json",
+  "title": "MCW Launcher Instance Metadata",
+  "description": "Schema for instances/<id>/instance.json in MCW Launcher: Rust Edition.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["instance_id", "name", "version_id"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema URI for editor autocomplete and validation."
+    },
+    "instance_id": { "type": "string" },
+    "name": { "type": "string" },
+    "version_id": { "type": "string" },
+    "mod_loader": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "icon": { "type": "string" },
+    "icon_origin": { "type": "string" },
+    "last_played": { "type": "string" },
+    "last_exit_code": { "type": ["integer", "null"] },
+    "last_launch_crashed": { "type": "boolean" },
+    "last_launch_state": { "type": "string" },
+    "favorite": { "type": "boolean" },
+    "group": { "type": "string" },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "total_playtime_seconds": { "type": "integer", "minimum": 0 }
+  }
+}

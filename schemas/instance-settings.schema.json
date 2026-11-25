@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/mahiru7229/mcw-launcher-rust/main/schemas/instance-settings.schema.json",
+  "title": "MCW Launcher Instance Settings",
+  "description": "Schema for instances/<id>/settings.json in MCW Launcher: Rust Edition.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema URI for editor autocomplete and validation."
+    },
+    "java_path": { "type": ["string", "null"] },
+    "min_memory": { "type": "integer", "minimum": 128 },
+    "max_memory": { "type": "integer", "minimum": 256 },
+    "jvm_arguments": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "game_arguments": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "offline_multiplayer_enabled": { "type": "boolean" },
+    "lan_auth_mode": {
+      "type": "string",
+      "enum": ["microsoft_only", "private_offline", "friends"]
+    },
+    "lan_connection_provider": { "type": "string" },
+    "width": { "type": "integer", "minimum": 320 },
+    "height": { "type": "integer", "minimum": 240 },
+    "fullscreen": { "type": "boolean" },
+    "modrinth_failure_policy": { "type": "string", "enum": ["inherit", "block", "warn", "ignore"] },
+    "curseforge_failure_policy": { "type": "string", "enum": ["inherit", "block", "warn", "ignore"] },
+    "forge_preflight_always_allow": { "type": "boolean" },
+    "disable_launch_checking": { "type": ["boolean", "null"] },
+    "disable_mod_repair_and_updates": { "type": ["boolean", "null"] },
+    "pre_launch_command": { "type": "string" },
+    "post_exit_command": { "type": "string" },
+    "wrapper_command": { "type": "string" },
+    "env_vars": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "string" }
+      }
+    },
+    "enable_gamemode": { "type": "boolean" },
+    "enable_mangohud": { "type": "boolean" },
+    "preferred_account_uuid": { "type": ["string", "null"] },
+    "trusted_resource_pack_servers": {
+      "type": "array",
+      "description": "Normalized server addresses trusted by the user to auto-accept server resource packs without pre-launch prompts.",
+      "items": { "type": "string" }
+    }
+  }
+}

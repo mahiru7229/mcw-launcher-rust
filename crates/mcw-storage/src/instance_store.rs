@@ -734,4 +734,29 @@ mod tests {
             .join("saves/world1/level.dat")
             .is_file());
     }
+
+    #[test]
+    fn instance_and_settings_default_and_backfill_schema_field() {
+        let inst = Instance::new("demo", "Demo", "1.21.4");
+        let inst_json = serde_json::to_string_pretty(&inst).unwrap();
+        assert!(inst_json.contains("\"$schema\":"));
+        assert!(inst_json.contains(mcw_models::instance::INSTANCE_SCHEMA_URL));
+
+        let legacy_inst: Instance =
+            serde_json::from_str(r#"{"instance_id":"old","name":"Old","version_id":"1.20.1"}"#)
+                .unwrap();
+        assert_eq!(
+            legacy_inst.schema,
+            mcw_models::instance::INSTANCE_SCHEMA_URL
+        );
+
+        let legacy_settings: InstanceSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            legacy_settings.schema,
+            mcw_models::instance::INSTANCE_SETTINGS_SCHEMA_URL
+        );
+        let settings_json = serde_json::to_string_pretty(&legacy_settings).unwrap();
+        assert!(settings_json.contains("\"$schema\":"));
+        assert!(settings_json.contains(mcw_models::instance::INSTANCE_SETTINGS_SCHEMA_URL));
+    }
 }

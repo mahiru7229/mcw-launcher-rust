@@ -229,10 +229,19 @@ impl LanguageManager {
     }
 }
 
+pub const LAUNCHER_SETTINGS_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/mahiru7229/mcw-launcher-rust/main/schemas/launcher-settings.schema.json";
+
+fn default_launcher_settings_schema() -> String {
+    LAUNCHER_SETTINGS_SCHEMA_URL.to_string()
+}
+
 /// Persisted global launcher preferences (`config/launcher_settings.json`),
 /// mirroring MCW Launcher Python's `LauncherSettingsManager` schema (only active Rust Edition options).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LauncherPrefs {
+    #[serde(rename = "$schema", default = "default_launcher_settings_schema")]
+    pub schema: String,
     #[serde(default = "default_theme")]
     pub theme: String,
     #[serde(default = "default_lang")]
@@ -343,6 +352,10 @@ pub struct LauncherPrefs {
     pub proxy_password: String,
     #[serde(default = "default_true")]
     pub auto_open_logs_on_crash: bool,
+    #[serde(default = "default_true")]
+    pub mitigate_minecraft2shell: bool,
+    #[serde(default = "default_true")]
+    pub warn_auto_accept_server_resource_packs: bool,
 }
 
 fn default_proxy_mode() -> String {
@@ -452,6 +465,7 @@ fn default_window_height() -> f32 {
 impl Default for LauncherPrefs {
     fn default() -> Self {
         Self {
+            schema: default_launcher_settings_schema(),
             theme: default_theme(),
             language: default_lang(),
             show_snapshots: false,
@@ -507,6 +521,8 @@ impl Default for LauncherPrefs {
             proxy_username: String::new(),
             proxy_password: String::new(),
             auto_open_logs_on_crash: true,
+            mitigate_minecraft2shell: true,
+            warn_auto_accept_server_resource_packs: true,
         }
     }
 }
@@ -514,11 +530,23 @@ impl Default for LauncherPrefs {
 impl LauncherPrefs {
     pub fn load(paths: &LauncherPaths) -> Self {
         let path = paths.config_root.join("launcher_settings.json");
-        if let Some(mut loaded) = fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Self>(&raw).ok())
-        {
-            let mut needs_save = false;
+        if let Some((mut loaded, missing_schema)) = fs::read_to_string(&path).ok().and_then(|raw| {
+            let mut prefs = serde_json::from_str::<Self>(&raw).ok()?;
+            let missing_schema = serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| {
+                    v.get("$schema")
+                        .and_then(|s| s.as_str())
+                        .map(str::trim)
+                        .map(str::to_string)
+                })
+                .is_none_or(|s| s.is_empty());
+            if missing_schema {
+                prefs.schema = default_launcher_settings_schema();
+            }
+            Some((prefs, missing_schema))
+        }) {
+            let mut needs_save = missing_schema;
             if !loaded.auto_update_v110_migrated {
                 loaded.auto_check_updates = true;
                 loaded.auto_update_v110_migrated = true;
@@ -648,5 +676,24 @@ mod tests {
         assert_eq!(reloaded.update_channel, "beta");
         assert_eq!(reloaded.custom_font_family, "Segoe UI");
         assert!(reloaded.v121_defaults_migrated);
+    }
+
+    #[test]
+    fn launcher_prefs_backfills_schema_and_defaults_security_flags() {
+        let tmp = tempdir().unwrap();
+        let paths = LauncherPaths::portable(tmp.path());
+        paths.initialize().unwrap();
+
+        let legacy_path = paths.config_root.join("launcher_settings.json");
+        fs::write(&legacy_path, r#"{"theme": "emerald"}"#).unwrap();
+
+        let loaded = LauncherPrefs::load(&paths);
+        assert_eq!(loaded.schema, LAUNCHER_SETTINGS_SCHEMA_URL);
+        assert!(loaded.mitigate_minecraft2shell);
+        assert!(loaded.warn_auto_accept_server_resource_packs);
+
+        let persisted = fs::read_to_string(&legacy_path).unwrap();
+        assert!(persisted.contains("\"$schema\""));
+        assert!(persisted.contains(LAUNCHER_SETTINGS_SCHEMA_URL));
     }
 }

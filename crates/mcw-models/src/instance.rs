@@ -26,8 +26,23 @@ impl Default for ModLoader {
     }
 }
 
+pub const INSTANCE_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/mahiru7229/mcw-launcher-rust/main/schemas/instance.schema.json";
+pub const INSTANCE_SETTINGS_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/mahiru7229/mcw-launcher-rust/main/schemas/instance-settings.schema.json";
+
+fn default_instance_schema() -> String {
+    INSTANCE_SCHEMA_URL.to_string()
+}
+
+fn default_instance_settings_schema() -> String {
+    INSTANCE_SETTINGS_SCHEMA_URL.to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Instance {
+    #[serde(rename = "$schema", default = "default_instance_schema")]
+    pub schema: String,
     pub instance_id: String,
     pub name: String,
     pub version_id: String,
@@ -70,6 +85,7 @@ impl Instance {
         version_id: impl Into<String>,
     ) -> Self {
         Self {
+            schema: default_instance_schema(),
             instance_id: instance_id.into(),
             name: name.into(),
             version_id: version_id.into(),
@@ -90,6 +106,8 @@ impl Instance {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceSettings {
+    #[serde(rename = "$schema", default = "default_instance_settings_schema")]
+    pub schema: String,
     #[serde(default)]
     pub java_path: Option<PathBuf>,
     #[serde(default = "default_min_memory")]
@@ -136,6 +154,8 @@ pub struct InstanceSettings {
     pub enable_mangohud: bool,
     #[serde(default)]
     pub preferred_account_uuid: Option<String>,
+    #[serde(default)]
+    pub trusted_resource_pack_servers: Vec<String>,
 }
 
 impl InstanceSettings {
@@ -180,6 +200,7 @@ fn default_height() -> u32 {
 impl Default for InstanceSettings {
     fn default() -> Self {
         Self {
+            schema: default_instance_settings_schema(),
             java_path: None,
             min_memory: default_min_memory(),
             max_memory: default_max_memory(),
@@ -203,6 +224,7 @@ impl Default for InstanceSettings {
             enable_gamemode: false,
             enable_mangohud: false,
             preferred_account_uuid: None,
+            trusted_resource_pack_servers: Vec::new(),
         }
     }
 }
