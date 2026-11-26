@@ -2,6 +2,28 @@
 
 All notable changes to **MCW Launcher: Rust Edition** are documented in this file.
 
+## [1.3.2] - 2026-11-26
+
+### Added
+- **3D Skin & Cape Manager (`mcw-auth`, `mcw-desktop`)**:
+  - Added a pure-Rust Z-buffered 3D character & cape software rasterizer (`render_skin_3d_rgba`) supporting mouse-drag yaw/pitch rotation, outer overlay layer toggles (`Hat`, `Jacket`, `Sleeves`, `Pants`), Classic (4px arms) vs Slim (3px arms), modern `64x64` and legacy `64x32` skin layouts, and active cape previews.
+  - Added an **In-App Centered Modal** (`3D Skin & Cape Manager`) accessible from the **Accounts** modal, backed by `<app_root>/skins/` local skin library management (import/list/delete PNGs) and full **Mojang Profile API** integration (`fetch_full_profile`, multipart `upload_skin`, `set_active_cape`, `hide_cape`) for Microsoft accounts.
+- **Inline World Data Packs Manager (`mcw-minecraft`, `mcw-desktop`)**:
+  - Added per-world **`Data Packs`** management directly inside the `Worlds` tab with `← Back to Worlds`, **`+ Add Data Pack`** (opening the locked inline Data Packs browser targeting the selected world), **Import Local `.zip`...**, **Open `datapacks/` Folder**, sliding enable/disable switches (`.zip` <-> `.zip.disabled`), and delete actions.
+- **Prism-Inspired UX & Navigation Conveniences (`mcw-minecraft`, `mcw-desktop`)**:
+  - Added a crisp, scannable **QR Code** (`qrcode`) alongside the Microsoft Device Login code & verification URL in both the Accounts modal and First-Run wizard.
+  - Added direct desktop **Shortcut** creation buttons on **World** and **Server** cards (for Minecraft `>= 1.20` Quick Play) generating `--launch <id> --world <folder>` and `--server <ip>` shortcuts.
+  - Enhanced global **Drag & Drop** handling with a translucent drop-target overlay and automatic routing for `.mrpack` / `.mcwpack` modpacks, `.jar` mods, `.png` (`64x64` / `64x32`) skins into `<app_root>/skins/`, and smart `.zip` inspection (`ZipContentKind`: worlds, data packs, shaders, resource packs, modpacks).
+
+### Improved & Restored
+- **MCW Security Bar Inline Verification & Windows Signing Infrastructure (`mcw-minecraft`, `mcw-desktop`, `.github/workflows/release.yml`, `docs/security/WINDOWS_SIGNING.md`)**:
+  - Added an inline **`Sync & Verify`** button directly on the Workspace Security Status bar (auto-hidden when `PROTECTED`) and removed duplicated status label prefixes so the full security description reads cleanly.
+  - Added Windows PE `VERSIONINFO` metadata in `apps/desktop/build.rs` and `apps/updater/build.rs`, generated `SHA256SUMS.txt` release manifests, wired optional SignPath Foundation code-signing in `.github/workflows/release.yml`, and documented Windows SmartScreen / Authenticode trust preparation in `docs/security/WINDOWS_SIGNING.md`.
+- **Transactional Repair Center Rebuild (`mcw-minecraft`, `mcw-desktop`)**:
+  - Rebuilt `RepairService::repair_instance` with transactional backup/rollback staging across Vanilla, Fabric, Quilt, Forge, and NeoForge—re-verifying client JARs, libraries, and assets, clearing `last_launch_crashed`, and strictly preserving `saves/`, `mods/`, and `options.txt`—alongside the restored footer **`Repair`** button and live progress bar inside *Repair Center & Health*.
+
+---
+
 ## [1.3.1] - 2026-11-25
 
 ### Security
