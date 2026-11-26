@@ -3867,23 +3867,36 @@ impl McwApp {
                     instance_id,
                     report,
                 } => {
-                    self.launch_states.insert(instance_id, LaunchState::Idle);
+                    self.launch_states
+                        .insert(instance_id.clone(), LaunchState::Idle);
+                    self.reload_instances();
                     match report {
                         Ok(rep) => {
-                            self.push_global_log(format!(
-                                "[REPAIR] Completed for '{}' ({}); client repaired: {}.",
-                                rep.instance_id, rep.version_id, rep.client_repaired
-                            ));
-                            self.notice_banner = Some((
-                                format!(
-                                    "Repair complete for '{}' ({}). Client repaired: {}.",
-                                    rep.instance_id, rep.version_id, rep.client_repaired
-                                ),
-                                false,
-                            ));
+                            let summary = format!(
+                                "Repair complete for '{}' ({}) — metadata repaired: {}, client JAR repaired: {}, crash flag cleared: {}. Saves, mods, and options.txt preserved.",
+                                rep.instance_id,
+                                rep.version_id,
+                                rep.version_json_repaired,
+                                rep.client_repaired,
+                                rep.crash_flag_cleared
+                            );
+                            self.push_global_log(format!("[REPAIR] {summary}"));
+                            self.notice_banner = Some((summary, false));
+                            if self.show_repair_center_window
+                                && self.selected_instance_id.as_deref()
+                                    == Some(instance_id.as_str())
+                            {
+                                self.open_repair_center(&instance_id, ctx);
+                            }
                         }
                         Err(err) => {
-                            self.notice_banner = Some((format!("Repair failed: {err}"), true));
+                            self.push_global_log(format!(
+                                "[REPAIR][WARN] Repair rolled back for '{instance_id}': {err}"
+                            ));
+                            self.notice_banner = Some((
+                                format!("Repair failed (original files restored): {err}"),
+                                true,
+                            ));
                         }
                     }
                 }

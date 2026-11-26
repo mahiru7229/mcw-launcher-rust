@@ -13,6 +13,12 @@ impl McwApp {
         let p = self.palette;
         let mut open = self.show_repair_center_window;
         let mut rescan_clicked = false;
+        let mut repair_clicked = false;
+        let is_busy = self.is_instance_busy(&inst.instance_id);
+        let repair_progress = match self.launch_states.get(&inst.instance_id) {
+            Some(LaunchState::Preparing(ev)) => Some(ev.clone()),
+            _ => None,
+        };
 
         let close_lbl = self.t("common.close").to_string();
         let notice = self.modal_notice_for("mcw_modal_repair_center");
@@ -35,7 +41,24 @@ impl McwApp {
                     )
                     .show_inside(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.button(self.t("common.refresh")).clicked() {
+                            let repair_lbl = if repair_progress.is_some() {
+                                "Repairing..."
+                            } else {
+                                "Repair"
+                            };
+                            let repair_btn =
+                                Button::new(RichText::new(repair_lbl).color(p.accent_text).strong())
+                                    .fill(p.accent);
+                            if ui
+                                .add_enabled(!is_busy, repair_btn)
+                                .on_hover_text(
+                                    "Verify and repair version.json, client JAR, libraries, natives, and missing assets with SHA-1 check & rollback (preserves saves, mods, and options.txt).",
+                                )
+                                .clicked()
+                            {
+                                repair_clicked = true;
+                            }
+                            if ui.add_enabled(!is_busy, Button::new(self.t("common.refresh"))).clicked() {
                                 rescan_clicked = true;
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -51,6 +74,36 @@ impl McwApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                             ui.set_width(ui.available_width());
+
+                            if let Some(ref ev) = repair_progress {
+                                Frame::new()
+                                    .fill(Color32::from_rgba_unmultiplied(
+                                        p.accent.r(),
+                                        p.accent.g(),
+                                        p.accent.b(),
+                                        22,
+                                    ))
+                                    .stroke(Stroke::new(1.0_f32, p.accent))
+                                    .corner_radius(CornerRadius::same(10))
+                                    .inner_margin(egui::Margin::same(10))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label(
+                                                RichText::new(&ev.message)
+                                                    .strong()
+                                                    .color(p.text),
+                                            );
+                                        });
+                                        if ev.total > 0 {
+                                            let frac = (ev.current as f32 / ev.total as f32).clamp(0.0, 1.0);
+                                            ui.add_space(4.0);
+                                            ui.add(egui::ProgressBar::new(frac).animate(true));
+                                        }
+                                    });
+                                ui.add_space(8.0);
+                            }
 
                             if let Some(ref rep) = self.repair_center_report {
                                 let state_col = match rep.state {
@@ -200,7 +253,9 @@ impl McwApp {
         }
 
         self.show_repair_center_window = open;
-        if rescan_clicked {
+        if repair_clicked {
+            self.start_repair(ctx);
+        } else if rescan_clicked {
             self.open_repair_center(&inst.instance_id, ctx);
         }
     }
