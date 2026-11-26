@@ -4616,6 +4616,7 @@ impl McwApp {
                     assessment,
                 } => {
                     self.security_sync_busy = false;
+                    self.security_policy_refreshing = false;
                     if let Some(a) = assessment {
                         self.security_assessments.insert(instance_id.clone(), a);
                     } else {

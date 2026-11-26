@@ -262,7 +262,7 @@ impl SecurityManager {
         }
 
         // If files claim a safe version OR are missing/corrupt on disk, never claim Protected!
-        if !all_present_and_checksum_ok && verified_artifacts == 0 {
+        if all_safe_by_policy && !all_present_and_checksum_ok {
             let detail = missing_details.join("; ");
             let lifecycle_allows =
                 resolved_policy.policy.agent_lifecycle != AgentLifecycleStage::Retired;
@@ -540,6 +540,9 @@ impl MojangLibrarySync {
             .collect();
 
         if candidate_ft.is_empty() {
+            if !version_json_path.is_file() {
+                let _ = atomic_write_text(&version_json_path, &candidate_raw);
+            }
             let _ = fs::remove_file(&candidate_json_path);
             return Ok(LibrarySyncOutcome::AlreadyUpToDate {
                 version_id: entry.id.clone(),
@@ -568,6 +571,9 @@ impl MojangLibrarySync {
         });
 
         if !has_verified_patch {
+            if !version_json_path.is_file() {
+                let _ = atomic_write_text(&version_json_path, &candidate_raw);
+            }
             let _ = fs::remove_file(&candidate_json_path);
             return Ok(LibrarySyncOutcome::NoPatchAvailable {
                 version_id: entry.id.clone(),
@@ -902,6 +908,27 @@ mod tests {
         let res = SecurityManager::assess_instance(&paths, &meta, "broken_263", true, 21, &policy);
         assert_ne!(res.status, SecurityStatus::Protected);
         assert_eq!(res.status, SecurityStatus::Unknown);
+    }
+
+    #[test]
+    fn assesses_unlaunched_unpatched_metadata_as_partially_protected_not_unknown() {
+        let tmp = tempdir().unwrap();
+        let paths = LauncherPaths::portable(tmp.path());
+        paths.initialize().unwrap();
+        let policy = SecurityPolicyService::embedded_baseline();
+
+        // Newly created / synced 1.21.1 instance with unpatched 3.3.3 metadata before first launch
+        let unpatched = make_freetype_lib(&paths, "3.3.3", b"old-333", false);
+        let meta = make_metadata("1.21.1", vec![unpatched]);
+
+        let with_agent =
+            SecurityManager::assess_instance(&paths, &meta, "new_1211", true, 21, &policy);
+        assert_eq!(with_agent.status, SecurityStatus::PartiallyProtected);
+        assert!(with_agent.should_attach_agent);
+
+        let no_agent =
+            SecurityManager::assess_instance(&paths, &meta, "new_1211", false, 21, &policy);
+        assert_eq!(no_agent.status, SecurityStatus::Unprotected);
     }
 
     #[test]
