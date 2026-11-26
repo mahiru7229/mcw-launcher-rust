@@ -1725,7 +1725,9 @@ impl McwApp {
                                                         .color(p.accent),
                                                 );
                                             }
-                                            if let Some(ref dc) = self.ms_device_code {
+                                            if let Some(dc) = self.ms_device_code.clone() {
+                                                let qr_tex = self
+                                                    .ms_qr_texture_handle(&dc.verification_uri, ctx);
                                                 ui.add_space(6.0);
                                                 Frame::new()
                                                     .fill(p.elevated)
@@ -1733,24 +1735,43 @@ impl McwApp {
                                                     .corner_radius(CornerRadius::same(10))
                                                     .inner_margin(egui::Margin::same(10))
                                                     .show(ui, |ui| {
-                                                        ui.label("Enter this code in your browser:");
-                                                        ui.horizontal_wrapped(|ui| {
-                                                            ui.label(
-                                                                RichText::new(&dc.user_code)
-                                                                    .monospace()
-                                                                    .size(17.0)
-                                                                    .strong()
-                                                                    .color(p.accent),
-                                                            );
-                                                            if ui.button("Copy Code").clicked() {
-                                                                ui.ctx()
-                                                                    .copy_text(dc.user_code.clone());
+                                                        ui.horizontal(|ui| {
+                                                            if let Some(ref tex) = qr_tex {
+                                                                ui.vertical(|ui| {
+                                                                    ui.add(
+                                                                        egui::Image::new(tex)
+                                                                            .fit_to_exact_size(Vec2::splat(92.0))
+                                                                            .corner_radius(CornerRadius::same(6)),
+                                                                    );
+                                                                    ui.label(
+                                                                        RichText::new("Scan with phone")
+                                                                            .size(10.0)
+                                                                            .color(p.text_muted),
+                                                                    );
+                                                                });
+                                                                ui.add_space(8.0);
                                                             }
-                                                            if ui.button("Copy URL").clicked() {
-                                                                ui.ctx().copy_text(
-                                                                    dc.verification_uri.clone(),
-                                                                );
-                                                            }
+                                                            ui.vertical(|ui| {
+                                                                ui.label("Enter this code in your browser:");
+                                                                ui.horizontal_wrapped(|ui| {
+                                                                    ui.label(
+                                                                        RichText::new(&dc.user_code)
+                                                                            .monospace()
+                                                                            .size(17.0)
+                                                                            .strong()
+                                                                            .color(p.accent),
+                                                                    );
+                                                                    if ui.button("Copy Code").clicked() {
+                                                                        ui.ctx()
+                                                                            .copy_text(dc.user_code.clone());
+                                                                    }
+                                                                    if ui.button("Copy URL").clicked() {
+                                                                        ui.ctx().copy_text(
+                                                                            dc.verification_uri.clone(),
+                                                                        );
+                                                                    }
+                                                                });
+                                                            });
                                                         });
                                                     });
                                             }

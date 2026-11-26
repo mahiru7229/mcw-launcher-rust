@@ -29,6 +29,40 @@ pub fn render_skin_face_rgba(png_bytes: &[u8], out_size: u32) -> Option<([usize;
     Some(([size as usize, size as usize], scaled.into_raw()))
 }
 
+/// Encode `text` into a crisp square RGBA QR code buffer suitable for nearest-neighbor upload.
+pub fn render_qr_code_rgba(
+    text: &str,
+    module_px: usize,
+    quiet_modules: usize,
+) -> Option<([usize; 2], Vec<u8>)> {
+    let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    let width_mods = code.width();
+    let module_px = module_px.max(2);
+    let total_mods = width_mods + quiet_modules * 2;
+    let img_px = total_mods * module_px;
+    let mut rgba = vec![255u8; img_px * img_px * 4];
+
+    for my in 0..width_mods {
+        for mx in 0..width_mods {
+            if code[(mx, my)] == qrcode::Color::Dark {
+                let x0 = (mx + quiet_modules) * module_px;
+                let y0 = (my + quiet_modules) * module_px;
+                for dy in 0..module_px {
+                    for dx in 0..module_px {
+                        let idx = ((y0 + dy) * img_px + (x0 + dx)) * 4;
+                        rgba[idx] = 15;
+                        rgba[idx + 1] = 23;
+                        rgba[idx + 2] = 42;
+                        rgba[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
+    Some(([img_px, img_px], rgba))
+}
+
 pub fn default_skin_face_rgba(variant: &str, out_size: u32) -> Option<([usize; 2], Vec<u8>)> {
     let b64 = if variant.eq_ignore_ascii_case("alex") || variant.eq_ignore_ascii_case("slim") {
         ALEX_SKIN_B64
@@ -73,5 +107,16 @@ mod tests {
         assert_eq!(alex_size, [24, 24]);
         assert_eq!(alex_rgba.len(), 24 * 24 * 4);
         assert_ne!(alex_rgba, steve_rgba[..alex_rgba.len()]);
+    }
+
+    #[test]
+    fn renders_scannable_qr_code_rgba_for_verification_url() {
+        let (size, rgba) = render_qr_code_rgba("https://microsoft.com/link", 4, 2).unwrap();
+        assert_eq!(size[0], size[1]);
+        assert!(size[0] >= 80);
+        assert_eq!(rgba.len(), size[0] * size[1] * 4);
+        let has_dark = rgba.as_chunks::<4>().0.iter().any(|px| px[0] == 15);
+        let has_light = rgba.as_chunks::<4>().0.iter().any(|px| px[0] == 255);
+        assert!(has_dark && has_light);
     }
 }

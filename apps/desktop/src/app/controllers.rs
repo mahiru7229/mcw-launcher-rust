@@ -6271,9 +6271,12 @@ impl McwApp {
         let mut modpack_archives = Vec::new();
         let mut jar_files = Vec::new();
         let mut zip_files = Vec::new();
+        let mut png_files = Vec::new();
+        let mut unsupported = 0usize;
 
         for path in paths {
             if !path.is_file() {
+                unsupported += 1;
                 continue;
             }
             let lower = path
@@ -6287,6 +6290,10 @@ impl McwApp {
                 jar_files.push(path);
             } else if lower.ends_with(".zip") || lower.ends_with(".zip.disabled") {
                 zip_files.push(path);
+            } else if lower.ends_with(".png") {
+                png_files.push(path);
+            } else {
+                unsupported += 1;
             }
         }
 
@@ -6295,7 +6302,11 @@ impl McwApp {
             self.modpack_name_input.clear();
             self.inspect_local_archive_optional_files();
             self.create_tab = CreateInstanceTab::ImportArchive;
-            self.start_modpack_install(ctx);
+            self.show_create_modal = true;
+            self.push_global_log(format!(
+                "[DND] Loaded dropped modpack archive '{}'.",
+                archive.display()
+            ));
             return;
         }
 
@@ -6318,18 +6329,163 @@ impl McwApp {
             }
         }
 
-        if !zip_files.is_empty() {
-            if let Some(kind) = self.active_tab.content_kind() {
-                if let Some(inst) = self.selected_instance().cloned() {
-                    self.import_local_pack_files(&inst.instance_id, kind, &zip_files, ctx);
+        if !png_files.is_empty() {
+            let mut imported_skins = 0usize;
+            let mut bad_pngs = 0usize;
+            let skins_dir = self.paths.project_root.join("skins");
+            let _ = std::fs::create_dir_all(&skins_dir);
+            for png in &png_files {
+                let dims = image::image_dimensions(png).ok();
+                if matches!(dims, Some((64, 64)) | Some((64, 32))) {
+                    if let Some(name) = png.file_name().and_then(|n| n.to_str()) {
+                        let mut dest = skins_dir.join(name);
+                        if dest.exists() {
+                            let stem = png.file_stem().and_then(|s| s.to_str()).unwrap_or("skin");
+                            let mut idx = 2usize;
+                            while dest.exists() {
+                                dest = skins_dir.join(format!("{stem} ({idx}).png"));
+                                idx += 1;
+                            }
+                        }
+                        if std::fs::copy(png, &dest).is_ok() {
+                            imported_skins += 1;
+                            self.push_global_log(format!(
+                                "[DND] Imported Minecraft skin '{}'.",
+                                dest.display()
+                            ));
+                        }
+                    }
+                } else {
+                    bad_pngs += 1;
                 }
-            } else if let Some(archive) = zip_files.into_iter().next() {
-                self.modpack_path_input = archive.display().to_string();
+            }
+            if imported_skins > 0 {
+                self.notice_banner = Some((
+                    format!("Imported {imported_skins} skin PNG(s) into Skins Library."),
+                    false,
+                ));
+            } else if bad_pngs > 0 {
+                self.notice_banner = Some((
+                    "Dropped PNG(s) must be 64x64 or 64x32 px to import as a Minecraft skin."
+                        .to_string(),
+                    true,
+                ));
+            }
+        }
+
+        for zp in &zip_files {
+            let kind = mcw_minecraft::inspect_zip_content_kind(zp);
+            if kind == mcw_minecraft::ZipContentKind::Modpack {
+                self.modpack_path_input = zp.display().to_string();
                 self.modpack_name_input.clear();
                 self.inspect_local_archive_optional_files();
                 self.create_tab = CreateInstanceTab::ImportArchive;
-                self.start_modpack_install(ctx);
+                self.show_create_modal = true;
+                return;
             }
+            let Some(inst) = self.selected_instance().cloned() else {
+                self.notice_banner = Some((
+                    "Select an instance before dropping .zip worlds or packs.".to_string(),
+                    true,
+                ));
+                continue;
+            };
+            let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+            if self.active_tab == DetailTab::Worlds {
+                if let Some(world_folder) = self.selected_world_datapacks_folder.clone() {
+                    match WorldManager::import_datapack(&mc_dir, &world_folder, zp) {
+                        Ok(fname) => {
+                            self.selected_world_datapacks =
+                                WorldManager::list_datapacks(&mc_dir, &world_folder);
+                            self.notice_banner = Some((
+                                format!("Imported Data Pack '{fname}' into '{world_folder}'."),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("Data Pack import failed: {err}"), true));
+                        }
+                    }
+                    continue;
+                }
+            }
+            match kind {
+                mcw_minecraft::ZipContentKind::World => {
+                    match WorldManager::import_world(&mc_dir, zp) {
+                        Ok(wname) => {
+                            self.worlds_cache.remove(&inst.instance_id);
+                            self.load_worlds_async(&inst.instance_id, ctx, true);
+                            self.notice_banner =
+                                Some((format!("Imported world '{wname}'."), false));
+                        }
+                        Err(err) => {
+                            self.notice_banner =
+                                Some((format!("World import failed: {err}"), true));
+                        }
+                    }
+                }
+                mcw_minecraft::ZipContentKind::ShaderPack => {
+                    self.import_local_pack_files(
+                        &inst.instance_id,
+                        ContentKind::ShaderPack,
+                        std::slice::from_ref(zp),
+                        ctx,
+                    );
+                }
+                mcw_minecraft::ZipContentKind::ResourcePack => {
+                    self.import_local_pack_files(
+                        &inst.instance_id,
+                        ContentKind::ResourcePack,
+                        std::slice::from_ref(zp),
+                        ctx,
+                    );
+                }
+                mcw_minecraft::ZipContentKind::DataPack => {
+                    self.notice_banner = Some((
+                        "Detected a Data Pack .zip: open a World -> Data Packs view first, then drop the .zip there."
+                            .to_string(),
+                        true,
+                    ));
+                }
+                mcw_minecraft::ZipContentKind::Modpack | mcw_minecraft::ZipContentKind::Unknown => {
+                    if let Some(pack_kind) = self.active_tab.content_kind() {
+                        self.import_local_pack_files(
+                            &inst.instance_id,
+                            pack_kind,
+                            std::slice::from_ref(zp),
+                            ctx,
+                        );
+                    } else if self.active_tab == DetailTab::Worlds {
+                        match WorldManager::import_world(&mc_dir, zp) {
+                            Ok(wname) => {
+                                self.worlds_cache.remove(&inst.instance_id);
+                                self.load_worlds_async(&inst.instance_id, ctx, true);
+                                self.notice_banner =
+                                    Some((format!("Imported world '{wname}'."), false));
+                            }
+                            Err(err) => {
+                                self.notice_banner =
+                                    Some((format!("World import failed: {err}"), true));
+                            }
+                        }
+                    } else {
+                        self.notice_banner = Some((
+                            "Unrecognized .zip archive. Drop in Shaders / Resource Packs / Worlds or use .mrpack."
+                                .to_string(),
+                            true,
+                        ));
+                    }
+                }
+            }
+        }
+
+        if unsupported > 0 && jar_files.is_empty() && zip_files.is_empty() && png_files.is_empty() {
+            self.notice_banner = Some((
+                "Unsupported dropped file type. Supported: .mrpack, .mcwpack, .jar, .zip, .png."
+                    .to_string(),
+                true,
+            ));
         }
     }
 
@@ -9045,6 +9201,70 @@ pub(crate) fn compute_local_instance_security(
         java_major,
         policy,
     )
+}
+
+impl super::McwApp {
+    pub(crate) fn ms_qr_texture_handle(
+        &mut self,
+        url: &str,
+        ctx: &egui::Context,
+    ) -> Option<egui::TextureHandle> {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if let Some((cached_url, handle)) = &self.ms_qr_texture {
+            if cached_url == trimmed {
+                return Some(handle.clone());
+            }
+        }
+        let (size, rgba) = crate::skin_render::render_qr_code_rgba(trimmed, 4, 2)?;
+        let img = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+        let handle = ctx.load_texture("mcw_ms_device_qr", img, egui::TextureOptions::NEAREST);
+        self.ms_qr_texture = Some((trimmed.to_string(), handle.clone()));
+        Some(handle)
+    }
+
+    pub(crate) fn handle_create_target_shortcut(
+        &mut self,
+        inst: &Instance,
+        quick_play_world: Option<&str>,
+        quick_play_server: Option<&str>,
+    ) {
+        match std::env::current_exe() {
+            Ok(exe) => {
+                let store = InstanceStore::new(&self.paths);
+                let icon_p = store.resolve_instance_icon_path(inst);
+                match super::platform::create_desktop_shortcut_with_target(
+                    &exe,
+                    &self.paths.project_root,
+                    &inst.instance_id,
+                    &inst.name,
+                    icon_p.as_deref(),
+                    quick_play_world,
+                    quick_play_server,
+                ) {
+                    Ok(dest) => {
+                        self.push_global_log(format!(
+                            "[SHORTCUT] Created desktop shortcut at {}",
+                            dest.display()
+                        ));
+                        self.notice_banner = Some((
+                            format!("Desktop shortcut created: {}", dest.display()),
+                            false,
+                        ));
+                    }
+                    Err(err) => {
+                        self.notice_banner = Some((err, true));
+                    }
+                }
+            }
+            Err(err) => {
+                self.notice_banner =
+                    Some((format!("Could not locate launcher executable: {err}"), true));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

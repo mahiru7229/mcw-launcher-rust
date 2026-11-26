@@ -47,7 +47,10 @@ pub use security_policy::{
     SecurityPolicyService, SignedPolicyEnvelope, REMOTE_SECURITY_POLICY_URL,
 };
 pub use servers::{SavedServer, ServerManager};
-pub use worlds::{is_quick_play_supported, WorldDataPackInfo, WorldInfo, WorldManager};
+pub use worlds::{
+    inspect_zip_content_kind, is_quick_play_supported, WorldDataPackInfo, WorldInfo, WorldManager,
+    ZipContentKind,
+};
 
 use thiserror::Error;
 

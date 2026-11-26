@@ -1137,37 +1137,7 @@ impl McwApp {
             self.open_export_modpack_window(ctx);
         }
         if create_shortcut {
-            match std::env::current_exe() {
-                Ok(exe) => {
-                    let store = InstanceStore::new(&self.paths);
-                    let icon_p = store.resolve_instance_icon_path(&inst);
-                    match create_desktop_shortcut(
-                        &exe,
-                        &self.paths.project_root,
-                        &inst.instance_id,
-                        &inst.name,
-                        icon_p.as_deref(),
-                    ) {
-                        Ok(dest) => {
-                            self.push_global_log(format!(
-                                "[SHORTCUT] Created desktop shortcut at {}",
-                                dest.display()
-                            ));
-                            self.notice_banner = Some((
-                                format!("Desktop shortcut created: {}", dest.display()),
-                                false,
-                            ));
-                        }
-                        Err(err) => {
-                            self.notice_banner = Some((err, true));
-                        }
-                    }
-                }
-                Err(err) => {
-                    self.notice_banner =
-                        Some((format!("Could not locate launcher executable: {err}"), true));
-                }
-            }
+            self.handle_create_target_shortcut(&inst, None, None);
         }
         if export_loader_diag {
             self.export_loader_diagnostics(&inst);

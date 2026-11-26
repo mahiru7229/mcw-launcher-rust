@@ -579,6 +579,76 @@ fn dir_size(dir: &Path) -> u64 {
         .sum()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZipContentKind {
+    Modpack,
+    World,
+    DataPack,
+    ResourcePack,
+    ShaderPack,
+    Unknown,
+}
+
+/// Inspect archive entry names (without full extraction) to classify dropped `.zip` archives.
+pub fn inspect_zip_content_kind(path: &Path) -> ZipContentKind {
+    let Ok(file) = fs::File::open(path) else {
+        return ZipContentKind::Unknown;
+    };
+    let Ok(mut zip) = zip::ZipArchive::new(file) else {
+        return ZipContentKind::Unknown;
+    };
+    let mut has_modpack_manifest = false;
+    let mut has_level_dat = false;
+    let mut has_shaders = false;
+    let mut has_pack_mcmeta = false;
+    let mut has_data_dir = false;
+    let mut has_assets_dir = false;
+
+    for i in 0..zip.len() {
+        let Ok(entry) = zip.by_index(i) else {
+            continue;
+        };
+        let norm = entry.name().replace('\\', "/").to_ascii_lowercase();
+        let trimmed = norm.trim_start_matches("./");
+        let file_name = trimmed.rsplit('/').next().unwrap_or("");
+        let depth = trimmed.matches('/').count();
+        if depth <= 1 && (file_name == "modrinth.index.json" || file_name == "manifest.json") {
+            has_modpack_manifest = true;
+            break;
+        }
+        if depth <= 1 && file_name == "level.dat" {
+            has_level_dat = true;
+        }
+        if trimmed == "shaders/" || trimmed.starts_with("shaders/") || trimmed.contains("/shaders/")
+        {
+            has_shaders = true;
+        }
+        if depth <= 1 && file_name == "pack.mcmeta" {
+            has_pack_mcmeta = true;
+        }
+        if trimmed.starts_with("data/") || trimmed.contains("/data/") {
+            has_data_dir = true;
+        }
+        if trimmed.starts_with("assets/") || trimmed.contains("/assets/") {
+            has_assets_dir = true;
+        }
+    }
+
+    if has_modpack_manifest {
+        ZipContentKind::Modpack
+    } else if has_level_dat {
+        ZipContentKind::World
+    } else if has_shaders {
+        ZipContentKind::ShaderPack
+    } else if has_pack_mcmeta && has_data_dir && !has_assets_dir {
+        ZipContentKind::DataPack
+    } else if has_pack_mcmeta || has_assets_dir {
+        ZipContentKind::ResourcePack
+    } else {
+        ZipContentKind::Unknown
+    }
+}
+
 #[derive(Debug, Default)]
 struct NbtLevelSummary {
     level_name: String,
@@ -916,5 +986,49 @@ mod tests {
 
         WorldManager::remove_datapack(dir.path(), "my_world", &reenabled).unwrap();
         assert!(WorldManager::list_datapacks(dir.path(), "my_world").is_empty());
+    }
+
+    #[test]
+    fn inspects_dropped_zip_content_kinds() {
+        let dir = tempdir().unwrap();
+        let make_zip = |name: &str, entries: &[&str]| -> PathBuf {
+            let p = dir.path().join(name);
+            let f = fs::File::create(&p).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
+            for e in entries {
+                zw.start_file(e, opts).unwrap();
+                zw.write_all(b"{}").unwrap();
+            }
+            zw.finish().unwrap();
+            p
+        };
+
+        assert_eq!(
+            inspect_zip_content_kind(&make_zip("pack.zip", &["modrinth.index.json"])),
+            ZipContentKind::Modpack
+        );
+        assert_eq!(
+            inspect_zip_content_kind(&make_zip("world.zip", &["MyWorld/level.dat"])),
+            ZipContentKind::World
+        );
+        assert_eq!(
+            inspect_zip_content_kind(&make_zip(
+                "dp.zip",
+                &["pack.mcmeta", "data/custom/advancement/a.json"]
+            )),
+            ZipContentKind::DataPack
+        );
+        assert_eq!(
+            inspect_zip_content_kind(&make_zip(
+                "rp.zip",
+                &["pack.mcmeta", "assets/minecraft/a.png"]
+            )),
+            ZipContentKind::ResourcePack
+        );
+        assert_eq!(
+            inspect_zip_content_kind(&make_zip("shader.zip", &["shaders/gbuffers_terrain.fsh"])),
+            ZipContentKind::ShaderPack
+        );
     }
 }

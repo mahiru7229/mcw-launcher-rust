@@ -368,6 +368,7 @@ pub struct McwApp {
     ms_login_mode: Option<&'static str>,
     ms_login_task: Option<tokio::task::JoinHandle<()>>,
     ms_device_code: Option<DeviceCodeResponse>,
+    ms_qr_texture: Option<(String, egui::TextureHandle)>,
 
     // Unified Content Browser OS Window (Mods / Modpacks / Resource / Shader / Data packs)
     show_content_browser: bool,
@@ -900,6 +901,7 @@ impl McwApp {
             ms_login_mode: None,
             ms_login_task: None,
             ms_device_code: None,
+            ms_qr_texture: None,
             show_content_browser: false,
             browser_category: BrowserCategory::Mods,
             browser_provider: BrowserProvider::Modrinth,
@@ -1526,6 +1528,64 @@ impl eframe::App for McwApp {
         self.render_quick_search_modal(ctx);
         if !self.startup_splash_done {
             self.render_startup_splash(ctx);
+        }
+
+        let hovered_files = ctx.input(|i| i.raw.hovered_files.clone());
+        if !hovered_files.is_empty() {
+            let p = self.palette;
+            egui::Area::new(egui::Id::new("mcw_drag_drop_overlay"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    ui.set_min_size(screen.size());
+                    ui.painter().rect_filled(
+                        screen,
+                        0.0,
+                        Color32::from_rgba_unmultiplied(10, 14, 22, 196),
+                    );
+                    egui::Area::new(egui::Id::new("mcw_drag_drop_card"))
+                        .order(egui::Order::Foreground)
+                        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                        .show(ctx, |ui| {
+                            Frame::new()
+                                .fill(p.surface)
+                                .stroke(Stroke::new(2.0_f32, p.accent))
+                                .corner_radius(CornerRadius::same(16))
+                                .inner_margin(egui::Margin::same(24))
+                                .show(ui, |ui| {
+                                    ui.set_max_width(440.0);
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            RichText::new("Drop Files to Import")
+                                                .size(20.0)
+                                                .strong()
+                                                .color(p.text),
+                                        );
+                                        ui.add_space(6.0);
+                                        let inst_hint = self
+                                            .selected_instance()
+                                            .map(|i| format!("Target instance: {}", i.name))
+                                            .unwrap_or_else(|| {
+                                                "No instance selected (.mrpack & skins still work)"
+                                                    .to_string()
+                                            });
+                                        ui.label(RichText::new(inst_hint).color(p.accent).strong());
+                                        ui.add_space(8.0);
+                                        ui.label(
+                                            RichText::new(
+                                                "• .mrpack / .mcwpack -> Modpack Importer\n\
+                                                 • .jar -> Instance mods/\n\
+                                                 • .zip -> World / Data Pack / Resource Pack / Shader\n\
+                                                 • .png (64x64 or 64x32) -> Skins Library",
+                                            )
+                                            .size(12.0)
+                                            .color(p.text_muted),
+                                        );
+                                    });
+                                });
+                        });
+                });
         }
     }
 }

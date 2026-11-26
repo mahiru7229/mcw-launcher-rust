@@ -1026,6 +1026,7 @@ impl McwApp {
         }
 
         let mut quick_play_target: Option<String> = None;
+        let mut world_shortcut_target: Option<String> = None;
         let mut datapacks_target: Option<String> = None;
         let mut copy_seed_target: Option<i64> = None;
         let mut export_world_target: Option<String> = None;
@@ -1161,6 +1162,9 @@ impl McwApp {
                                         if resp.clicked() {
                                             quick_play_target = Some(w.folder_name.clone());
                                         }
+                                        if ui.button("Shortcut").clicked() {
+                                            world_shortcut_target = Some(w.folder_name.clone());
+                                        }
                                     }
                                 });
                             });
@@ -1199,6 +1203,9 @@ impl McwApp {
         }
         if let Some(folder) = quick_play_target {
             self.start_launch_with_world(Some(folder), ctx);
+        }
+        if let Some(folder) = world_shortcut_target {
+            self.handle_create_target_shortcut(inst, Some(&folder), None);
         }
         if let Some(folder) = backup_target {
             let default_name = format!("world_{folder}.zip");

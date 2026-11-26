@@ -727,6 +727,23 @@ pub(crate) fn sanitize_shortcut_filename(name: &str) -> String {
     }
 }
 
+pub(crate) fn format_shortcut_launch_args(
+    instance_id: &str,
+    quick_play_world: Option<&str>,
+    quick_play_server: Option<&str>,
+) -> String {
+    let clean = |s: &str| s.replace('"', "");
+    let mut args = format!("--launch \"{}\"", clean(instance_id));
+    if let Some(world) = quick_play_world.map(str::trim).filter(|w| !w.is_empty()) {
+        args.push_str(&format!(" --world \"{}\"", clean(world)));
+    }
+    if let Some(server) = quick_play_server.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push_str(&format!(" --server \"{}\"", clean(server)));
+    }
+    args
+}
+
+#[allow(dead_code)]
 pub(crate) fn create_desktop_shortcut(
     exe_path: &std::path::Path,
     work_dir: &std::path::Path,
@@ -734,7 +751,35 @@ pub(crate) fn create_desktop_shortcut(
     instance_name: &str,
     icon_path: Option<&std::path::Path>,
 ) -> std::result::Result<std::path::PathBuf, String> {
-    let safe_name = sanitize_shortcut_filename(instance_name);
+    create_desktop_shortcut_with_target(
+        exe_path,
+        work_dir,
+        instance_id,
+        instance_name,
+        icon_path,
+        None,
+        None,
+    )
+}
+
+pub(crate) fn create_desktop_shortcut_with_target(
+    exe_path: &std::path::Path,
+    work_dir: &std::path::Path,
+    instance_id: &str,
+    instance_name: &str,
+    icon_path: Option<&std::path::Path>,
+    quick_play_world: Option<&str>,
+    quick_play_server: Option<&str>,
+) -> std::result::Result<std::path::PathBuf, String> {
+    let display_label = if let Some(w) = quick_play_world.map(str::trim).filter(|w| !w.is_empty()) {
+        format!("{instance_name} - {w}")
+    } else if let Some(s) = quick_play_server.map(str::trim).filter(|s| !s.is_empty()) {
+        format!("{instance_name} - {s}")
+    } else {
+        instance_name.to_string()
+    };
+    let safe_name = sanitize_shortcut_filename(&display_label);
+    let cli_args = format_shortcut_launch_args(instance_id, quick_play_world, quick_play_server);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -743,8 +788,8 @@ pub(crate) fn create_desktop_shortcut(
         let ps_escape = |s: &str| s.replace('\'', "''");
         let exe_s = ps_escape(&exe_path.display().to_string());
         let dir_s = ps_escape(&work_dir.display().to_string());
-        let id_arg = ps_escape(&format!("--launch \"{instance_id}\""));
-        let desc_s = ps_escape(&format!("Launch {instance_name} via MCW Launcher"));
+        let id_arg = ps_escape(&cli_args);
+        let desc_s = ps_escape(&format!("Launch {display_label} via MCW Launcher"));
         let lnk_name_s = ps_escape(&format!("{safe_name}.lnk"));
         let icon_src = icon_path
             .filter(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico")))
@@ -795,11 +840,11 @@ pub(crate) fn create_desktop_shortcut(
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "minecraft".to_string());
         let body = format!(
-            "[Desktop Entry]\nType=Application\nName={}\nComment=Launch {} via MCW Launcher\nExec=\"{}\" --launch \"{}\"\nPath={}\nIcon={}\nTerminal=false\nCategories=Game;\n",
+            "[Desktop Entry]\nType=Application\nName={}\nComment=Launch {} via MCW Launcher\nExec=\"{}\" {}\nPath={}\nIcon={}\nTerminal=false\nCategories=Game;\n",
             safe_name,
-            instance_name,
+            display_label,
             exe_path.display(),
-            instance_id,
+            cli_args,
             work_dir.display(),
             icon_line,
         );

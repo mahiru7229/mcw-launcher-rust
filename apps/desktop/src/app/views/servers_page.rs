@@ -103,6 +103,7 @@ impl McwApp {
                         let auth_notice_hint = self.t("accounts.auth_required_notice").to_string();
                         let mut remove_idx: Option<usize> = None;
                         let mut join_ip: Option<String> = None;
+                        let mut shortcut_ip: Option<String> = None;
 
                         if loading && self.selected_servers.is_empty() {
                             ui.horizontal(|ui| {
@@ -158,6 +159,17 @@ impl McwApp {
                                                             false,
                                                         ));
                                                     }
+                                                    let shortcut_resp = ui.add_enabled(
+                                                        quick_play_ok,
+                                                        Button::new("Shortcut"),
+                                                    );
+                                                    if !quick_play_ok {
+                                                        shortcut_resp.on_disabled_hover_text(
+                                                            "Direct server Quick Play shortcuts require Minecraft 1.20 or newer.",
+                                                        );
+                                                    } else if shortcut_resp.clicked() {
+                                                        shortcut_ip = Some(srv.ip.clone());
+                                                    }
                                                     let can_join = quick_play_ok && !busy;
                                                     let join_btn = Button::new(
                                                         RichText::new("Join")
@@ -199,6 +211,9 @@ impl McwApp {
                         }
                         if let Some(ip) = join_ip {
                             self.start_launch_with_server(ip, ctx);
+                        }
+                        if let Some(ip) = shortcut_ip {
+                            self.handle_create_target_shortcut(inst, None, Some(&ip));
                         }
                     });
 

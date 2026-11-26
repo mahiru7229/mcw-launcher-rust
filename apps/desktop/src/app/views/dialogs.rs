@@ -1982,7 +1982,8 @@ impl McwApp {
                             );
                         }
 
-                        if let Some(ref dc) = self.ms_device_code {
+                        if let Some(dc) = self.ms_device_code.clone() {
+                            let qr_tex = self.ms_qr_texture_handle(&dc.verification_uri, ctx);
                             ui.add_space(6.0);
                             Frame::new()
                                 .fill(p.elevated)
@@ -1990,41 +1991,61 @@ impl McwApp {
                                 .corner_radius(CornerRadius::same(12))
                                 .inner_margin(egui::Margin::same(12))
                                 .show(ui, |ui| {
-                                    ui.label("Enter this code in your browser:");
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label(
-                                            RichText::new(&dc.user_code)
-                                                .monospace()
-                                                .size(18.0)
-                                                .strong()
-                                                .color(p.accent),
-                                        );
-                                        if ui.button("Copy Code").clicked() {
-                                            ui.ctx().copy_text(dc.user_code.clone());
+                                    ui.horizontal(|ui| {
+                                        if let Some(ref tex) = qr_tex {
+                                            ui.vertical(|ui| {
+                                                ui.add(
+                                                    egui::Image::new(tex)
+                                                        .fit_to_exact_size(Vec2::splat(108.0))
+                                                        .corner_radius(CornerRadius::same(6)),
+                                                );
+                                                ui.label(
+                                                    RichText::new("Scan with phone")
+                                                        .size(10.5)
+                                                        .color(p.text_muted),
+                                                );
+                                            });
+                                            ui.add_space(10.0);
                                         }
-                                        if ui.button("Copy URL (for InPrivate)").clicked() {
-                                            ui.ctx().copy_text(dc.verification_uri.clone());
-                                        }
+                                        ui.vertical(|ui| {
+                                            ui.label("Enter this code in your browser:");
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(
+                                                    RichText::new(&dc.user_code)
+                                                        .monospace()
+                                                        .size(18.0)
+                                                        .strong()
+                                                        .color(p.accent),
+                                                );
+                                                if ui.button("Copy Code").clicked() {
+                                                    ui.ctx().copy_text(dc.user_code.clone());
+                                                }
+                                                if ui.button("Copy URL (for InPrivate)").clicked() {
+                                                    ui.ctx()
+                                                        .copy_text(dc.verification_uri.clone());
+                                                }
+                                            });
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(&dc.verification_uri)
+                                                        .monospace()
+                                                        .size(11.0)
+                                                        .color(p.text_muted),
+                                                )
+                                                .wrap(),
+                                            );
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(
+                                                        "Tip: Microsoft Device Login reuses your active browser session. To pick a different account, paste the URL into an InPrivate/Incognito window or use Browser (PKCE).",
+                                                    )
+                                                    .size(11.0)
+                                                    .color(p.text_muted),
+                                                )
+                                                .wrap(),
+                                            );
+                                        });
                                     });
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(&dc.verification_uri)
-                                                .monospace()
-                                                .size(11.0)
-                                                .color(p.text_muted),
-                                        )
-                                        .wrap(),
-                                    );
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(
-                                                "Tip: Microsoft Device Login reuses your active browser session. To pick a different account, paste the URL into an InPrivate/Incognito window or use Browser (PKCE).",
-                                            )
-                                            .size(11.0)
-                                            .color(p.text_muted),
-                                        )
-                                        .wrap(),
-                                    );
                                 });
                         }
 
