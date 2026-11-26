@@ -714,6 +714,15 @@ impl McwApp {
         startup_launch: Option<StartupLaunchRequest>,
     ) -> Self {
         let mut prefs = LauncherPrefs::load(&paths);
+        prefs.home_view_mode = if startup_launch.is_some()
+            || prefs
+                .default_home_view_mode
+                .eq_ignore_ascii_case("workspace")
+        {
+            "workspace".to_string()
+        } else {
+            "grid".to_string()
+        };
         if prefs.window_size_schema_version < 2 {
             prefs.window_size_schema_version = 2;
             prefs.window_size_customized = false;

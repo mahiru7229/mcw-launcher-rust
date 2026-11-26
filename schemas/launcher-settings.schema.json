@@ -64,6 +64,11 @@
     "junk_retention_days": { "type": "integer", "minimum": 1 },
     "junk_reminder_snooze_until": { "type": "integer", "minimum": 0 },
     "home_view_mode": { "type": "string", "enum": ["workspace", "grid", "list"] },
+    "default_home_view_mode": {
+      "type": "string",
+      "enum": ["grid", "workspace"],
+      "description": "Default Home view mode applied when opening MCW Launcher."
+    },
     "home_sort_by": { "type": "string", "enum": ["last_played", "name", "playtime", "version"] },
     "proxy_mode": { "type": "string", "enum": ["none", "system", "manual"] },
     "proxy_host": { "type": "string" },

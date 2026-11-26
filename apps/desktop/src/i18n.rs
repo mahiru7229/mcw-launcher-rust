@@ -338,6 +338,8 @@ pub struct LauncherPrefs {
     pub junk_reminder_snooze_until: u64,
     #[serde(default = "default_home_view_mode")]
     pub home_view_mode: String,
+    #[serde(default = "default_startup_home_view")]
+    pub default_home_view_mode: String,
     #[serde(default = "default_home_sort_by")]
     pub home_sort_by: String,
     #[serde(default = "default_proxy_mode")]
@@ -367,7 +369,11 @@ fn default_proxy_port() -> u16 {
 }
 
 fn default_home_view_mode() -> String {
-    "workspace".to_string()
+    "grid".to_string()
+}
+
+fn default_startup_home_view() -> String {
+    "grid".to_string()
 }
 
 fn default_home_sort_by() -> String {
@@ -514,6 +520,7 @@ impl Default for LauncherPrefs {
             junk_retention_days: default_junk_retention_days(),
             junk_reminder_snooze_until: 0,
             home_view_mode: default_home_view_mode(),
+            default_home_view_mode: default_startup_home_view(),
             home_sort_by: default_home_sort_by(),
             proxy_mode: default_proxy_mode(),
             proxy_host: String::new(),
@@ -691,6 +698,8 @@ mod tests {
         assert_eq!(loaded.schema, LAUNCHER_SETTINGS_SCHEMA_URL);
         assert!(loaded.mitigate_minecraft2shell);
         assert!(loaded.warn_auto_accept_server_resource_packs);
+        assert_eq!(loaded.default_home_view_mode, "grid");
+        assert_eq!(loaded.home_view_mode, "grid");
 
         let persisted = fs::read_to_string(&legacy_path).unwrap();
         assert!(persisted.contains("\"$schema\""));

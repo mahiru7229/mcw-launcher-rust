@@ -465,7 +465,7 @@ impl McwApp {
                 &startup_title,
                 &snap_lbl,
                 &dbg_lbl,
-                "minimize launcher window remember size dedicated gpu notification auto-dismiss timeout seconds crash auto open logs",
+                "default startup home view library grid workspace minimize launcher window remember size dedicated gpu notification auto-dismiss timeout seconds crash auto open logs",
             ],
         ) {
             matched += 1;
@@ -524,6 +524,43 @@ impl McwApp {
                     {
                         *prefs_dirty = true;
                     }
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Default Startup Home View:");
+                        let is_ws = self
+                            .prefs
+                            .default_home_view_mode
+                            .eq_ignore_ascii_case("workspace");
+                        let lbl = if is_ws {
+                            "Workspace View"
+                        } else {
+                            "Library Grid"
+                        };
+                        let mut picked = if is_ws {
+                            "workspace".to_string()
+                        } else {
+                            "grid".to_string()
+                        };
+                        egui::ComboBox::from_id_salt("cb_settings_default_home_view")
+                            .selected_text(lbl)
+                            .width(160.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut picked,
+                                    "grid".to_string(),
+                                    "Library Grid",
+                                );
+                                ui.selectable_value(
+                                    &mut picked,
+                                    "workspace".to_string(),
+                                    "Workspace View",
+                                );
+                            });
+                        if picked != self.prefs.default_home_view_mode {
+                            self.prefs.default_home_view_mode = picked;
+                            *prefs_dirty = true;
+                        }
+                    });
                     ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Notification auto-dismiss (seconds, 0 = disabled):");
