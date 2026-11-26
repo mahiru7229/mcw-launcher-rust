@@ -12,6 +12,9 @@ fn main() {
             "FileDescription",
             "MCW Launcher: Rust Edition - Native Minecraft Launcher",
         );
+        res.set("CompanyName", "MCW Launcher Open Source");
+        res.set("LegalCopyright", "MIT License");
+        res.set("OriginalFilename", "MCW-Launcher.exe");
         if let Err(err) = res.compile() {
             println!("cargo:warning=winresource compile skipped: {err}");
         }

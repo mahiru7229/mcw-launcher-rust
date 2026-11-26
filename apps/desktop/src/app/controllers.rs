@@ -113,6 +113,53 @@ impl McwApp {
         });
     }
 
+    pub(crate) fn start_sync_and_verify_security(&mut self, inst: &Instance, ctx: &egui::Context) {
+        if self.security_sync_busy || self.security_policy_refreshing {
+            return;
+        }
+        self.security_sync_busy = true;
+        self.security_policy_refreshing = true;
+        let paths = self.paths.clone();
+        let client = self.download_client.clone();
+        let inst = inst.clone();
+        let mitigate = self.prefs.mitigate_minecraft2shell;
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        self.runtime.spawn(async move {
+            let policy = SecurityPolicyService::refresh_from_remote(
+                &paths,
+                &client,
+                REMOTE_SECURITY_POLICY_URL,
+            )
+            .await;
+            let _ = tx.send(AppEvent::SecurityPolicyRefreshed(policy.clone()));
+
+            let outcome = match MojangLibrarySync::sync_freetype_for_version(
+                &paths,
+                &client,
+                &inst.version_id,
+                &policy,
+            )
+            .await
+            {
+                Ok(out) => out,
+                Err(err) => LibrarySyncOutcome::RolledBack {
+                    version_id: inst.version_id.clone(),
+                    reason: format!("Library sync failed: {err}"),
+                },
+            };
+            let assessment = Some(compute_local_instance_security(
+                &paths, &inst, mitigate, &policy,
+            ));
+            let _ = tx.send(AppEvent::SecurityLibrarySyncFinished {
+                instance_id: inst.instance_id,
+                outcome,
+                assessment,
+            });
+            ctx.request_repaint();
+        });
+    }
+
     pub(crate) fn refresh_pending_manual_counts(&mut self) {
         self.pending_manual_counts.clear();
         for inst in &self.instances {
@@ -8891,7 +8938,7 @@ pub(crate) fn compute_local_instance_security(
             status_label: SecurityStatus::Unknown.as_str().to_string(),
             headline: format!("Unknown — Metadata Pending ({})", inst.version_id),
             description: format!(
-                "Unknown: Version metadata for Minecraft {} is not cached locally yet. MCW Security Manager will sync official Mojang checksums and verify FreeType libraries before launching.",
+                "Version metadata for Minecraft {} is not cached locally yet. MCW Security Manager will sync official Mojang checksums and verify FreeType libraries before launching.",
                 inst.version_id
             ),
             freetype_status: FreetypeLibraryStatus::Unknown,

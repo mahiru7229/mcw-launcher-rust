@@ -169,9 +169,51 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
+  sign-windows:
+    name: Authenticode Sign Windows Binaries (SignPath)
+    needs: [release-gate, build]
+    if: vars.SIGNPATH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download unsigned Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mcw-launcher-windows-x64
+          path: unsigned-windows
+
+      - name: Submit SignPath Foundation signing request
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-name: mcw-launcher-windows-x64
+          wait-for-completion: true
+          output-artifact-directory: signed-windows
+
+      - name: Package signed Windows artifact cleanly
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "signed-windows/signed" | Out-Null
+          $zip = Get-ChildItem -Path "signed-windows" -Filter "*.zip" | Select-Object -First 1
+          Move-Item -Force $zip.FullName "signed-windows/signed/mcw-launcher-windows-x64.zip"
+          $hash = (Get-FileHash "signed-windows/signed/mcw-launcher-windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  mcw-launcher-windows-x64.zip" | Out-File -Encoding ascii "signed-windows/signed/mcw-launcher-windows-x64.zip.sha256"
+
+      - name: Upload signed Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcw-launcher-windows-x64-signed
+          path: |
+            signed-windows/signed/mcw-launcher-windows-x64.zip
+            signed-windows/signed/mcw-launcher-windows-x64.zip.sha256
+          if-no-files-found: error
+
   publish-assets:
     name: Upload Assets to GitHub Release
-    needs: [release-gate, build]
+    needs: [release-gate, build, sign-windows]
+    if: ${{ !cancelled() && (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -179,6 +221,18 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
+
+      - name: Prefer signed Windows artifact when available
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          if [ -f signed/mcw-launcher-windows-x64.zip ]; then
+            mv -f signed/mcw-launcher-windows-x64.zip mcw-launcher-windows-x64.zip
+            mv -f signed/mcw-launcher-windows-x64.zip.sha256 mcw-launcher-windows-x64.zip.sha256
+            rmdir signed || true
+          fi
+          ls -lh
 
       - name: Verify archives and combine SHA256SUMS
         shell: bash

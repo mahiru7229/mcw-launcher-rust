@@ -689,6 +689,8 @@ impl McwApp {
             SecurityStatus::Unknown => (p.surface, p.text_muted),
         };
         ui.add_space(6.0);
+        let mut sync_verify_clicked = false;
+        let syncing_sec = self.security_sync_busy || self.security_policy_refreshing;
         Frame::new()
             .fill(sec_bg)
             .stroke(Stroke::new(1.0_f32, sec_fg.gamma_multiply(0.75)))
@@ -696,20 +698,55 @@ impl McwApp {
             .inner_margin(Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new(sec.status.display_title())
-                            .strong()
-                            .size(11.5)
-                            .color(sec_fg),
-                    );
-                    ui.label(
-                        RichText::new(format!("— {}", sec.description))
-                            .size(11.5)
-                            .color(p.text),
-                    );
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        let reserve = if sec.status == SecurityStatus::Protected {
+                            0.0
+                        } else {
+                            132.0
+                        };
+                        ui.set_max_width((ui.available_width() - reserve).max(160.0));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(sec.status.display_title())
+                                    .strong()
+                                    .size(11.5)
+                                    .color(sec_fg),
+                            );
+                            ui.label(
+                                RichText::new(format!("— {}", sec.description))
+                                    .size(11.5)
+                                    .color(p.text),
+                            );
+                        });
+                    });
+                    if sec.status != SecurityStatus::Protected {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let btn_lbl = if syncing_sec {
+                                "Verifying..."
+                            } else {
+                                "Sync & Verify"
+                            };
+                            let btn = Button::new(RichText::new(btn_lbl).size(11.5).strong())
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0_f32, sec_fg.gamma_multiply(0.8)))
+                                .corner_radius(CornerRadius::same(8));
+                            if ui
+                                .add_enabled(!syncing_sec, btn)
+                                .on_hover_text(
+                                    "Refresh Signed Policy, sync official Mojang FreeType checksums, and re-verify this instance.",
+                                )
+                                .clicked()
+                            {
+                                sync_verify_clicked = true;
+                            }
+                        });
+                    }
                 });
             });
+        if sync_verify_clicked {
+            self.start_sync_and_verify_security(&inst, ctx);
+        }
 
         ui.add_space(12.0);
 

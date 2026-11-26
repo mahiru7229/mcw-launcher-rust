@@ -142,7 +142,7 @@ impl SecurityManager {
                 status_label: SecurityStatus::Protected.as_str().to_string(),
                 headline: "Protected — No FreeType Dependency".to_string(),
                 description: format!(
-                    "Protected: Resolved dependencies for '{}' do not use org.lwjgl:lwjgl-freetype (classic STB font path). MCW Security Agent is unnecessary and automatically omitted.",
+                    "Resolved dependencies for '{}' do not use org.lwjgl:lwjgl-freetype (classic STB font path). MCW Security Agent is unnecessary and automatically omitted.",
                     merged_metadata.id
                 ),
                 freetype_status: FreetypeLibraryStatus::NotUsed,
@@ -247,7 +247,7 @@ impl SecurityManager {
                 status_label: SecurityStatus::Protected.as_str().to_string(),
                 headline: format!("Protected — Verified Patched FreeType ({detected_version})"),
                 description: format!(
-                    "Protected: Verified {verified_artifacts} on-disk artifact/native checksum(s) for org.lwjgl:lwjgl-freetype:{detected_version} (FreeType 2.15.0+). The Minecraft2Shell (Ins_SHZ) bug is fixed natively; temporary MCW Security Agent is automatically disabled."
+                    "Verified {verified_artifacts} on-disk artifact/native checksum(s) for org.lwjgl:lwjgl-freetype:{detected_version} (FreeType 2.15.0+). The Minecraft2Shell (Ins_SHZ) bug is fixed natively; temporary MCW Security Agent is automatically disabled."
                 ),
                 freetype_status: FreetypeLibraryStatus::PatchedVerified {
                     version: detected_version,
@@ -273,7 +273,7 @@ impl SecurityManager {
                 status_label: SecurityStatus::Unknown.as_str().to_string(),
                 headline: format!("Unknown — Missing or Unverified FreeType ({detected_version})"),
                 description: format!(
-                    "Unknown: Dependency org.lwjgl:lwjgl-freetype:{detected_version} is not yet present or failed SHA-1 verification on disk ({detail}). MCW cannot confirm library safety until files are downloaded and verified."
+                    "Dependency org.lwjgl:lwjgl-freetype:{detected_version} is not yet present or failed SHA-1 verification on disk ({detail}). MCW cannot confirm library safety until files are downloaded and verified."
                 ),
                 freetype_status: FreetypeLibraryStatus::MissingOrCorrupt {
                     version: detected_version,
@@ -306,7 +306,7 @@ impl SecurityManager {
                             "Unprotected — Security Agent Failed ({detected_version})"
                         ),
                         description: format!(
-                            "Unprotected: org.lwjgl:lwjgl-freetype:{detected_version} is vulnerable to Minecraft2Shell (FreeType < 2.15.0) and MCW Security Agent reported an error during runtime instrumentation: {}. Avoid untrusted servers or resource packs.",
+                            "org.lwjgl:lwjgl-freetype:{detected_version} is vulnerable to Minecraft2Shell (FreeType < 2.15.0) and MCW Security Agent reported an error during runtime instrumentation: {}. Avoid untrusted servers or resource packs.",
                             rt.detail
                         ),
                         freetype_status: FreetypeLibraryStatus::Vulnerable {
@@ -340,7 +340,7 @@ impl SecurityManager {
                     "Unprotected — Vulnerable FreeType ({detected_version})"
                 ),
                 description: format!(
-                    "Unprotected: Resolved library org.lwjgl:lwjgl-freetype:{detected_version} contains the FreeType < 2.15.0 Ins_SHZ RCE flaw, and runtime protection is OFF ({reason}). Malicious server or local .ttf resource packs can execute native code."
+                    "Resolved library org.lwjgl:lwjgl-freetype:{detected_version} contains the FreeType < 2.15.0 Ins_SHZ RCE flaw, and runtime protection is OFF ({reason}). Malicious server or local .ttf resource packs can execute native code."
                 ),
                 freetype_status: FreetypeLibraryStatus::Vulnerable {
                     version: detected_version,
@@ -363,7 +363,7 @@ impl SecurityManager {
                 status_label: SecurityStatus::Unprotected.as_str().to_string(),
                 headline: format!("Unprotected — Incompatible Java Runtime ({java_major})"),
                 description: format!(
-                    "Unprotected: org.lwjgl:lwjgl-freetype:{detected_version} is vulnerable and the configured Java runtime cannot load MCW Security Agent ({err})."
+                    "org.lwjgl:lwjgl-freetype:{detected_version} is vulnerable and the configured Java runtime cannot load MCW Security Agent ({err})."
                 ),
                 freetype_status: FreetypeLibraryStatus::Vulnerable {
                     version: detected_version,
@@ -400,7 +400,7 @@ impl SecurityManager {
                 "Partially Protected — Runtime Hinting Guard ({detected_version})"
             ),
             description: format!(
-                "Partially Protected: This instance uses unpatched org.lwjgl:lwjgl-freetype:{detected_version} (FreeType < 2.15.0). {runtime_note} Keep Server Resource Packs cautious until Mojang ships FreeType 2.15.0+ for this Minecraft branch."
+                "This instance uses unpatched org.lwjgl:lwjgl-freetype:{detected_version} (FreeType < 2.15.0). {runtime_note} Keep Server Resource Packs cautious until Mojang ships FreeType 2.15.0+ for this Minecraft branch."
             ),
             freetype_status: FreetypeLibraryStatus::Vulnerable {
                 version: detected_version,

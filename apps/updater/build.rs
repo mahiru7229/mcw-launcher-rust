@@ -12,6 +12,9 @@ fn main() {
             "FileDescription",
             "MCW Launcher: Rust Edition - Standalone Transactional Updater",
         );
+        res.set("CompanyName", "MCW Launcher Open Source");
+        res.set("LegalCopyright", "MIT License");
+        res.set("OriginalFilename", "mcw-updater.exe");
         if let Err(err) = res.compile() {
             println!("cargo:warning=winresource compile skipped: {err}");
         }
