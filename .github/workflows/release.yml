@@ -173,7 +173,7 @@ jobs:
     name: Authenticode Sign Windows Binaries (SignPath)
     needs: [release-gate, build]
     if: vars.SIGNPATH_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Download unsigned Windows artifact
         uses: actions/download-artifact@v4
@@ -192,11 +192,30 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: signed-windows
 
-      - name: Package signed Windows artifact cleanly
+      - name: Verify Authenticode signatures and package signed Windows artifact
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "signed-windows/signed" | Out-Null
           $zip = Get-ChildItem -Path "signed-windows" -Filter "*.zip" | Select-Object -First 1
+          if (-not $zip) {
+            throw "No signed Windows zip archive returned by SignPath."
+          }
+          $verifyDir = "signed-windows/verify_extract"
+          New-Item -ItemType Directory -Force -Path $verifyDir | Out-Null
+          Expand-Archive -Path $zip.FullName -DestinationPath $verifyDir -Force
+          foreach ($exeName in @("MCW-Launcher.exe", "mcw-updater.exe")) {
+            $exePath = Join-Path $verifyDir $exeName
+            if (-not (Test-Path $exePath)) {
+              throw "Missing signed executable in archive: $exeName"
+            }
+            $sig = Get-AuthenticodeSignature -FilePath $exePath
+            if ($sig.Status -ne 'Valid') {
+              throw "Authenticode signature invalid for ${exeName}: $($sig.Status) - $($sig.StatusMessage)"
+            }
+            Write-Host "Verified Authenticode signature for ${exeName}: $($sig.SignerCertificate.Subject)"
+          }
+          Remove-Item -Recurse -Force $verifyDir
+
+          New-Item -ItemType Directory -Force -Path "signed-windows/signed" | Out-Null
           Move-Item -Force $zip.FullName "signed-windows/signed/mcw-launcher-windows-x64.zip"
           $hash = (Get-FileHash "signed-windows/signed/mcw-launcher-windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  mcw-launcher-windows-x64.zip" | Out-File -Encoding ascii "signed-windows/signed/mcw-launcher-windows-x64.zip.sha256"

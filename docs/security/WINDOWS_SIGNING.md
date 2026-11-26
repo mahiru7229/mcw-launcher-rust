@@ -16,7 +16,19 @@ Because **MCW Launcher: Rust Edition** is open-source (MIT License, public GitHu
    - `SIGNPATH_PROJECT_SLUG` = `mcw-launcher-rust`
    - `SIGNPATH_SIGNING_POLICY_SLUG` = `release-signing`
 
-When `SIGNPATH_ENABLED` is `true`, `.github/workflows/release.yml` automatically submits the Windows executables/archive through SignPath before uploading to the GitHub Release, producing Authenticode-signed Windows binaries.
+When `SIGNPATH_ENABLED` is `true`, `.github/workflows/release.yml` automatically submits `mcw-launcher-windows-x64.zip` through SignPath and cryptographically verifies via PowerShell `Get-AuthenticodeSignature` that both **`MCW-Launcher.exe`** and **`mcw-updater.exe`** carry valid Authenticode signatures before uploading to the GitHub Release.
+
+Configure your SignPath **Artifact Configuration** XML to sign all Windows executables inside `mcw-launcher-windows-x64.zip`:
+
+```xml
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="MCW-Launcher.exe" />
+    <pe-file path="mcw-updater.exe" />
+    <pe-file path="mcw-cli.exe" />
+  </zip-file>
+</artifact-configuration>
+```
 
 ## 2. Submitting Releases to Microsoft Security Intelligence (SmartScreen Reputation)
 
@@ -24,5 +36,5 @@ Even with a valid Authenticode signature (including SignPath or Trusted Signing)
 
 1. Download the released `mcw-launcher-windows-x64.zip` (and note its `SHA256SUMS.txt`).
 2. Visit Microsoft's **Software Developer Submission Portal**: <https://www.microsoft.com/en-us/wdsi/filesubmission>
-3. Sign in with a Microsoft account, choose **Software developer**, select **Microsoft Defender SmartScreen**, and upload the binary (`MCW-Launcher.exe`) with clean project details pointing to the GitHub Release URL.
-4. Keep `VERSIONINFO` metadata (`ProductName`, `CompanyName`, `FileDescription`, `LegalCopyright`) and `<requestedExecutionLevel level="asInvoker" />` consistent across releases (configured in `apps/desktop/build.rs` and `apps/updater/build.rs`).
+3. Sign in with a Microsoft account, choose **Software developer**, select **Microsoft Defender SmartScreen**, and upload both **`MCW-Launcher.exe`** and **`mcw-updater.exe`** with clean project details pointing to the GitHub Release URL.
+4. Keep `VERSIONINFO` metadata (`ProductName`, `CompanyName`, `FileDescription`, `LegalCopyright`) consistent across releases (configured in `apps/desktop/build.rs` and `apps/updater/build.rs`).
