@@ -10,7 +10,10 @@ pub(crate) use controllers::{
 use self::platform::default_user_downloads_dir;
 use crate::background::{decode_user_image, BackgroundManager};
 use crate::i18n::{LanguageManager, LauncherPrefs};
-use crate::skin_render::{default_skin_face_rgba, render_skin_face_rgba};
+use crate::skin_render::{
+    default_skin_face_rgba, render_skin_3d_rgba, render_skin_face_rgba, ALEX_SKIN_B64,
+    STEVE_SKIN_B64,
+};
 use crate::state::{
     ActiveTask, AppEvent, BrowserCategory, BrowserDetailPayload, BrowserProvider, CartModProvider,
     CartResolvedEntry, ChannelLogSink, ChannelProgressSink, ModCartItem, ModVersionChoice,
@@ -26,8 +29,8 @@ use eframe::egui::{
     TextEdit, Vec2,
 };
 use mcw_auth::{
-    AccountSkinManager, AccountStore, DeviceCodeResponse, MicrosoftAuthClient, OfflineAuth,
-    StoredAccount,
+    AccountSkinManager, AccountStore, DeviceCodeResponse, LocalSkinEntry, MicrosoftAuthClient,
+    MinecraftCape, OfflineAuth, StoredAccount,
 };
 use mcw_minecraft::{
     is_quick_play_supported, ForgePreflightManager, FreetypeLibraryStatus,
@@ -369,6 +372,22 @@ pub struct McwApp {
     ms_login_task: Option<tokio::task::JoinHandle<()>>,
     ms_device_code: Option<DeviceCodeResponse>,
     ms_qr_texture: Option<(String, egui::TextureHandle)>,
+
+    // v1.3.2: 3D Skin & Cape Manager modal
+    show_skin_manager_modal: bool,
+    skin_yaw: f32,
+    skin_pitch: f32,
+    skin_show_overlay: bool,
+    skin_variant_slim: bool,
+    skin_library: Vec<LocalSkinEntry>,
+    selected_skin_path: Option<PathBuf>,
+    skin_preview_png: Option<Vec<u8>>,
+    skin_cape_png: Option<Vec<u8>>,
+    skin_profile_capes: Vec<MinecraftCape>,
+    selected_cape_id: String,
+    skin_busy: bool,
+    skin_preview_texture: Option<egui::TextureHandle>,
+    skin_preview_dirty: bool,
 
     // Unified Content Browser OS Window (Mods / Modpacks / Resource / Shader / Data packs)
     show_content_browser: bool,
@@ -902,6 +921,20 @@ impl McwApp {
             ms_login_task: None,
             ms_device_code: None,
             ms_qr_texture: None,
+            show_skin_manager_modal: false,
+            skin_yaw: 0.38,
+            skin_pitch: 0.12,
+            skin_show_overlay: true,
+            skin_variant_slim: false,
+            skin_library: Vec::new(),
+            selected_skin_path: None,
+            skin_preview_png: None,
+            skin_cape_png: None,
+            skin_profile_capes: Vec::new(),
+            selected_cape_id: String::new(),
+            skin_busy: false,
+            skin_preview_texture: None,
+            skin_preview_dirty: true,
             show_content_browser: false,
             browser_category: BrowserCategory::Mods,
             browser_provider: BrowserProvider::Modrinth,
@@ -1281,6 +1314,7 @@ impl McwApp {
             || self.show_quick_search
             || self.show_create_modal
             || self.show_export_modal
+            || self.show_skin_manager_modal
             || self.show_account_modal
             || self.show_rename_modal
             || self.show_group_tags_modal
@@ -1387,6 +1421,8 @@ impl McwApp {
             Some("mcw_modal_theme_issues")
         } else if self.show_export_modal && has_inst {
             Some("mcw_modal_export_modpack")
+        } else if self.show_skin_manager_modal {
+            Some("mcw_modal_skin_manager")
         } else if self.show_account_modal {
             Some("mcw_modal_accounts")
         } else if self.show_create_modal {

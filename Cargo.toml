@@ -32,7 +32,7 @@ notify = "7"
 rand = "0.8"
 rayon = "1.10"
 regex = "1.11"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip", "deflate", "http2", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls", "gzip", "deflate", "http2", "socks"] }
 rfd = "0.15"
 ring = "0.17"
 rusqlite = { version = "0.32", features = ["bundled"] }

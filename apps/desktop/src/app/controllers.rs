@@ -5009,6 +5009,112 @@ impl McwApp {
                         }
                     }
                 }
+                AppEvent::SkinProfileLoaded { uuid, result } => {
+                    self.skin_busy = false;
+                    match result {
+                        Ok(crate::state::LoadedSkinProfile {
+                            profile,
+                            skin_bytes,
+                            cape_bytes,
+                        }) => {
+                            self.skin_profile_capes = profile.capes.clone();
+                            self.selected_cape_id = profile
+                                .active_cape()
+                                .map(|c| c.id.clone())
+                                .unwrap_or_default();
+                            if self.selected_skin_path.is_none() {
+                                self.skin_variant_slim = profile
+                                    .active_skin()
+                                    .is_some_and(|s| s.variant.eq_ignore_ascii_case("slim"));
+                                if let Some(ref sb) = skin_bytes {
+                                    self.skin_preview_png = Some(sb.clone());
+                                }
+                            }
+                            self.skin_cape_png = cape_bytes;
+                            if let Some(ref sb) = skin_bytes {
+                                let cache_path = AccountSkinManager::texture_path(
+                                    &self.paths.accounts_root,
+                                    &uuid,
+                                );
+                                let _ = mcw_storage::atomic_write_bytes(&cache_path, sb);
+                                self.account_avatars.remove(&uuid);
+                            }
+                            let store = AccountStore::new(&self.paths);
+                            if let Ok(list) = store.list() {
+                                if let Some(mut acc) = list.into_iter().find(|a| a.uuid == uuid) {
+                                    acc.skin_url = profile.active_skin_url();
+                                    let was_active = acc.active;
+                                    let _ = store.upsert(acc, was_active);
+                                    self.reload_accounts();
+                                }
+                            }
+                            self.skin_preview_dirty = true;
+                        }
+                        Err(err) => {
+                            self.notice_banner = Some((err, true));
+                        }
+                    }
+                }
+                AppEvent::SkinApplied {
+                    uuid,
+                    result,
+                    skin_bytes,
+                    cape_bytes,
+                } => {
+                    self.skin_busy = false;
+                    match result {
+                        Ok(profile) => {
+                            self.skin_profile_capes = profile.capes.clone();
+                            self.selected_cape_id = profile
+                                .active_cape()
+                                .map(|c| c.id.clone())
+                                .unwrap_or_default();
+                            self.skin_variant_slim = profile
+                                .active_skin()
+                                .is_some_and(|s| s.variant.eq_ignore_ascii_case("slim"));
+                            if self.selected_cape_id.is_empty() {
+                                self.skin_cape_png = None;
+                            } else if let Some(cb) = cape_bytes {
+                                self.skin_cape_png = Some(cb);
+                            }
+                            if let Some(ref sb) = skin_bytes {
+                                let cache_path = AccountSkinManager::texture_path(
+                                    &self.paths.accounts_root,
+                                    &uuid,
+                                );
+                                let _ = mcw_storage::atomic_write_bytes(&cache_path, sb);
+                                self.account_avatars.remove(&uuid);
+                            }
+                            let store = AccountStore::new(&self.paths);
+                            if let Ok(list) = store.list() {
+                                if let Some(mut acc) = list.into_iter().find(|a| a.uuid == uuid) {
+                                    acc.skin_url = profile.active_skin_url();
+                                    let was_active = acc.active;
+                                    let _ = store.upsert(acc, was_active);
+                                    self.reload_accounts();
+                                }
+                            }
+                            self.skin_preview_dirty = true;
+                            self.push_global_log(format!(
+                                "[SKINS] Applied skin/cape profile for '{}'.",
+                                profile.name
+                            ));
+                            self.notice_banner = Some((
+                                format!("Updated skin & cape for '{}'.", profile.name),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            self.notice_banner = Some((err, true));
+                        }
+                    }
+                }
+                AppEvent::SkinCapePreviewLoaded { cape_id, bytes } => {
+                    if self.selected_cape_id == cape_id {
+                        self.skin_cape_png = bytes;
+                        self.skin_preview_dirty = true;
+                    }
+                }
             }
         }
     }
@@ -9264,6 +9370,285 @@ impl super::McwApp {
                     Some((format!("Could not locate launcher executable: {err}"), true));
             }
         }
+    }
+
+    pub(crate) fn open_skin_manager(&mut self, ctx: &egui::Context) {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+
+        self.show_skin_manager_modal = true;
+        self.skin_yaw = 0.38;
+        self.skin_pitch = 0.12;
+        self.skin_show_overlay = true;
+        self.skin_library = AccountSkinManager::list_library_skins(&self.paths.project_root);
+        self.selected_skin_path = None;
+        self.skin_cape_png = None;
+        self.skin_profile_capes.clear();
+        self.selected_cape_id.clear();
+
+        let active = AccountStore::new(&self.paths)
+            .active_account()
+            .ok()
+            .flatten();
+        if let Some(ref acc) = active {
+            self.skin_variant_slim = AccountSkinManager::default_skin_variant(&acc.uuid) == "slim";
+            let cached = AccountSkinManager::cached_texture(&self.paths.accounts_root, acc)
+                .and_then(|p| std::fs::read(p).ok());
+            self.skin_preview_png = cached.or_else(|| {
+                let b64 = if self.skin_variant_slim {
+                    super::ALEX_SKIN_B64
+                } else {
+                    super::STEVE_SKIN_B64
+                };
+                STANDARD.decode(b64).ok()
+            });
+            if acc.account_type == AccountSource::Microsoft {
+                self.refresh_skin_profile_async(ctx);
+            }
+        } else {
+            self.skin_variant_slim = false;
+            self.skin_preview_png = STANDARD.decode(super::STEVE_SKIN_B64).ok();
+        }
+        self.skin_preview_dirty = true;
+    }
+
+    pub(crate) fn refresh_skin_profile_async(&mut self, ctx: &egui::Context) {
+        let Some(acc) = AccountStore::new(&self.paths)
+            .active_account()
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        if acc.account_type != AccountSource::Microsoft || self.skin_busy {
+            return;
+        }
+        self.skin_busy = true;
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        let uuid = acc.uuid.clone();
+
+        self.runtime.spawn(async move {
+            let res = async {
+                let store = AccountStore::new(&paths);
+                let rt = store
+                    .load_refresh_token(&uuid)
+                    .map_err(|e| format!("Microsoft session unavailable: {e}"))?;
+                let ms = MicrosoftAuthClient::new().map_err(|e| e.to_string())?;
+                let refreshed = ms
+                    .refresh_microsoft_token(&rt)
+                    .await
+                    .map_err(|e| format!("Microsoft token refresh failed: {e}"))?;
+                let login = ms
+                    .complete_minecraft_chain(refreshed)
+                    .await
+                    .map_err(|e| format!("Minecraft authentication failed: {e}"))?;
+                if let Some(ref new_rt) = login.refresh_token {
+                    let _ = store.store_refresh_token(&uuid, new_rt);
+                }
+                let profile = ms
+                    .fetch_full_profile(&login.authentication.access_token)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let skin_bytes = if let Some(url) = profile.active_skin_url() {
+                    AccountSkinManager::download_texture_bytes(&url).await
+                } else {
+                    None
+                };
+                let cape_bytes = if let Some(cape) = profile.active_cape() {
+                    AccountSkinManager::download_texture_bytes(&cape.url).await
+                } else {
+                    None
+                };
+                Ok::<_, String>(crate::state::LoadedSkinProfile {
+                    profile,
+                    skin_bytes,
+                    cape_bytes,
+                })
+            }
+            .await;
+            let _ = tx.send(AppEvent::SkinProfileLoaded { uuid, result: res });
+            ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn preview_selected_cape_async(&mut self, cape_id: &str, ctx: &egui::Context) {
+        if cape_id.is_empty() {
+            self.skin_cape_png = None;
+            self.skin_preview_dirty = true;
+            return;
+        }
+        let Some(cape_url) = self
+            .skin_profile_capes
+            .iter()
+            .find(|c| c.id == cape_id)
+            .map(|c| c.url.clone())
+        else {
+            self.skin_cape_png = None;
+            self.skin_preview_dirty = true;
+            return;
+        };
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        let cid = cape_id.to_string();
+        self.runtime.spawn(async move {
+            let bytes = AccountSkinManager::download_texture_bytes(&cape_url).await;
+            let _ = tx.send(AppEvent::SkinCapePreviewLoaded {
+                cape_id: cid,
+                bytes,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn apply_skin_and_cape_async(&mut self, ctx: &egui::Context) {
+        let Some(acc) = AccountStore::new(&self.paths)
+            .active_account()
+            .ok()
+            .flatten()
+        else {
+            self.notice_banner = Some(("No active account selected.".to_string(), true));
+            return;
+        };
+        if acc.account_type != AccountSource::Microsoft {
+            self.notice_banner = Some((
+                "Applying skin & cape requires a Microsoft account.".to_string(),
+                true,
+            ));
+            return;
+        }
+        let Some(skin_bytes) = self.skin_preview_png.clone() else {
+            self.notice_banner = Some(("No skin image selected to upload.".to_string(), true));
+            return;
+        };
+        if self.skin_busy {
+            return;
+        }
+        self.skin_busy = true;
+        let variant = if self.skin_variant_slim {
+            "slim"
+        } else {
+            "classic"
+        }
+        .to_string();
+        let cape_id = self.selected_cape_id.clone();
+        let has_unlocked_capes = !self.skin_profile_capes.is_empty();
+        let cape_url = self
+            .skin_profile_capes
+            .iter()
+            .find(|c| c.id == cape_id)
+            .map(|c| c.url.clone());
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        let uuid = acc.uuid.clone();
+
+        self.runtime.spawn(async move {
+            let res: Result<(mcw_auth::MinecraftProfile, Option<Vec<u8>>), String> = async {
+                let store = AccountStore::new(&paths);
+                let rt = store
+                    .load_refresh_token(&uuid)
+                    .map_err(|e| format!("Microsoft session unavailable: {e}"))?;
+                let ms = MicrosoftAuthClient::new().map_err(|e| e.to_string())?;
+                let refreshed = ms
+                    .refresh_microsoft_token(&rt)
+                    .await
+                    .map_err(|e| format!("Microsoft token refresh failed: {e}"))?;
+                let login = ms
+                    .complete_minecraft_chain(refreshed)
+                    .await
+                    .map_err(|e| format!("Minecraft authentication failed: {e}"))?;
+                if let Some(ref new_rt) = login.refresh_token {
+                    let _ = store.store_refresh_token(&uuid, new_rt);
+                }
+                let mc_token = &login.authentication.access_token;
+                let mut profile = ms
+                    .upload_skin(mc_token, &variant, skin_bytes.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut fetched_cape = None;
+                if cape_id.is_empty() {
+                    if has_unlocked_capes {
+                        profile = ms.hide_cape(mc_token).await.map_err(|e| e.to_string())?;
+                    }
+                } else {
+                    profile = ms
+                        .set_active_cape(mc_token, &cape_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if let Some(ref cu) = cape_url {
+                        fetched_cape = AccountSkinManager::download_texture_bytes(cu).await;
+                    }
+                }
+                Ok((profile, fetched_cape))
+            }
+            .await;
+
+            match res {
+                Ok((profile, cape_bytes)) => {
+                    let _ = tx.send(AppEvent::SkinApplied {
+                        uuid,
+                        result: Ok(profile),
+                        skin_bytes: Some(skin_bytes),
+                        cape_bytes,
+                    });
+                }
+                Err(err) => {
+                    let _ = tx.send(AppEvent::SkinApplied {
+                        uuid,
+                        result: Err(err),
+                        skin_bytes: None,
+                        cape_bytes: None,
+                    });
+                }
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn refresh_skin_preview_texture(&mut self, ctx: &egui::Context) {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+
+        if !self.skin_preview_dirty && self.skin_preview_texture.is_some() {
+            return;
+        }
+        let skin_bytes = match self.skin_preview_png.clone() {
+            Some(b) => b,
+            None => {
+                let b64 = if self.skin_variant_slim {
+                    super::ALEX_SKIN_B64
+                } else {
+                    super::STEVE_SKIN_B64
+                };
+                match STANDARD.decode(b64) {
+                    Ok(b) => b,
+                    Err(_) => return,
+                }
+            }
+        };
+        let cape_ref = if self.selected_cape_id.is_empty() {
+            None
+        } else {
+            self.skin_cape_png.as_deref()
+        };
+        if let Some((size, rgba)) = super::render_skin_3d_rgba(
+            &skin_bytes,
+            cape_ref,
+            self.skin_variant_slim,
+            self.skin_show_overlay,
+            self.skin_yaw,
+            self.skin_pitch,
+            220,
+            310,
+        ) {
+            let img = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+            let handle =
+                ctx.load_texture("mcw_skin_3d_preview", img, egui::TextureOptions::NEAREST);
+            self.skin_preview_texture = Some(handle);
+        }
+        self.skin_preview_dirty = false;
     }
 }
 

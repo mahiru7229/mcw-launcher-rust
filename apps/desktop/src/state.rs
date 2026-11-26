@@ -1,5 +1,5 @@
 use eframe::egui::Context;
-use mcw_auth::{DeviceCodeResponse, StoredAccount};
+use mcw_auth::{DeviceCodeResponse, MinecraftProfile, StoredAccount};
 use mcw_minecraft::{
     InstanceSecurityAssessment, LibrarySyncOutcome, OptiFineState, RepairReport,
     ResolvedSecurityPolicy, SavedServer, ScreenshotInfo, WorldInfo,
@@ -546,6 +546,27 @@ pub enum AppEvent {
         url: String,
         result: Result<([usize; 2], Vec<u8>), String>,
     },
+    SkinProfileLoaded {
+        uuid: String,
+        result: Result<LoadedSkinProfile, String>,
+    },
+    SkinApplied {
+        uuid: String,
+        result: Result<MinecraftProfile, String>,
+        skin_bytes: Option<Vec<u8>>,
+        cape_bytes: Option<Vec<u8>>,
+    },
+    SkinCapePreviewLoaded {
+        cape_id: String,
+        bytes: Option<Vec<u8>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedSkinProfile {
+    pub profile: MinecraftProfile,
+    pub skin_bytes: Option<Vec<u8>>,
+    pub cape_bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Default)]

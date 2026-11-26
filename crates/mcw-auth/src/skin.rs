@@ -8,6 +8,14 @@ use std::time::Duration;
 const MAX_SKIN_BYTES: usize = 4 * 1024 * 1024;
 const PNG_MAGIC: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalSkinEntry {
+    pub file_name: String,
+    pub display_name: String,
+    pub path: PathBuf,
+    pub size_bytes: u64,
+}
+
 pub struct AccountSkinManager;
 
 impl AccountSkinManager {
@@ -100,6 +108,140 @@ impl AccountSkinManager {
             .map(crate::OfflineAuth::default_skin_variant)
             .unwrap_or("classic")
     }
+
+    /// Shared local Skin Library directory at `<project_root>/skins/`.
+    pub fn library_dir(project_root: &Path) -> PathBuf {
+        project_root.join("skins")
+    }
+
+    /// List PNG skin files saved inside `<project_root>/skins/`.
+    pub fn list_library_skins(project_root: &Path) -> Vec<LocalSkinEntry> {
+        let dir = Self::library_dir(project_root);
+        let Ok(rd) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut entries: Vec<LocalSkinEntry> = rd
+            .flatten()
+            .filter_map(|e| {
+                let path = e.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let file_name = e.file_name().to_str()?.to_string();
+                if !file_name.to_ascii_lowercase().ends_with(".png") {
+                    return None;
+                }
+                let size_bytes = e.metadata().ok()?.len();
+                if size_bytes <= 8 {
+                    return None;
+                }
+                let display_name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&file_name)
+                    .to_string();
+                Some(LocalSkinEntry {
+                    file_name,
+                    display_name,
+                    path,
+                    size_bytes,
+                })
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            a.display_name
+                .to_ascii_lowercase()
+                .cmp(&b.display_name.to_ascii_lowercase())
+                .then_with(|| a.file_name.cmp(&b.file_name))
+        });
+        entries
+    }
+
+    /// Import a local `.png` skin file into `<project_root>/skins/`, validating PNG header and size.
+    pub fn import_library_skin(project_root: &Path, src: &Path) -> crate::Result<LocalSkinEntry> {
+        let bytes = fs::read(src)?;
+        if bytes.len() <= 8 || bytes.len() > MAX_SKIN_BYTES || !bytes.starts_with(PNG_MAGIC) {
+            return Err(crate::AuthError::Profile(
+                "Selected skin file is not a valid PNG (max 4 MB).".to_string(),
+            ));
+        }
+        let dir = Self::library_dir(project_root);
+        fs::create_dir_all(&dir)?;
+
+        let stem = src
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("skin");
+        let mut file_name = format!("{stem}.png");
+        let mut dest = dir.join(&file_name);
+        let mut idx = 2usize;
+        while dest.exists() {
+            file_name = format!("{stem} ({idx}).png");
+            dest = dir.join(&file_name);
+            idx += 1;
+        }
+        atomic_write_bytes(&dest, &bytes)?;
+        let display_name = dest
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&file_name)
+            .to_string();
+        Ok(LocalSkinEntry {
+            file_name,
+            display_name,
+            path: dest,
+            size_bytes: bytes.len() as u64,
+        })
+    }
+
+    /// Delete a skin PNG inside `<project_root>/skins/` (with strict path-traversal check).
+    pub fn delete_library_skin(project_root: &Path, file_name: &str) -> crate::Result<()> {
+        if file_name.is_empty()
+            || file_name.contains('/')
+            || file_name.contains('\\')
+            || file_name.contains("..")
+            || !file_name.to_ascii_lowercase().ends_with(".png")
+        {
+            return Err(crate::AuthError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid skin filename",
+            )));
+        }
+        let target = Self::library_dir(project_root).join(file_name);
+        if target.is_file() {
+            fs::remove_file(&target)?;
+        }
+        Ok(())
+    }
+
+    /// Download PNG texture bytes (skin or cape) from `textures.minecraft.net`.
+    pub async fn download_texture_bytes(url: &str) -> Option<Vec<u8>> {
+        let valid_url = Self::validate_skin_url(url)?;
+        let http = reqwest::Client::builder()
+            .user_agent(mcw_models::user_agent())
+            .timeout(Duration::from_secs(15))
+            .build()
+            .ok()?;
+        let resp = http
+            .get(&valid_url)
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?;
+        if let Some(len) = resp.content_length() {
+            if len as usize > MAX_SKIN_BYTES {
+                return None;
+            }
+        }
+        let bytes = resp.bytes().await.ok()?;
+        if bytes.len() <= 8 || bytes.len() > MAX_SKIN_BYTES || !bytes.starts_with(PNG_MAGIC) {
+            return None;
+        }
+        Some(bytes.to_vec())
+    }
 }
 
 #[cfg(test)]
@@ -147,5 +289,30 @@ mod tests {
         );
         AccountSkinManager::remove_cached_texture(dir.path(), &msa.uuid);
         assert!(AccountSkinManager::cached_texture(dir.path(), &msa).is_none());
+    }
+
+    #[test]
+    fn manages_local_skin_library_import_list_and_delete() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("cool_skin.png");
+        fs::write(&src, b"\x89PNG\r\n\x1a\nfake_png_bytes").unwrap();
+
+        let imported = AccountSkinManager::import_library_skin(dir.path(), &src).unwrap();
+        assert_eq!(imported.file_name, "cool_skin.png");
+        assert_eq!(imported.display_name, "cool_skin");
+
+        let dup = AccountSkinManager::import_library_skin(dir.path(), &src).unwrap();
+        assert_eq!(dup.file_name, "cool_skin (2).png");
+
+        let list = AccountSkinManager::list_library_skins(dir.path());
+        assert_eq!(list.len(), 2);
+
+        AccountSkinManager::delete_library_skin(dir.path(), "cool_skin.png").unwrap();
+        assert_eq!(AccountSkinManager::list_library_skins(dir.path()).len(), 1);
+        assert!(AccountSkinManager::delete_library_skin(dir.path(), "../evil.png").is_err());
+
+        let invalid = dir.path().join("bad.png");
+        fs::write(&invalid, b"not_a_png").unwrap();
+        assert!(AccountSkinManager::import_library_skin(dir.path(), &invalid).is_err());
     }
 }

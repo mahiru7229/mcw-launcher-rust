@@ -9,11 +9,11 @@ pub use account_store::{AccountStore, StoredAccount};
 pub use integrity::AccountIntegrity;
 pub use microsoft::{
     DeviceCodeResponse, MicrosoftAuthClient, MicrosoftLoginResult, MicrosoftOAuthToken,
-    MinecraftProfile,
+    MinecraftCape, MinecraftProfile, MinecraftSkin,
 };
 pub use offline::OfflineAuth;
 pub use pkce::PkceChallenge;
-pub use skin::AccountSkinManager;
+pub use skin::{AccountSkinManager, LocalSkinEntry};
 
 use thiserror::Error;
 

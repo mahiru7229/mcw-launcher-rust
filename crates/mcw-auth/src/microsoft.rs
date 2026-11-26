@@ -23,6 +23,8 @@ const XBL_AUTH_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_LOGIN_URL: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
 const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profile";
+const MC_SKINS_URL: &str = "https://api.minecraftservices.com/minecraft/profile/skins";
+const MC_ACTIVE_CAPE_URL: &str = "https://api.minecraftservices.com/minecraft/profile/capes/active";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DeviceCodeResponse {
@@ -49,28 +51,56 @@ pub struct MicrosoftOAuthToken {
     pub expires_in: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MinecraftProfile {
     pub id: String,
     pub name: String,
     #[serde(default)]
     pub skins: Vec<MinecraftSkin>,
+    #[serde(default)]
+    pub capes: Vec<MinecraftCape>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct MinecraftSkin {
+    #[serde(default)]
+    pub id: String,
     #[serde(default)]
     pub url: String,
     #[serde(default)]
     pub state: String,
+    #[serde(default)]
+    pub variant: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct MinecraftCape {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub alias: String,
 }
 
 impl MinecraftProfile {
-    pub fn active_skin_url(&self) -> Option<String> {
+    pub fn active_skin(&self) -> Option<&MinecraftSkin> {
         self.skins
             .iter()
             .find(|s| s.state.eq_ignore_ascii_case("ACTIVE"))
             .or_else(|| self.skins.first())
+    }
+
+    pub fn active_cape(&self) -> Option<&MinecraftCape> {
+        self.capes
+            .iter()
+            .find(|c| c.state.eq_ignore_ascii_case("ACTIVE"))
+    }
+
+    pub fn active_skin_url(&self) -> Option<String> {
+        self.active_skin()
             .map(|s| s.url.clone())
             .filter(|u| !u.is_empty())
     }
@@ -442,6 +472,95 @@ impl MicrosoftAuthClient {
             let status = resp.status();
             return Err(AuthError::Profile(format!(
                 "Unable to load Minecraft profile (HTTP {status})"
+            )));
+        }
+
+        Ok(resp.json::<MinecraftProfile>().await?)
+    }
+
+    /// Fetch the full Mojang profile (including active skin variant and unlocked capes).
+    pub async fn fetch_full_profile(&self, mc_access_token: &str) -> Result<MinecraftProfile> {
+        self.fetch_minecraft_profile(mc_access_token).await
+    }
+
+    /// Upload a PNG skin (`64x64` or `64x32`) and apply `classic` or `slim` arm model.
+    pub async fn upload_skin(
+        &self,
+        mc_access_token: &str,
+        variant: &str,
+        png_bytes: Vec<u8>,
+    ) -> Result<MinecraftProfile> {
+        let normalized_variant = if variant.eq_ignore_ascii_case("slim") {
+            "slim"
+        } else {
+            "classic"
+        };
+        let file_part = reqwest::multipart::Part::bytes(png_bytes)
+            .file_name("skin.png")
+            .mime_str("image/png")
+            .map_err(|e| AuthError::Profile(format!("Invalid skin MIME type: {e}")))?;
+        let form = reqwest::multipart::Form::new()
+            .text("variant", normalized_variant.to_string())
+            .part("file", file_part);
+
+        let resp = self
+            .http
+            .post(MC_SKINS_URL)
+            .bearer_auth(mc_access_token)
+            .multipart(form)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AuthError::Profile(format!(
+                "Failed to upload skin (HTTP {status}): {text}"
+            )));
+        }
+
+        Ok(resp.json::<MinecraftProfile>().await?)
+    }
+
+    /// Equip an unlocked cape by its Mojang cape ID.
+    pub async fn set_active_cape(
+        &self,
+        mc_access_token: &str,
+        cape_id: &str,
+    ) -> Result<MinecraftProfile> {
+        let resp = self
+            .http
+            .put(MC_ACTIVE_CAPE_URL)
+            .bearer_auth(mc_access_token)
+            .json(&json!({ "capeId": cape_id }))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AuthError::Profile(format!(
+                "Failed to equip cape (HTTP {status}): {text}"
+            )));
+        }
+
+        Ok(resp.json::<MinecraftProfile>().await?)
+    }
+
+    /// Unequip / hide the currently active cape on Mojang profile.
+    pub async fn hide_cape(&self, mc_access_token: &str) -> Result<MinecraftProfile> {
+        let resp = self
+            .http
+            .delete(MC_ACTIVE_CAPE_URL)
+            .bearer_auth(mc_access_token)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AuthError::Profile(format!(
+                "Failed to hide cape (HTTP {status}): {text}"
             )));
         }
 

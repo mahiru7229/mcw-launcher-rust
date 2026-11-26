@@ -2082,8 +2082,17 @@ impl McwApp {
                         });
 
                         ui.add_space(10.0);
-                        if ui.button(self.t("common.close")).clicked() {
-                            open = false;
+                        let mut open_skins_clicked = false;
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Manage Skins & Capes...").clicked() {
+                                open_skins_clicked = true;
+                            }
+                            if ui.button(self.t("common.close")).clicked() {
+                                open = false;
+                            }
+                        });
+                        if open_skins_clicked {
+                            self.open_skin_manager(ctx);
                         }
                     });
                 },
@@ -2099,6 +2108,391 @@ impl McwApp {
                     self.cancel_microsoft_login();
                 }
                 self.show_account_modal = false;
+            }
+        }
+
+        // 4b. 3D Skin & Cape Manager In-App Modal (Centered)
+        if self.show_skin_manager_modal {
+            self.refresh_skin_preview_texture(ctx);
+            let mut open = self.show_skin_manager_modal;
+            let notice = self.modal_notice_for("mcw_modal_skin_manager");
+            let active_account = AccountStore::new(&self.paths)
+                .active_account()
+                .ok()
+                .flatten();
+            let active_is_msa = active_account
+                .as_ref()
+                .is_some_and(|a| a.account_type == AccountSource::Microsoft);
+            let active_label = active_account
+                .as_ref()
+                .map(|a| {
+                    let kind = if a.account_type == AccountSource::Microsoft {
+                        "Microsoft"
+                    } else {
+                        "Offline"
+                    };
+                    format!("{} ({kind})", a.username)
+                })
+                .unwrap_or_else(|| "None".to_string());
+
+            let mut do_import = false;
+            let mut do_refresh = false;
+            let mut do_apply = false;
+            let mut select_local: Option<std::path::PathBuf> = None;
+            let mut delete_local: Option<String> = None;
+            let mut reset_to_active = false;
+            let mut cape_changed_to: Option<String> = None;
+
+            let (keep_open, dismiss_notice) = render_in_app_modal(
+                ctx,
+                "mcw_modal_skin_manager",
+                "3D Skin & Cape Manager",
+                [760.0, 540.0],
+                [520.0, 400.0],
+                p,
+                notice.as_ref(),
+                |ui| {
+                    ui.columns(2, |cols| {
+                        // Left Column: Interactive 3D Character Viewport
+                        let left = &mut cols[0];
+                        left.vertical_centered(|ui| {
+                            Frame::new()
+                                .fill(p.elevated)
+                                .stroke(Stroke::new(1.0_f32, p.border))
+                                .corner_radius(CornerRadius::same(12))
+                                .inner_margin(egui::Margin::same(10))
+                                .show(ui, |ui| {
+                                    let preview_sz = Vec2::new(220.0, 310.0);
+                                    if let Some(ref tex) = self.skin_preview_texture {
+                                        let resp = ui.add(
+                                            egui::Image::new(tex)
+                                                .fit_to_exact_size(preview_sz)
+                                                .sense(egui::Sense::drag()),
+                                        );
+                                        if resp.dragged() {
+                                            let delta = resp.drag_delta();
+                                            self.skin_yaw += delta.x * 0.015;
+                                            self.skin_pitch =
+                                                (self.skin_pitch + delta.y * 0.012)
+                                                    .clamp(-1.2, 1.2);
+                                            self.skin_preview_dirty = true;
+                                        }
+                                    } else {
+                                        ui.allocate_space(preview_sz);
+                                    }
+                                });
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new("Drag preview to rotate 3D model")
+                                    .size(11.0)
+                                    .color(p.text_muted),
+                            );
+                            ui.add_space(6.0);
+                            ui.horizontal_wrapped(|ui| {
+                                if ui
+                                    .checkbox(&mut self.skin_show_overlay, "Show Outer Layer")
+                                    .changed()
+                                {
+                                    self.skin_preview_dirty = true;
+                                }
+                                if ui.button("Reset View").clicked() {
+                                    self.skin_yaw = 0.38;
+                                    self.skin_pitch = 0.12;
+                                    self.skin_preview_dirty = true;
+                                }
+                            });
+                        });
+
+                        // Right Column: Model Variant, Capes & Local Skins Library
+                        let right = &mut cols[1];
+                        right.vertical(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("Active Account:").strong());
+                                ui.label(RichText::new(&active_label).color(p.accent));
+                            });
+                            if !active_is_msa {
+                                ui.label(
+                                    RichText::new(
+                                        "Offline accounts can manage & preview local skins. Sign in with Microsoft to upload skins and equip Mojang capes.",
+                                    )
+                                    .size(11.0)
+                                    .color(p.text_muted),
+                                );
+                            }
+
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Model Variant:").strong());
+                                let cur_model = if self.skin_variant_slim {
+                                    "Slim (Alex - 3px)"
+                                } else {
+                                    "Classic (Steve - 4px)"
+                                };
+                                egui::ComboBox::from_id_salt("skin_mgr_variant_combo")
+                                    .selected_text(cur_model)
+                                    .width(200.0)
+                                    .show_ui(ui, |ui| {
+                                        if ui
+                                            .selectable_label(
+                                                !self.skin_variant_slim,
+                                                "Classic (Steve - 4px)",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.skin_variant_slim = false;
+                                            self.skin_preview_dirty = true;
+                                        }
+                                        if ui
+                                            .selectable_label(
+                                                self.skin_variant_slim,
+                                                "Slim (Alex - 3px)",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.skin_variant_slim = true;
+                                            self.skin_preview_dirty = true;
+                                        }
+                                    });
+                            });
+
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Mojang Cape:").strong());
+                                let selected_cape_label = if self.selected_cape_id.is_empty() {
+                                    "None (Hidden)".to_string()
+                                } else {
+                                    self.skin_profile_capes
+                                        .iter()
+                                        .find(|c| c.id == self.selected_cape_id)
+                                        .map(|c| {
+                                            if c.alias.is_empty() {
+                                                c.id.clone()
+                                            } else {
+                                                c.alias.clone()
+                                            }
+                                        })
+                                        .unwrap_or_else(|| self.selected_cape_id.clone())
+                                };
+                                ui.add_enabled_ui(active_is_msa && !self.skin_busy, |ui| {
+                                    egui::ComboBox::from_id_salt("skin_mgr_cape_combo")
+                                        .selected_text(selected_cape_label)
+                                        .width(200.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(
+                                                    self.selected_cape_id.is_empty(),
+                                                    "None (Hidden)",
+                                                )
+                                                .clicked()
+                                                && !self.selected_cape_id.is_empty()
+                                            {
+                                                self.selected_cape_id.clear();
+                                                cape_changed_to = Some(String::new());
+                                            }
+                                            for cape in &self.skin_profile_capes {
+                                                let lbl = if cape.alias.is_empty() {
+                                                    cape.id.clone()
+                                                } else {
+                                                    cape.alias.clone()
+                                                };
+                                                let sel = self.selected_cape_id == cape.id;
+                                                if ui.selectable_label(sel, lbl).clicked() && !sel {
+                                                    self.selected_cape_id = cape.id.clone();
+                                                    cape_changed_to = Some(cape.id.clone());
+                                                }
+                                            }
+                                        });
+                                });
+                            });
+
+                            ui.add_space(10.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("Local Skins Library").strong());
+                                if ui.button("Import Skin (.png)...").clicked() {
+                                    do_import = true;
+                                }
+                                if active_is_msa
+                                    && ui
+                                        .add_enabled(!self.skin_busy, Button::new("Refresh Profile"))
+                                        .clicked()
+                                {
+                                    do_refresh = true;
+                                }
+                            });
+                            ui.add_space(4.0);
+
+                            Frame::new()
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0_f32, p.border))
+                                .corner_radius(CornerRadius::same(10))
+                                .inner_margin(egui::Margin::same(8))
+                                .show(ui, |ui| {
+                                    ui.set_min_height(185.0);
+                                    ScrollArea::vertical()
+                                        .id_salt("skin_library_scroll")
+                                        .max_height(185.0)
+                                        .show(ui, |ui| {
+                                            if ui
+                                                .selectable_label(
+                                                    self.selected_skin_path.is_none(),
+                                                    "Active / Default Account Skin",
+                                                )
+                                                .clicked()
+                                            {
+                                                reset_to_active = true;
+                                            }
+                                            if self.skin_library.is_empty() {
+                                                ui.add_space(6.0);
+                                                ui.label(
+                                                    RichText::new(
+                                                        "No saved PNGs in skins/ yet. Click Import or drag & drop a 64x64 / 64x32 PNG.",
+                                                    )
+                                                    .size(11.0)
+                                                    .color(p.text_muted),
+                                                );
+                                            } else {
+                                                for entry in &self.skin_library {
+                                                    let is_sel = self.selected_skin_path.as_ref()
+                                                        == Some(&entry.path);
+                                                    ui.horizontal(|ui| {
+                                                        if ui
+                                                            .selectable_label(
+                                                                is_sel,
+                                                                &entry.display_name,
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            select_local = Some(entry.path.clone());
+                                                        }
+                                                        ui.with_layout(
+                                                            Layout::right_to_left(Align::Center),
+                                                            |ui| {
+                                                                if ui
+                                                                    .small_button(
+                                                                        RichText::new("Delete")
+                                                                            .color(p.danger),
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    delete_local = Some(
+                                                                        entry.file_name.clone(),
+                                                                    );
+                                                                }
+                                                            },
+                                                        );
+                                                    });
+                                                }
+                                            }
+                                        });
+                                });
+
+                            ui.add_space(10.0);
+                            ui.horizontal_wrapped(|ui| {
+                                let can_apply = active_is_msa
+                                    && !self.skin_busy
+                                    && self.skin_preview_png.is_some();
+                                let apply_btn = Button::new(
+                                    RichText::new("Apply to Microsoft Account")
+                                        .color(p.accent_text)
+                                        .strong(),
+                                )
+                                .fill(p.accent);
+                                if ui.add_enabled(can_apply, apply_btn).clicked() {
+                                    do_apply = true;
+                                }
+                                if self.skin_busy {
+                                    ui.spinner();
+                                    ui.label(
+                                        RichText::new("Syncing with Mojang...")
+                                            .size(11.5)
+                                            .color(p.accent),
+                                    );
+                                }
+                                if ui.button(self.t("common.close")).clicked() {
+                                    open = false;
+                                }
+                            });
+                        });
+                    });
+                },
+            );
+
+            if !keep_open {
+                open = false;
+            }
+            if dismiss_notice {
+                self.notice_banner = None;
+            }
+            if let Some(cid) = cape_changed_to {
+                self.preview_selected_cape_async(&cid, ctx);
+            }
+            if reset_to_active {
+                self.open_skin_manager(ctx);
+            }
+            if let Some(path) = select_local {
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        self.selected_skin_path = Some(path);
+                        self.skin_preview_png = Some(bytes);
+                        self.skin_preview_dirty = true;
+                    }
+                    Err(e) => {
+                        self.notice_banner = Some((format!("Failed to read skin PNG: {e}"), true));
+                    }
+                }
+            }
+            if let Some(fname) = delete_local {
+                match AccountSkinManager::delete_library_skin(&self.paths.project_root, &fname) {
+                    Ok(()) => {
+                        if self
+                            .selected_skin_path
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            == Some(fname.as_str())
+                        {
+                            self.selected_skin_path = None;
+                        }
+                        self.skin_library =
+                            AccountSkinManager::list_library_skins(&self.paths.project_root);
+                    }
+                    Err(e) => {
+                        self.notice_banner = Some((format!("Failed to delete skin: {e}"), true));
+                    }
+                }
+            }
+            if do_import {
+                if let Some(chosen) = pick_file_dialog(
+                    "Import Minecraft Skin (.png)",
+                    "PNG Skin (*.png)|*.png|All Files (*.*)|*.*",
+                ) {
+                    match AccountSkinManager::import_library_skin(&self.paths.project_root, &chosen)
+                    {
+                        Ok(entry) => {
+                            self.skin_library =
+                                AccountSkinManager::list_library_skins(&self.paths.project_root);
+                            if let Ok(bytes) = std::fs::read(&entry.path) {
+                                self.selected_skin_path = Some(entry.path);
+                                self.skin_preview_png = Some(bytes);
+                                self.skin_preview_dirty = true;
+                            }
+                            self.notice_banner =
+                                Some((format!("Imported skin '{}'.", entry.display_name), false));
+                        }
+                        Err(e) => {
+                            self.notice_banner = Some((e.to_string(), true));
+                        }
+                    }
+                }
+            }
+            if do_refresh {
+                self.refresh_skin_profile_async(ctx);
+            }
+            if do_apply {
+                self.apply_skin_and_cape_async(ctx);
+            }
+            if !open {
+                self.show_skin_manager_modal = false;
             }
         }
 
