@@ -276,6 +276,8 @@ impl McwApp {
             self.selected_mods.clear();
             self.selected_backups.clear();
             self.selected_worlds.clear();
+            self.selected_world_datapacks_folder = None;
+            self.selected_world_datapacks.clear();
             self.selected_screenshots.clear();
             self.selected_content_packs.clear();
             self.selected_servers.clear();
@@ -311,6 +313,8 @@ impl McwApp {
         self.selected_mods = self.mods_cache.get(id).cloned().unwrap_or_default();
         self.selected_backups = self.backups_cache.get(id).cloned().unwrap_or_default();
         self.selected_worlds = self.worlds_cache.get(id).cloned().unwrap_or_default();
+        self.selected_world_datapacks_folder = None;
+        self.selected_world_datapacks.clear();
         self.selected_screenshots = self.screenshots_cache.get(id).cloned().unwrap_or_default();
         self.selected_servers = self.servers_cache.get(id).cloned().unwrap_or_default();
         self.selected_content_packs = self
@@ -3569,6 +3573,17 @@ impl McwApp {
                                     }))
                             {
                                 self.load_content_packs_async(&instance_id, kind, ctx, true);
+                            }
+                            if kind == ContentKind::DataPack
+                                && self.selected_instance_id.as_deref()
+                                    == Some(instance_id.as_str())
+                            {
+                                if let Some(ref wf) = self.selected_world_datapacks_folder {
+                                    self.selected_world_datapacks = WorldManager::list_datapacks(
+                                        &self.paths.minecraft_dir(&instance_id),
+                                        wf,
+                                    );
+                                }
                             }
                             self.push_global_log(format!(
                                 "[CONTENT] Installed {:?} '{file_name}' into '{instance_id}'.",

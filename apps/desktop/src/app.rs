@@ -35,7 +35,7 @@ use mcw_minecraft::{
     LoaderDiagnosticsExporter, MojangLibrarySync, OptiFineManager, OptiFineState, RepairService,
     ResolvedSecurityPolicy, SavedServer, ScreenshotInfo, ScreenshotManager, SecurityManager,
     SecurityPolicyService, SecurityStatus, ServerManager, VanillaLaunchPipeline,
-    VersionManifestService, WorldInfo, WorldManager, REMOTE_SECURITY_POLICY_URL,
+    VersionManifestService, WorldDataPackInfo, WorldInfo, WorldManager, REMOTE_SECURITY_POLICY_URL,
 };
 use mcw_models::account::AccountSource;
 use mcw_models::instance::{Instance, InstanceSettings, ModLoader};
@@ -251,6 +251,8 @@ pub struct McwApp {
     selected_mods: Vec<ModInfo>,
     selected_backups: Vec<BackupInfo>,
     selected_worlds: Vec<WorldInfo>,
+    selected_world_datapacks_folder: Option<String>,
+    selected_world_datapacks: Vec<WorldDataPackInfo>,
     selected_screenshots: Vec<ScreenshotInfo>,
     selected_content_packs: Vec<ContentPackInfo>,
     settings_cache: HashMap<String, InstanceSettings>,
@@ -801,6 +803,8 @@ impl McwApp {
             selected_mods: Vec::new(),
             selected_backups: Vec::new(),
             selected_worlds: Vec::new(),
+            selected_world_datapacks_folder: None,
+            selected_world_datapacks: Vec::new(),
             selected_screenshots: Vec::new(),
             selected_content_packs: Vec::new(),
             settings_cache: HashMap::new(),

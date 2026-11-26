@@ -22,6 +22,16 @@ pub struct WorldInfo {
     pub icon_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+pub struct WorldDataPackInfo {
+    pub file_name: String,
+    pub display_name: String,
+    pub path: PathBuf,
+    pub enabled: bool,
+    pub size_bytes: u64,
+    pub is_directory: bool,
+}
+
 /// Returns `true` if the Minecraft version supports Java Edition Quick Play (`>= 1.20` or snapshot `>= 23w14a`).
 pub fn is_quick_play_supported(version_str: &str) -> bool {
     let v = version_str.trim();
@@ -45,9 +55,168 @@ pub fn is_quick_play_supported(version_str: &str) -> bool {
     false
 }
 
+fn is_safe_single_component(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty()
+        && trimmed != "."
+        && trimmed != ".."
+        && !trimmed.contains('/')
+        && !trimmed.contains('\\')
+        && !trimmed.contains("..")
+}
+
 pub struct WorldManager;
 
 impl WorldManager {
+    /// Lists all data packs (`.zip`, `.zip.disabled`, or directory packs) inside `saves/<world>/datapacks/`.
+    pub fn list_datapacks(mc_dir: &Path, world_folder: &str) -> Vec<WorldDataPackInfo> {
+        if !is_safe_single_component(world_folder) {
+            return Vec::new();
+        }
+        let dp_dir = mc_dir.join("saves").join(world_folder).join("datapacks");
+        let Ok(entries) = fs::read_dir(&dp_dir) else {
+            return Vec::new();
+        };
+
+        let mut packs = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                if !path.join("pack.mcmeta").is_file() {
+                    continue;
+                }
+                let size_bytes = dir_size(&path);
+                packs.push(WorldDataPackInfo {
+                    display_name: file_name.clone(),
+                    file_name,
+                    path,
+                    enabled: true,
+                    size_bytes,
+                    is_directory: true,
+                });
+                continue;
+            }
+            if !path.is_file() {
+                continue;
+            }
+            let lower = file_name.to_ascii_lowercase();
+            let (enabled, display_name) = if lower.ends_with(".zip") {
+                (true, file_name[..file_name.len() - 4].to_string())
+            } else if lower.ends_with(".zip.disabled") {
+                (false, file_name[..file_name.len() - 13].to_string())
+            } else {
+                continue;
+            };
+            let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            packs.push(WorldDataPackInfo {
+                file_name,
+                display_name,
+                path,
+                enabled,
+                size_bytes,
+                is_directory: false,
+            });
+        }
+        packs.sort_by(|a, b| {
+            a.display_name
+                .to_ascii_lowercase()
+                .cmp(&b.display_name.to_ascii_lowercase())
+        });
+        packs
+    }
+
+    /// Enables or disables a `.zip` data pack by renaming `.zip` <-> `.zip.disabled`.
+    pub fn toggle_datapack(
+        mc_dir: &Path,
+        world_folder: &str,
+        file_name: &str,
+        enable: bool,
+    ) -> crate::Result<String> {
+        if !is_safe_single_component(world_folder) || !is_safe_single_component(file_name) {
+            return Err(MinecraftError::InvalidMetadata(
+                "Invalid world or data pack name".to_string(),
+            ));
+        }
+        let dp_dir = mc_dir.join("saves").join(world_folder).join("datapacks");
+        let src = dp_dir.join(file_name);
+        if !src.is_file() {
+            return Err(MinecraftError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Data pack '{file_name}' not found"),
+            )));
+        }
+        let target_name = if enable {
+            file_name
+                .strip_suffix(".disabled")
+                .or_else(|| file_name.strip_suffix(".DISABLED"))
+                .unwrap_or(file_name)
+                .to_string()
+        } else if file_name.to_ascii_lowercase().ends_with(".disabled") {
+            file_name.to_string()
+        } else {
+            format!("{file_name}.disabled")
+        };
+        if target_name != file_name {
+            let dst = dp_dir.join(&target_name);
+            fs::rename(&src, &dst)?;
+        }
+        Ok(target_name)
+    }
+
+    /// Copies a local `.zip` data pack into `saves/<world>/datapacks/`.
+    pub fn import_datapack(
+        mc_dir: &Path,
+        world_folder: &str,
+        source_zip: &Path,
+    ) -> crate::Result<String> {
+        if !is_safe_single_component(world_folder) {
+            return Err(MinecraftError::InvalidMetadata(
+                "Invalid world folder name".to_string(),
+            ));
+        }
+        let file_name = source_zip
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty() && n.to_ascii_lowercase().ends_with(".zip"))
+            .ok_or_else(|| {
+                MinecraftError::InvalidMetadata("Data pack file must be a .zip archive".to_string())
+            })?
+            .to_string();
+        let dp_dir = mc_dir.join("saves").join(world_folder).join("datapacks");
+        fs::create_dir_all(&dp_dir)?;
+        let dest = dp_dir.join(&file_name);
+        fs::copy(source_zip, &dest)?;
+        Ok(file_name)
+    }
+
+    /// Removes a data pack file or directory from `saves/<world>/datapacks/`.
+    pub fn remove_datapack(
+        mc_dir: &Path,
+        world_folder: &str,
+        file_name: &str,
+    ) -> crate::Result<()> {
+        if !is_safe_single_component(world_folder) || !is_safe_single_component(file_name) {
+            return Err(MinecraftError::InvalidMetadata(
+                "Invalid world or data pack name".to_string(),
+            ));
+        }
+        let target = mc_dir
+            .join("saves")
+            .join(world_folder)
+            .join("datapacks")
+            .join(file_name);
+        if target.is_dir() {
+            fs::remove_dir_all(&target)?;
+        } else if target.is_file() {
+            fs::remove_file(&target)?;
+        }
+        Ok(())
+    }
+
     pub fn list_worlds(mc_dir: &Path) -> Vec<WorldInfo> {
         let saves_dir = mc_dir.join("saves");
         let Ok(entries) = fs::read_dir(&saves_dir) else {
@@ -116,13 +285,7 @@ impl WorldManager {
             mtime_ms
         };
 
-        let size_bytes: u64 = WalkDir::new(folder)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.metadata().ok())
-            .filter(|m| m.is_file())
-            .map(|m| m.len())
-            .sum();
+        let size_bytes = dir_size(folder);
 
         let icon_file = folder.join("icon.png");
         let icon_path = icon_file.is_file().then_some(icon_file);
@@ -404,6 +567,16 @@ impl WorldManager {
             ),
         )))
     }
+}
+
+fn dir_size(dir: &Path) -> u64 {
+    WalkDir::new(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .sum()
 }
 
 #[derive(Debug, Default)]
@@ -716,5 +889,32 @@ mod tests {
         let restored_name = WorldManager::restore_world(dir.path(), &backup_zip).unwrap();
         assert_eq!(restored_name, "my_world (1)");
         assert_eq!(WorldManager::list_worlds(dir.path()).len(), 2);
+    }
+
+    #[test]
+    fn manages_world_datapacks_list_toggle_import_and_remove() {
+        let dir = tempdir().unwrap();
+        let src_zip = dir.path().join("terralith.zip");
+        fs::write(&src_zip, b"PK\x03\x04fake-zip").unwrap();
+
+        let imported = WorldManager::import_datapack(dir.path(), "my_world", &src_zip).unwrap();
+        assert_eq!(imported, "terralith.zip");
+
+        let packs = WorldManager::list_datapacks(dir.path(), "my_world");
+        assert_eq!(packs.len(), 1);
+        assert!(packs[0].enabled);
+
+        let disabled_name =
+            WorldManager::toggle_datapack(dir.path(), "my_world", "terralith.zip", false).unwrap();
+        assert_eq!(disabled_name, "terralith.zip.disabled");
+        let packs_disabled = WorldManager::list_datapacks(dir.path(), "my_world");
+        assert!(!packs_disabled[0].enabled);
+
+        let reenabled =
+            WorldManager::toggle_datapack(dir.path(), "my_world", &disabled_name, true).unwrap();
+        assert_eq!(reenabled, "terralith.zip");
+
+        WorldManager::remove_datapack(dir.path(), "my_world", &reenabled).unwrap();
+        assert!(WorldManager::list_datapacks(dir.path(), "my_world").is_empty());
     }
 }

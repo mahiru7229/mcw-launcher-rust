@@ -950,6 +950,14 @@ impl McwApp {
         inst: &Instance,
         busy: bool,
     ) {
+        if self.instance_inline_browser == Some(BrowserCategory::DataPacks) {
+            self.render_inline_instance_browser(ui, ctx);
+            return;
+        }
+        if let Some(world_folder) = self.selected_world_datapacks_folder.clone() {
+            self.render_world_datapacks_inline(ui, ctx, inst, &world_folder, busy);
+            return;
+        }
         let p = self.palette;
         let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
         let saves_dir = mc_dir.join("saves");
@@ -1018,6 +1026,7 @@ impl McwApp {
         }
 
         let mut quick_play_target: Option<String> = None;
+        let mut datapacks_target: Option<String> = None;
         let mut copy_seed_target: Option<i64> = None;
         let mut export_world_target: Option<String> = None;
         let mut duplicate_target: Option<String> = None;
@@ -1116,6 +1125,9 @@ impl McwApp {
                                     }
                                     if ui.button("Folder").clicked() {
                                         open_external(&w.folder_path.display().to_string());
+                                    }
+                                    if ui.button("Data Packs").clicked() {
+                                        datapacks_target = Some(w.folder_name.clone());
                                     }
                                     if ui.add_enabled(!busy, Button::new("Duplicate")).clicked() {
                                         duplicate_target = Some(w.folder_name.clone());
@@ -1231,6 +1243,206 @@ impl McwApp {
         }
         if let Some(folder) = delete_target {
             self.pending_delete_world = Some((inst.instance_id.clone(), folder));
+        }
+        if let Some(folder) = datapacks_target {
+            self.selected_world_datapacks = WorldManager::list_datapacks(&mc_dir, &folder);
+            self.selected_world_datapacks_folder = Some(folder);
+        }
+    }
+
+    fn render_world_datapacks_inline(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        inst: &Instance,
+        world_folder: &str,
+        busy: bool,
+    ) {
+        let p = self.palette;
+        let mc_dir = self.paths.minecraft_dir(&inst.instance_id);
+        let dp_dir = mc_dir.join("saves").join(world_folder).join("datapacks");
+        let world_display = self
+            .selected_worlds
+            .iter()
+            .find(|w| w.folder_name == world_folder)
+            .map(|w| w.display_name.clone())
+            .unwrap_or_else(|| world_folder.to_string());
+
+        let mut go_back = false;
+        let mut open_add_browser = false;
+        let mut import_clicked = false;
+        let mut refresh_clicked = false;
+        let mut toggle_pack: Option<(String, bool)> = None;
+        let mut remove_pack: Option<String> = None;
+
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("← Back to Worlds").clicked() {
+                go_back = true;
+            }
+            ui.label(
+                RichText::new(format!(
+                    "Data Packs — {} ({})",
+                    world_display,
+                    self.selected_world_datapacks.len()
+                ))
+                .strong()
+                .size(14.0)
+                .color(p.text),
+            );
+            let add_btn = Button::new(
+                RichText::new("+ Add Data Pack")
+                    .color(p.accent_text)
+                    .strong(),
+            )
+            .fill(p.accent)
+            .corner_radius(CornerRadius::same(8));
+            if ui.add_enabled(!busy, add_btn).clicked() {
+                open_add_browser = true;
+            }
+            if ui
+                .add_enabled(!busy, Button::new("Import Local .zip..."))
+                .clicked()
+            {
+                import_clicked = true;
+            }
+            if ui.button("Refresh").clicked() {
+                refresh_clicked = true;
+            }
+            if ui.button("Open datapacks/ Folder").clicked() {
+                let _ = std::fs::create_dir_all(&dp_dir);
+                open_external(&dp_dir.display().to_string());
+            }
+        });
+        ui.add_space(6.0);
+
+        if self.selected_world_datapacks.is_empty() {
+            ui.label(
+                RichText::new(format!(
+                    "No data packs in '{world_display}'. Click '+ Add Data Pack' or drop a .zip file here to install."
+                ))
+                .color(p.text_muted),
+            );
+        } else {
+            ScrollArea::vertical()
+                .id_salt("world_datapacks_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for pack in &self.selected_world_datapacks {
+                        Frame::new()
+                            .fill(p.surface)
+                            .stroke(Stroke::new(1.0_f32, p.border))
+                            .corner_radius(CornerRadius::same(10))
+                            .inner_margin(egui::Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label(
+                                            RichText::new(&pack.display_name)
+                                                .strong()
+                                                .color(p.text),
+                                        );
+                                        let kind_tag = if pack.is_directory {
+                                            "Folder"
+                                        } else if pack.enabled {
+                                            "Enabled"
+                                        } else {
+                                            "Disabled"
+                                        };
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} · {} · {}",
+                                                pack.file_name,
+                                                format_bytes(pack.size_bytes),
+                                                kind_tag
+                                            ))
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(p.text_muted),
+                                        );
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui
+                                            .add_enabled(
+                                                !busy,
+                                                Button::new(
+                                                    RichText::new("Remove").color(p.danger),
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            remove_pack = Some(pack.file_name.clone());
+                                        }
+                                        if !pack.is_directory
+                                            && ui
+                                                .add_enabled_ui(!busy, |ui| {
+                                                    render_mod_toggle_switch(ui, p, pack.enabled)
+                                                })
+                                                .inner
+                                                .clicked()
+                                        {
+                                            toggle_pack =
+                                                Some((pack.file_name.clone(), !pack.enabled));
+                                        }
+                                    });
+                                });
+                            });
+                        ui.add_space(4.0);
+                    }
+                });
+        }
+
+        if go_back {
+            self.selected_world_datapacks_folder = None;
+            self.selected_world_datapacks.clear();
+        } else if open_add_browser {
+            self.browser_datapack_world = world_folder.to_string();
+            self.open_content_browser(BrowserCategory::DataPacks, None, ctx);
+        } else if import_clicked {
+            if let Some(chosen) = pick_file_dialog(
+                "Import Data Pack (.zip)",
+                "Data Pack Archives (*.zip)|*.zip|All Files (*.*)|*.*",
+            ) {
+                match WorldManager::import_datapack(&mc_dir, world_folder, &chosen) {
+                    Ok(name) => {
+                        self.selected_world_datapacks =
+                            WorldManager::list_datapacks(&mc_dir, world_folder);
+                        self.notice_banner = Some((
+                            format!("Imported data pack '{name}' into '{world_display}'."),
+                            false,
+                        ));
+                    }
+                    Err(e) => {
+                        self.notice_banner = Some((format!("Data pack import failed: {e}"), true));
+                    }
+                }
+            }
+        } else if refresh_clicked {
+            self.selected_world_datapacks = WorldManager::list_datapacks(&mc_dir, world_folder);
+        } else if let Some((file_name, enable)) = toggle_pack {
+            match WorldManager::toggle_datapack(&mc_dir, world_folder, &file_name, enable) {
+                Ok(_) => {
+                    self.selected_world_datapacks =
+                        WorldManager::list_datapacks(&mc_dir, world_folder);
+                }
+                Err(e) => {
+                    self.notice_banner = Some((format!("Failed to toggle data pack: {e}"), true));
+                }
+            }
+        } else if let Some(file_name) = remove_pack {
+            match WorldManager::remove_datapack(&mc_dir, world_folder, &file_name) {
+                Ok(()) => {
+                    self.selected_world_datapacks =
+                        WorldManager::list_datapacks(&mc_dir, world_folder);
+                    self.notice_banner = Some((
+                        format!("Removed data pack '{file_name}' from '{world_display}'."),
+                        false,
+                    ));
+                }
+                Err(e) => {
+                    self.notice_banner = Some((format!("Failed to remove data pack: {e}"), true));
+                }
+            }
         }
     }
 
