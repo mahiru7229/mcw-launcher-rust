@@ -14,10 +14,11 @@ All notable changes to **MCW Launcher: Rust Edition** are documented in this fil
   - Added a crisp, scannable **QR Code** (`qrcode`) alongside the Microsoft Device Login code & verification URL in both the Accounts modal and First-Run wizard.
   - Added direct desktop **Shortcut** creation buttons on **World** and **Server** cards (for Minecraft `>= 1.20` Quick Play) generating `--launch <id> --world <folder>` and `--server <ip>` shortcuts.
   - Enhanced global **Drag & Drop** handling with a translucent drop-target overlay and automatic routing for `.mrpack` / `.mcwpack` modpacks, `.jar` mods, `.png` (`64x64` / `64x32`) skins into `<app_root>/skins/`, and smart `.zip` inspection (`ZipContentKind`: worlds, data packs, shaders, resource packs, modpacks).
+  - Defaulted startup Home view to **Library Grid** (`default_home_view_mode: "grid"`) with a **Default Startup Home View** `ComboBox` (`Library Grid` / `Workspace View`) in *Launcher Settings -> General*.
 
 ### Improved & Restored
 - **MCW Security Bar Inline Verification & Windows Signing Infrastructure (`mcw-minecraft`, `mcw-desktop`, `.github/workflows/release.yml`, `docs/security/WINDOWS_SIGNING.md`)**:
-  - Added an inline **`Sync & Verify`** button directly on the Workspace Security Status bar (auto-hidden when `PROTECTED`) and removed duplicated status label prefixes so the full security description reads cleanly.
+  - Added an inline **`Sync & Verify`** button directly on the Workspace Security Status bar (auto-hidden when `PROTECTED`), removed duplicated status label prefixes, and cached SHA-1-verified Mojang version metadata immediately during sync so unlaunched instances transition out of `UNKNOWN` right away.
   - Added Windows PE `VERSIONINFO` metadata in `apps/desktop/build.rs` and `apps/updater/build.rs`, generated `SHA256SUMS.txt` release manifests, wired optional SignPath Foundation code-signing in `.github/workflows/release.yml`, and documented Windows SmartScreen / Authenticode trust preparation in `docs/security/WINDOWS_SIGNING.md`.
 - **Transactional Repair Center Rebuild (`mcw-minecraft`, `mcw-desktop`)**:
   - Rebuilt `RepairService::repair_instance` with transactional backup/rollback staging across Vanilla, Fabric, Quilt, Forge, and NeoForge—re-verifying client JARs, libraries, and assets, clearing `last_launch_crashed`, and strictly preserving `saves/`, `mods/`, and `options.txt`—alongside the restored footer **`Repair`** button and live progress bar inside *Repair Center & Health*.
